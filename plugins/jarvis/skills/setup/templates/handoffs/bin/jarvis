@@ -325,7 +325,8 @@ cmd_merge() {
   open_drop "$(basename "$ho")"
   git ls-files --error-unmatch -- "$ho" >/dev/null 2>&1 && old_tracked=1
   mv "$ho" "$dest"
-  set -- $files "$dest"
+  # a handoff that lists itself would be staged at the path it just left
+  set -- $(printf '%s\n' $files | grep -vxF "$ho") "$dest"
   [ $old_tracked = 1 ] && set -- "$@" "$ho"
   [ -n "$brief" ] && [ -f "$brief" ] && set -- "$@" "$brief"
   [ -f "$OPEN" ] && set -- "$@" "$OPEN"
