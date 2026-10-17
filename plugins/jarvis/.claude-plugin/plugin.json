@@ -1,6 +1,6 @@
 {
 	"name": "jarvis",
-	"version": "0.3.1",
+	"version": "0.3.2",
 	"description": "Run one main agent (Jarvis) that delegates building to worker agents on separate Superset terminals, with model routing across Claude Code and Codex and a handoff system.",
 	"author": {
 		"name": "Gorock",
