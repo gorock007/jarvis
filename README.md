@@ -187,8 +187,9 @@ superset terminals create --workspace <workspaceId> --command "handoffs/bin/jarv
 ```
 
 The second command starts the watcher. It's a plain loop with no model, so
-it costs no tokens. It wakes Jarvis when a handoff lands. Jarvis starts it
-itself if it isn't running.
+it costs no tokens. It wakes Jarvis when a handoff lands, or when a worker
+hits a usage limit, sits at a prompt, or freezes. Jarvis starts it itself if
+it isn't running.
 
 Or, in the Superset desktop app, open the project's shared-checkout
 workspace, launch Claude Code with model **claude-opus-5-5** and effort **high**, and
@@ -263,7 +264,9 @@ several phases gets one brief per phase. Each new worker starts fresh from
 the previous handoff instead of carrying 300k tokens of history.
 
 **5. Wait without spending.** Jarvis doesn't poll or sleep. `jarvis watch`
-wakes it when a handoff lands. If Jarvis has sat idle long enough for its
+wakes it when a handoff lands, or when a worker hits a usage limit, sits at a
+trust or approval prompt, or shows the same screen for `JARVIS_STALL_MIN`
+minutes (15 by default) with no handoff. If Jarvis has sat idle long enough for its
 prompt cache to expire, the watcher sends `/clear` first. The fresh session
 then reloads from `OPEN.md` for a fraction of what reloading the old
 conversation would cost.
@@ -500,8 +503,20 @@ repo's `.claude/settings.json` must set the statusline. Until it has a
 reading, Jarvis asks you for your `/usage` numbers.
 
 **A worker is stuck on a permission prompt**
-Jarvis sees it when it reads the worker's terminal and sends a nudge with
-`superset terminals send`. You can also say "check on the workers".
+`jarvis watch` checks each worker's screen every minute. It wakes Jarvis
+when a worker sits at a trust or approval prompt, or when the screen hasn't
+changed for `JARVIS_STALL_MIN` minutes and the worker has no handoff. Jarvis
+reads the terminal and answers the prompt or sends a nudge with
+`superset terminals send`. It treats a prompt for something outside the
+brief as a question for you. You can also say "check on the workers".
+
+**A Codex worker sat at "Trust this folder?"**
+Codex asks once for each folder path, and every Superset project has its own
+path. Since 0.3.2, `jarvis spawn` records the checkout as trusted in
+`~/.codex/config.toml` (or `$CODEX_HOME`) before a Codex worker starts, as
+answering "Yes" would. An existing entry for that path, trusted or not, is
+left alone. A repo set up with an older version needs "update Jarvis in this
+repo" to get this.
 
 **Can I use it without Codex?**
 Yes. Everything except media and computer-use tasks runs on Claude. Without
@@ -560,15 +575,27 @@ Jarvis session, so leave out generic advice.
 
 ### Publishing a new version (maintainers)
 
+Run `eval/selftest.sh` first. It's offline and free, and it covers
+`bin/jarvis` and `jev.sh`. Then commit the change on its own and publish in
+a second commit:
+
 ```bash
-superset plugins publish jarvis --bump patch
-git commit -am "publish jarvis@<version>"
-git tag jarvis@<version> && git push --tags
+v=0.3.3   # the new version
+sed -i '' -E "s/\"version\": \"[0-9.]+\"/\"version\": \"$v\"/" \
+  .agent-marketplace.json plugins/jarvis/plugin.json plugins/jarvis/.claude-plugin/plugin.json
+git commit -am "publish jarvis@$v"
+git tag "jarvis@$v" && git push origin main "jarvis@$v"
 ```
 
-A release is a git tag, and installs pin to it. Keep the `version` in
-`plugins/jarvis/plugin.json`, `plugins/jarvis/.claude-plugin/plugin.json`, and
-`.agent-marketplace.json` the same.
+A release is a git tag, and installs pin to it. Keep the `version` in those
+three files the same. (Superset CLI 1.38 dropped `superset plugins`, which
+used to do the bump as `superset plugins publish jarvis --bump patch`.)
+
+Existing installs don't update themselves. Claude Code users run
+`claude plugin marketplace update superset-jarvis` and
+`claude plugin update jarvis@superset-jarvis`, then restart. Repos already
+set up keep their copied `handoffs/` files until someone says "update Jarvis
+in this repo".
 
 ## License
 
