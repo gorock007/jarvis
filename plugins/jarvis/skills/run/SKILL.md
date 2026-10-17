@@ -138,9 +138,13 @@ for.
 
 **Don't wait inside a turn.** Don't write sleep loops, `until` loops, or "check
 again in a few minutes" turns. `jarvis watch` runs in its own plain terminal
-and wakes you with a `[jarvis watch]` message when a handoff lands or a
-worker hits a usage limit. If you've been idle past `JARVIS_IDLE_MIN`, it
-`/clear`s you first. So when there's nothing to decide, update `OPEN.md` and
+and wakes you with a `[jarvis watch]` message when a handoff lands, a
+worker hits a usage limit, a worker sits at a trust or approval prompt, or a
+worker's screen hasn't changed for `JARVIS_STALL_MIN` minutes with no
+handoff. If you've been idle past `JARVIS_IDLE_MIN`, it `/clear`s you first.
+`jarvis spawn` also marks the checkout as trusted in Codex's config before a
+Codex worker starts, so Codex's first-run "Trust this folder?" prompt doesn't
+hold it. So when there's nothing to decide, update `OPEN.md` and
 stop.
 
 When you're woken, or the user asks, run `handoffs/bin/jarvis status`. That
@@ -154,8 +158,11 @@ when a worker needs you. Then act on what it shows:
   come, send them to each worker with `superset terminals send … --text
   "Answers: 1. … 2. …"` and remove the items from `OPEN.md`.
 - **Handoff with `status: done` or `partial`**: review and merge it (below).
-- **Worker stuck in a permission prompt or a loop**: use `terminals send` to
-  give it a nudge or the missing ruling.
+- **Worker stuck in a permission prompt, a frozen screen or a loop**: read
+  its terminal (`superset terminals read … --max-lines 40`), then answer the
+  prompt (`terminals send … --keys enter`, or the option's key) or use
+  `terminals send` to give it a nudge or the missing ruling. A prompt for
+  something outside its brief is a question for the user. Don't approve it.
 - **Usage limit in a worker terminal**: that's the red band. Route new heavy
   briefs to Codex. If the worker is dead, close it and respawn from the same
   brief on the matching Codex tier.

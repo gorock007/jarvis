@@ -145,6 +145,21 @@ EOT
     $J watch --once >/dev/null
     grep -q 'send .*--text /clear' "$FAKE_LOG" && grep -q 'send .*Fresh session.*h4.md' "$FAKE_LOG"; check "watch clears an idle Jarvis, then wakes it with the handoff" $?
     : > "$FAKE_LOG"; $J watch --once >/dev/null; ! grep -q 'terminals send' "$FAKE_LOG"; check "watch stays quiet when nothing changed" $?
+
+    export CODEX_HOME="$tmp/codex"; mk b6 codex gpt-5.6-sol high
+    $J spawn handoffs/briefs/b6.md >/dev/null 2>&1; check "spawns a Codex worker" $?
+    grep -qxF "[projects.\"$(pwd -P)\"]" "$CODEX_HOME/config.toml"; check "Codex spawn pre-trusts the checkout in Codex's config" $?
+    $J spawn handoffs/briefs/b6.md >/dev/null 2>&1
+    [ "$(grep -c '^\[projects\.' "$CODEX_HOME/config.toml")" = 1 ]; check "…once, however many Codex workers follow" $?
+    : > "$FAKE_LOG"; FAKE_SCREEN="  Trust this folder? › 1. Yes, continue  2. No, quit" $J watch --once >/dev/null
+    grep -q 'send .*waiting at a prompt' "$FAKE_LOG"; check "watch wakes Jarvis for a worker at a trust prompt" $?
+    : > "$FAKE_LOG"; FAKE_SCREEN="  Trust this folder? › 1. Yes, continue  2. No, quit" $J watch --once >/dev/null
+    ! grep -q 'terminals send' "$FAKE_LOG"; check "…once per prompt" $?
+    echo 'JARVIS_STALL_MIN=0' >> handoffs/jarvis.conf
+    FAKE_SCREEN="frozen" $J watch --once >/dev/null; : > "$FAKE_LOG"; FAKE_SCREEN="frozen" $J watch --once >/dev/null
+    grep -q "send .*screen hasn't changed" "$FAKE_LOG"; check "watch wakes Jarvis for a frozen worker with no handoff" $?
+    b4t=$(sed -n 's/.*terminal: //p' handoffs/briefs/b4.md)
+    [ -n "$b4t" ] && ! grep -q "$b4t's screen" "$FAKE_LOG"; check "…but not for one that already handed off" $?
   ) | tee "$tmp/jarvis.out"
   n=$(grep -c '^  FAIL' "$tmp/jarvis.out"); fails=$((fails + n))
 else

@@ -27,8 +27,9 @@ handoffs/bin/jarvis usage --days 7           # coordinating vs building, $ per m
 ```
 
 `jarvis watch` runs in its own plain terminal (no model, no tokens). It
-wakes you when a handoff lands or a worker hits a usage limit, and it
-`/clear`s you first when you've been idle for more than
+wakes you when a handoff lands, or when a worker hits a usage limit, sits at
+a trust or approval prompt, or shows the same screen for `JARVIS_STALL_MIN`
+minutes without a handoff. It `/clear`s you first when you've been idle for more than
 `JARVIS_IDLE_MIN` minutes. So **don't sleep-loop or poll on a timer**. Before
 you stop, make sure `OPEN.md` says everything the next session needs to know.
 

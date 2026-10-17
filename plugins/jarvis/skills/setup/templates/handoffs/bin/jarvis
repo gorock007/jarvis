@@ -11,7 +11,8 @@
 #                                      commit exactly the listed files + the handoff move,
 #                                      push, close the worker, update OPEN.md
 #   jarvis watch [--once]              run in its own terminal (no model): wakes Jarvis when a
-#                                      handoff lands, and /clears it first after a long idle
+#                                      handoff lands or a worker is limited, waiting at a prompt
+#                                      or frozen; /clears it first after a long idle
 #   jarvis band                        the usage band from the latest statusline reading
 #   jarvis usage [--days N | --since DATE]
 #                                      coordinating vs building, from local transcripts
@@ -35,12 +36,15 @@ JARVIS_RED=75            # 5-hour % that turns it red
 JARVIS_IDLE_MIN=55       # minutes idle after which a big context is cheaper to clear than reload
 JARVIS_GUARD_TOKENS=100000
 JARVIS_WATCH_SEC=60
+JARVIS_STALL_MIN=15      # a worker screen unchanged this long, with no handoff, wakes Jarvis
 JARVIS_PUSH=1
 # shellcheck disable=SC1090
 [ -f "$H/jarvis.conf" ] && . "$H/jarvis.conf"
 WS="${SUPERSET_WORKSPACE_ID:-}"
 
 LIMIT_RE="(usage|rate|session|weekly|daily|hourly|5-hour) limit (was |has been )?(reached|exceeded|hit)|(hit|reached|exceeded) (your|the) [a-z0-9 -]*limit|limit reached|quota (was |has been )?(exceeded|exhausted)|out of credits|too many requests"
+# A worker sitting at a trust or approval prompt does nothing until someone answers it.
+PROMPT_RE="trust (this|the files in this) folder|do you trust|allow codex to work in this folder|press enter to confirm|would you like to (run|make|apply)|do you want to (proceed|make this edit|create|run|allow)|allow (this|once)|\\(y/n\\)|\\[y/n\\]"
 
 die() { echo "jarvis: $*" >&2; exit 1; }
 have() { command -v "$1" >/dev/null 2>&1; }
@@ -192,6 +196,18 @@ EOF
 
 # ---------------------------------------------------------------- spawn
 
+# Codex trusts folders one path at a time and asks "Trust this folder?" on its first
+# run in each one; a worker spawned into that prompt sits there until someone answers.
+# Record the answer up front, as pressing Yes would. An existing entry is left alone.
+codex_trust() {
+  local cfg="${CODEX_HOME:-$HOME/.codex}/config.toml"
+  case "$ROOT" in *\"*|*\\*) return 0 ;; esac
+  grep -qF "[projects.\"$ROOT\"]" "$cfg" 2>/dev/null && return 0
+  mkdir -p "$(dirname "$cfg")" \
+    && printf '\n[projects."%s"]\ntrust_level = "trusted"\n' "$ROOT" >> "$cfg" \
+    && echo "trusted $ROOT in $cfg, so Codex starts without its folder prompt"
+}
+
 cmd_spawn() {
   local brief="" after="" force=0 worker model effort tier prompt out id b cap_now
   while [ $# -gt 0 ]; do
@@ -225,6 +241,8 @@ cmd_spawn() {
       die "Claude cap reached ($cap_now of $JARVIS_MAX_CLAUDE, Jarvis included). Queue it under To-do in OPEN.md, route it to OpenCode/Codex, or --force"
     fi
   fi
+
+  [ "$worker" = codex ] && codex_trust
 
   prompt="You are a Jarvis worker. Read AGENTS.md, then do the task in $brief."
   [ -n "$after" ] && prompt="$prompt $after records what is already done — start from there."
@@ -357,7 +375,7 @@ send_jarvis() { # $1 = text
 }
 
 watch_tick() {
-  local seen="$STATE/watch.seen" events="" ho key id tail_ idle term
+  local seen="$STATE/watch.seen" events="" ho key id tail_ idle term line brief sum scr stale
   touch "$seen"
   for ho in "$H"/*.md; do
     [ -f "$ho" ] || continue
@@ -367,14 +385,37 @@ watch_tick() {
     echo "$key" >> "$seen"
     events="$events handoff $ho ($(field status "$ho"));"
   done
-  for id in $(running_lines | sed -n 's/.*term \([^ ]*\).*/\1/p'); do
+  while IFS= read -r line; do
+    id=$(printf '%s' "$line" | sed -n 's/.*term \([^ ]*\).*/\1/p')
+    [ -n "$id" ] || continue
     tail_=$(superset terminals read --workspace "$WS" --terminal "$id" --max-lines 15 --json 2>/dev/null \
-      | { have jq && jq -r '.text // empty' || cat; })
+      | { have jq && jq -r '.text // empty' || cat; } | sed -e 's/[[:space:]]*$//')
+    [ -n "$tail_" ] || continue
+    sum=$(printf '%s' "$tail_" | cksum | cut -d' ' -f1)
     if printf '%s' "$tail_" | grep -Eiq "$LIMIT_RE"; then
       key="limit $id $(date +%Y%m%d%H)"
       grep -qxF "$key" "$seen" || { echo "$key" >> "$seen"; events="$events usage limit in worker $(short "$id");"; }
+    elif printf '%s' "$tail_" | grep -Eiq "$PROMPT_RE"; then
+      key="prompt $id $sum"
+      grep -qxF "$key" "$seen" || { echo "$key" >> "$seen"; events="$events worker $(short "$id") is waiting at a prompt — read its terminal;"; }
+    else
+      # a working agent's screen keeps changing (spinner, timer, output); a frozen one
+      # with no handoff is stuck at something the patterns above don't know
+      scr="$STATE/screen-$id"
+      if [ "$(cat "$scr" 2>/dev/null)" != "$sum" ]; then
+        echo "$sum" > "$scr"
+      else
+        stale=$(( ($(now) - $(mtime "$scr")) / 60 ))
+        brief=$(printf '%s' "$line" | grep -o "$H/briefs/[^ ]*\.md" | head -n 1)
+        if [ "$stale" -ge "$JARVIS_STALL_MIN" ] && ! grep -lq "^brief:[[:space:]]*${brief:-@@none@@}" "$H"/*.md 2>/dev/null; then
+          key="stall $id $sum"
+          grep -qxF "$key" "$seen" || { echo "$key" >> "$seen"; events="$events worker $(short "$id")'s screen hasn't changed in ${stale} min and it has no handoff — read its terminal;"; }
+        fi
+      fi
     fi
-  done
+  done <<EOF
+$(running_lines)
+EOF
   [ -n "$events" ] || return 0
 
   term=$(jarvis_terminal)
@@ -399,7 +440,7 @@ cmd_watch() {
   for ho in "$H"/*.md; do
     [ -f "$ho" ] && echo "$ho $(mtime "$ho") $(field status "$ho")" >> "$STATE/watch.seen"
   done
-  echo "jarvis watch: every ${JARVIS_WATCH_SEC}s; clears Jarvis first after ${JARVIS_IDLE_MIN} min idle. Ctrl-C to stop."
+  echo "jarvis watch: every ${JARVIS_WATCH_SEC}s (handoffs, limits, prompts, workers frozen ${JARVIS_STALL_MIN}+ min); clears Jarvis first after ${JARVIS_IDLE_MIN} min idle. Ctrl-C to stop."
   while :; do sleep "$JARVIS_WATCH_SEC"; watch_tick; done
 }
 

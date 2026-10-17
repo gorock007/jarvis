@@ -43,7 +43,8 @@ of turns), and they cost 31% of everything the coordinator spent. 12 of the
 **Now:**
 
 - `jarvis watch` runs in a plain terminal, with no model. It wakes Jarvis
-  when a handoff lands. If Jarvis has been idle past `JARVIS_IDLE_MIN`, it
+  when a handoff lands, or when a worker is at a usage limit, waiting at a
+  prompt, or frozen for `JARVIS_STALL_MIN` minutes. If Jarvis has been idle past `JARVIS_IDLE_MIN`, it
   sends `/clear` first, so the fresh session reloads about 60–80k from
   `OPEN.md` instead of the old 300k.
 - The prompt guard (`jarvis hook prompt`, a `UserPromptSubmit` hook) stops
