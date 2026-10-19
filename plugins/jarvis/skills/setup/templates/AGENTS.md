@@ -35,6 +35,23 @@ Several workers edit the same checkout at once, on separate terminals. So:
 - **One brief, then hand off.** Do the phase your brief describes, write the
   handoff, and stop. The next phase gets a fresh worker that starts from your
   handoff, so write it for that reader: what's done, what's left, where.
+- **Stop what you start.** A browser, dev server, watcher or background job
+  you start is yours to stop before you hand off. Your terminal closing
+  doesn't stop it, and one whose parent script crashed can run for days.
+  - Keep its files (a browser profile, logs) in your scratchpad, so its
+    command line names your session's scratch folder. That's how `jarvis`
+    tells your processes from other workers'.
+  - For a browser, use Playwright's `launch()`, which exits with your script.
+    If you start one yourself (`Popen` plus `--remote-debugging-port`), stop it
+    in a `finally:`.
+  - Stop processes by their PID, never by a name or a pattern (`pkill chrome`,
+    `/tmp/claude-`): those hit other workers' processes.
+  - Before you hand off, Claude Code runs `handoffs/bin/jarvis leftovers
+    --mine` and adds `--stop` to end what it lists. Other agents stop each
+    process they started by its PID.
+  - Something that must keep running goes under **Processes left running** in
+    your handoff, with its PID and why. Everything else is stopped when your
+    handoff is merged.
 - **Verification:** {{VERIFY}}
 - **Checks:** run {{CHECKS}} before handing off and report the results. Say
   plainly what you didn't check.
@@ -56,6 +73,8 @@ brief: handoffs/briefs/<the brief you worked from>.md
 - path/relative/to/repo — created | modified | deleted
 ## Checks run
 <commands and their results; say plainly what wasn't checked>
+## Processes left running
+none | - <pid> — <what it is and why it must keep running>
 ## Questions for the user
 <only when status: blocked — numbered, each answerable in a line>
 ## Notes for Jarvis

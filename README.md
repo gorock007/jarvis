@@ -275,7 +275,8 @@ conversation would cost.
 list with `git status`. Jarvis then reads the diff and runs the checks if
 needed. `jarvis merge` commits **only those files** with a `Co-Authored-By`
 line naming the worker, moves the handoff to `handoffs/merged/`, pushes,
-closes the worker's terminal and updates `OPEN.md`, all in one call.
+closes the worker's terminal and updates `OPEN.md`, all in one call. Then it
+stops whatever the worker left running (see the FAQ on leftover browsers).
 
 Two rules keep the shared checkout safe:
 
@@ -290,8 +291,8 @@ Two rules keep the shared checkout safe:
 | `CLAUDE.md` | A few lines every session loads: who is Jarvis and who is a worker, and your checks. Kept short because workers load it too. |
 | `AGENTS.md` | The worker rules, read by Claude Code, Codex and OpenCode: git rules, shared-file rules, ask once, one brief then hand off, handoff format |
 | `handoffs/JARVIS.md` | Jarvis's rules for this project: what only Jarvis may do, how you verify work, shared files, budget rules. Only Jarvis reads it. |
-| `handoffs/jarvis.conf` | The Claude cap, band thresholds, idle limit |
-| `handoffs/bin/jarvis` | `start`, `status`, `spawn`, `merge`, `watch`, `band`, `usage`, plus the idle guard hook and the statusline tap |
+| `handoffs/jarvis.conf` | The Claude cap, band thresholds, idle limit, whether merge stops leftover processes |
+| `handoffs/bin/jarvis` | `start`, `status`, `spawn`, `merge`, `leftovers`, `watch`, `band`, `usage`, plus the idle guard hook and the statusline tap |
 | `handoffs/bin/cc_usage_audit.py` | Prices your local Claude Code transcripts for `jarvis usage` |
 | `handoffs/OPEN.md` | The one pending list: Jarvis's terminal, usage band, running workers, questions for you, to-do |
 | `handoffs/TEMPLATE.md` | Handoff format |
@@ -517,6 +518,36 @@ path. Since 0.3.2, `jarvis spawn` records the checkout as trusted in
 answering "Yes" would. An existing entry for that path, trusted or not, is
 left alone. A repo set up with an older version needs "update Jarvis in this
 repo" to get this.
+
+**A browser or server a worker started is still running after it finished**
+Closing a worker's terminal doesn't stop what the worker started. Claude
+Code runs each Bash command in its own process group, outside the
+terminal's. A headless Chrome whose script crashed is adopted by PID 1 and
+keeps running; two did, at 100% CPU, for ten days. Since 0.3.4 Jarvis
+handles this in three places:
+
+- `jarvis merge` stops what the closed worker left running.
+- `jarvis status` lists anything still running from a closed worker.
+- A worker checks its own with `jarvis leftovers --mine` before handing off.
+
+How it decides what's whose: Claude Code gives each session a scratch folder,
+`/tmp/claude-<uid>/<project>/<session id>/`, and workers keep browser
+profiles and logs there. A process counts as a worker's only if its command
+line names that worker's own session folder, or it shares a process group
+with one when the group has no terminal.
+
+What it never touches:
+- processes matched by name
+- another worker's processes, or a session that isn't a worker
+- the command's own process group
+- anything listed under **Processes left running** in the worker's handoff
+
+Each PID is checked again right before it's signalled, so a reused PID is
+left alone. Set `JARVIS_REAP=0` in `jarvis.conf` to have merge list and not
+stop. `jarvis leftovers <brief> --stop` stops one worker's leftovers by
+hand. It refuses while that worker's terminal is open. Codex and OpenCode
+workers have no such folder, so they stop their own processes by PID, as
+`AGENTS.md` asks.
 
 **Can I use it without Codex?**
 Yes. Everything except media and computer-use tasks runs on Claude. Without

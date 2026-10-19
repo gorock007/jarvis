@@ -21,10 +21,10 @@ file:
 - `handoffs/OPEN.md` (Jarvis's pending list), `briefs/`, `merged/`, and the
   brief and handoff templates.
 - `handoffs/jarvis.conf`: the Claude cap, the band thresholds, the idle
-  limit.
-- `handoffs/bin/jarvis`: `start`, `status`, `spawn`, `merge`, `watch`,
-  `band`, `usage`, plus the prompt-guard hook and the statusline tap. It
-  needs `jq` and, for `usage`, `python3`.
+  limit, and whether merge stops what a worker left running.
+- `handoffs/bin/jarvis`: `start`, `status`, `spawn`, `merge`, `leftovers`,
+  `watch`, `band`, `usage`, plus the prompt-guard hook and the statusline
+  tap. It needs `jq` and, for `usage`, `python3`.
 - `handoffs/bin/cc_usage_audit.py`: the transcript analyser behind
   `jarvis usage`.
 - `handoffs/bin/jev.sh`: optional brief lint and terminal triage. It does
@@ -33,8 +33,8 @@ file:
   - puts subagents on Sonnet (`CLAUDE_CODE_SUBAGENT_MODEL`)
   - turns off the security-guidance per-stop review, while keeping its
     per-commit review, on Sonnet
-  - installs the idle-reload guard (`UserPromptSubmit`) and the statusline
-    tap
+  - installs the idle-reload guard (`UserPromptSubmit`), which also records
+    which Claude session runs in each terminal, and the statusline tap
   - switches off plugins this repo doesn't use
 - `.claude/agents/scout.md` and `diff-reviewer.md`: read-only subagents
   pinned to Sonnet.

@@ -169,6 +169,11 @@ when a worker needs you. Then act on what it shows:
 - **Band tightened to amber while `fable` workers are running**: switch them
   as `references/model-routing.md` describes. Let a worker that's nearly done
   finish instead.
+- **"left running by closed workers"**: processes a finished worker started
+  are still going. Stop them with `handoffs/bin/jarvis leftovers <brief>
+  --stop`, unless the worker's handoff explains why one must stay up; ask the
+  user about those. Never stop a process by name or pattern (`pkill chrome`):
+  the command touches only what that worker started, and nothing else.
 - **Worker asked the user directly in its terminal**: answer it yourself if
   it's a ruling you can make, otherwise batch it. Either way, remind it with
   `terminals send` that questions go in the handoff.
@@ -193,8 +198,11 @@ list is the contract.
    listed files, the handoff moved into `handoffs/merged/`, the brief and
    `OPEN.md` in one commit, with a `Co-Authored-By` trailer for the worker.
    Then it pushes, closes the worker's terminal and drops its `OPEN.md`
-   lines. The security-guidance plugin reviews that commit once, in the
-   background.
+   lines. It also stops what the worker left running: browsers, servers and
+   jobs whose command line names that worker's scratch folder. Anything the
+   handoff lists under **Processes left running** is kept. Tell the user
+   when it stopped something. The security-guidance plugin reviews that
+   commit once, in the background.
 5. If the job has another phase, spawn its brief with `--after` the handoff
    you just merged. Add any other follow-up to **To-do**.
 6. End the batch with the verification list from `JARVIS.md`: what the user

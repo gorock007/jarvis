@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Offline self-test of jev.sh (fail-open paths, request shape, secret masking)
 # and of bin/jarvis (spawn cap and band, merge, the idle guard, the watcher,
-# the statusline tap), against a throwaway repo and a fake `superset`.
+# the statusline tap, leftover processes), against a throwaway repo, a fake
+# `superset` and real processes of its own, all stopped before it exits.
 # No API key, no network, no cost — run it after any change to either script.
 #
 #   eval/selftest.sh
@@ -82,7 +83,7 @@ echo "superset $*" >> "$FAKE_LOG"
 case "$1 $2" in
   "agents create") n=$(grep -c 'agents create' "$FAKE_LOG"); printf '{"kind":"terminal","sessionId":"term-%s"}\n' "$n" ;;
   "terminals read") printf '{"text":"%s"}\n' "${FAKE_SCREEN:-Working… esc to interrupt}" ;;
-  "terminals list") echo '[]' ;;
+  "terminals list") echo "${FAKE_OPEN:-[]}" ;;
 esac
 EOT
   chmod +x "$tmp/fake/superset"
@@ -165,6 +166,81 @@ EOT
     printf '# Self-listing\nstatus: done\nagent: codex gpt-5.6-sol\n## Files\n- self.txt — created\n- handoffs/h7.md — this handoff\n' > handoffs/h7.md
     $J merge handoffs/h7.md --no-push >/dev/null 2>&1; check "merge takes a handoff that lists itself" $?
     git show --name-only --format= HEAD | grep -qx 'handoffs/merged/h7.md' && [ ! -e handoffs/h7.md ]; check "…and commits it at its merged path only" $?
+
+    echo "bin/jarvis leftovers (real processes, fake Claude config)"
+    uid=$(id -u); proj=$(git rev-parse --show-toplevel | sed 's#[^A-Za-z0-9]#-#g')
+    export CLAUDE_CONFIG_DIR="$tmp/cc"; mkdir -p "$CLAUDE_CONFIG_DIR/projects/$proj"
+    scr="$tmp/claude-$uid/$proj"; groups="$tmp/fixture-groups"
+    trap 'for g in $(cat "$groups" 2>/dev/null); do kill -9 -- "-$g" "$g" 2>/dev/null; done' EXIT
+    uuid() { python3 -c 'import uuid; print(uuid.uuid4())'; }
+    alive() { kill -0 "$1" 2>/dev/null && [ "$(ps -o stat= -p "$1" | cut -c1)" != Z ]; }
+    # like a Bash-tool command: a process group with no terminal, a parent naming
+    # the session's scratch folder and a child that doesn't
+    fixture() { # $1 = session id → prints the parent's pid (= its process group)
+      mkdir -p "$scr/$1/scratchpad"
+      python3 -c 'import os, subprocess, time; os.setsid(); subprocess.Popen(["sleep", "300"]); time.sleep(300)' \
+        "$scr/$1/scratchpad/lab" >/dev/null 2>&1 &
+      echo $! | tee -a "$groups"
+    }
+    worker() { # $1 = brief name, $2 = session id, $3 = terminal: a brief and the worker's transcript
+      printf '# %s\nworker: claude\nmodel: claude-opus-5-5\neffort: high\nstarted: 2026-10-19 10:00 · terminal: %s\n\n## Goal\nx\n' "$1" "$3" > "handoffs/briefs/$1.md"
+      { for i in 1 2 3 4 5; do echo '{"type":"system"}'; done
+        printf '{"type":"user","message":{"role":"user","content":"You are a Jarvis worker. Read AGENTS.md, then do the task in handoffs/briefs/%s.md. Put every question in one first handoff."}}\n' "$1"
+      } > "$CLAUDE_CONFIG_DIR/projects/$proj/$2.jsonl"
+    }
+    wa=$(uuid); wb=$(uuid); wc=$(uuid); wj=$(uuid)
+    worker la "$wa" term-a; worker lb "$wb" term-b
+    printf '# lc\nworker: claude\nmodel: sonnet\neffort: medium\nstarted: 2026-10-19 10:00 · terminal: term-c\n\n## Goal\nx\n' > handoffs/briefs/lc.md
+    pa=$(fixture "$wa"); pb=$(fixture "$wb"); pc=$(fixture "$wc"); pj=$(fixture "$wj")
+    # a browser whose script died: the launcher exits, its child carries on under PID 1
+    python3 -c 'import os, subprocess, sys; os.setsid(); subprocess.Popen(["python3", "-c", "import time; time.sleep(300)", sys.argv[1]])' \
+      "$scr/$wa/scratchpad/lab/tmp1/p" >/dev/null 2>&1 & po=$!; echo "$po" >> "$groups"
+    # one in this shell's own process group, as the caller's own Bash command would be
+    python3 -c 'import time; time.sleep(300)' "$scr/$wj/scratchpad/self" >/dev/null 2>&1 & ps_self=$!; echo "$ps_self" >> "$groups"
+    sleep 1
+    orphan=$(ps -axo pid=,pgid=,command= | awk -v g="$po" '$2 == g && /tmp1\/p/ {print $1}')
+    # a worker that ran /clear: a transcript with no spawn prompt, seen only by the prompt hook
+    printf '{"session_id":"%s","transcript_path":"/nonexistent","prompt":"hi"}' "$wc" | SUPERSET_TERMINAL_ID=term-c $J hook prompt
+    grep -qx "$wc" handoffs/.jarvis/sessions/term-c; check "the prompt hook records each terminal's session" $?
+
+    out=$($J leftovers)
+    printf '%s' "$out" | grep -q 'briefs/la.md (worker terminal closed)' && printf '%s' "$out" | grep -q 'briefs/lb.md' \
+      && printf '%s' "$out" | grep -q 'briefs/lc.md'; check "leftovers finds each worker's processes, /clear'd one included" $?
+    printf '%s' "$out" | grep -q "pid $orphan .*orphaned"; check "…marks the one adopted by PID 1 as orphaned" $?
+    printf '%s' "$out" | grep -q "pid $pa .*+1 child"; check "…counts a parent's child processes with it" $?
+    printf '%s' "$out" | grep -q '<scratch>/scratchpad/lab'; check "…and shortens the scratch path" $?
+    ! printf '%s' "$out" | grep -q "pid $pj "; check "a session that isn't a worker's is never listed" $?
+    $J status | grep -q 'left running by closed workers'; check "status reports closed workers' leftovers" $?
+    ! FAKE_OPEN='["term-a","term-b","term-c"]' $J status | grep -q 'left running'; check "…but not open workers'" $?
+
+    FAKE_OPEN='["term-a"]' $J leftovers handoffs/briefs/la.md --stop | grep -q 'not stopped'; check "--stop refuses while the worker's terminal is open" $?
+    alive "$pa" && alive "$orphan"; check "…and leaves its processes running" $?
+
+    echo la > la.txt
+    printf '# la\nstatus: done\nagent: claude claude-opus-5-5\nbrief: handoffs/briefs/la.md\n## Files\n- la.txt — created\n## Processes left running\nnone\n' > handoffs/hla.md
+    out=$($J merge handoffs/hla.md --no-push); printf '%s' "$out" | grep -q 'closed term-a'; check "merge closes the worker" $?
+    printf '%s' "$out" | grep -q 'stopped 3 process(es)'; check "…then stops what it left: the parent, its child and the orphan" $?
+    sleep 1; ! alive "$pa" && ! alive "$orphan" && [ -z "$(ps -axo pgid= | awk -v g="$pa" '$1 == g')" ]; check "…all of them gone" $?
+    alive "$pb" && alive "$pc" && alive "$pj"; check "another worker's processes, and a non-worker session's, are untouched" $?
+
+    echo lb > lb.txt
+    printf '# lb\nstatus: done\nagent: claude claude-opus-5-5\nbrief: handoffs/briefs/lb.md\n## Files\n- lb.txt — created\n## Processes left running\n- %s — dev server the user is clicking through\n' "$pb" > handoffs/hlb.md
+    out=$($J merge handoffs/hlb.md --no-push); printf '%s' "$out" | grep -q "kept $pb"; check "merge keeps what the handoff declares under Processes left running" $?
+    alive "$pb"; check "…and it keeps running" $?
+    ! $J status | grep -q 'briefs/lb.md'; check "status doesn't nag about a declared process" $?
+    $J leftovers handoffs/briefs/lb.md --stop >/dev/null; alive "$pb"; check "--stop honours the declaration too" $?
+    $J leftovers handoffs/briefs/lb.md --stop --force | grep -q 'stopped 2'; check "--stop --force ends it" $?
+    sleep 1; ! alive "$pb"; check "…and it's gone" $?
+
+    $J leftovers handoffs/briefs/lc.md --stop | grep -q 'stopped 2'; check "a /clear'd worker's leftovers stop by the hook's record" $?
+    $J leftovers --force >/dev/null 2>&1; [ $? = 1 ]; check "--force needs a brief" $?
+
+    out=$(CLAUDE_CODE_SESSION_ID=$wj $J leftovers --mine)
+    printf '%s' "$out" | grep -q "pid $pj "; check "--mine lists this session's processes" $?
+    ! printf '%s' "$out" | grep -q "pid $ps_self "; check "…but never the caller's own process group" $?
+    CLAUDE_CODE_SESSION_ID=$wj $J leftovers --mine --stop >/dev/null; sleep 1; ! alive "$pj" && alive "$ps_self"; check "--mine --stop stops them, not the caller" $?
+    env -u CLAUDE_CODE_SESSION_ID $J leftovers --mine >/dev/null 2>&1; [ $? = 1 ]; check "--mine without a Claude session refuses" $?
+    [ "$($J leftovers)" = "nothing left running by any worker" ]; check "nothing left afterwards" $?
   ) | tee "$tmp/jarvis.out"
   n=$(grep -c '^  FAIL' "$tmp/jarvis.out"); fails=$((fails + n))
 else
