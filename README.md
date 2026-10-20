@@ -654,7 +654,7 @@ Run `eval/selftest.sh` first. It's offline and free, and it covers
 a second commit:
 
 ```bash
-v=0.3.3   # the new version
+v=0.4.0   # the new version
 sed -i '' -E "s/\"version\": \"[0-9.]+\"/\"version\": \"$v\"/" \
   .agent-marketplace.json plugins/jarvis/plugin.json plugins/jarvis/.claude-plugin/plugin.json
 git commit -am "publish jarvis@$v"
