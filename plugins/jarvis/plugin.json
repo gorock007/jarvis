@@ -2,7 +2,7 @@
 	"$schema": "https://superset.sh/schemas/plugin/1.0.0.json",
 	"name": "jarvis",
 	"version": "0.3.4",
-	"description": "One main agent you talk to; workers on separate Superset terminals do the building. Model routing across Claude Code and Codex, a shared-checkout worker contract, and a handoff/OPEN.md system.",
+	"description": "One main agent you talk to; workers on separate terminals (Superset or tmux) do the building, in Claude Code, Codex, OpenCode or any agent CLI. Usage-aware model routing, a shared-checkout worker contract, and a handoff/OPEN.md system.",
 	"author": {
 		"name": "Gorock",
 		"url": "https://github.com/gorock007"
@@ -12,6 +12,7 @@
 	"license": "MIT",
 	"keywords": [
 		"superset",
+		"tmux",
 		"orchestration",
 		"multi-agent",
 		"claude-code",

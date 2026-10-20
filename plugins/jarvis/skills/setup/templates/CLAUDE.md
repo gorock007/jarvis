@@ -1,8 +1,8 @@
 # Working in {{PROJECT_NAME}}
 
-{{APP_DIR_NOTE}} This repo runs the **Jarvis workflow** on Superset: one main
-agent (Jarvis) the user talks to, and workers on separate Superset terminals
-that do the building, all in one shared checkout.
+{{APP_DIR_NOTE}} This repo runs the **Jarvis workflow**: one main agent (Jarvis)
+the user talks to, and workers on separate terminals (Superset or tmux) that
+do the building, all in one shared checkout.
 
 - **Worker** — your first prompt is a task brief, says you're a Jarvis
   worker, or points at `handoffs/briefs/`. Follow `AGENTS.md`; nothing else

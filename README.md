@@ -3,10 +3,12 @@
 **You talk to one agent. A team of agents does the building.**
 
 Jarvis is an open-source workflow for running one coordinating agent plus a
-fleet of workers inside [Superset](https://superset.sh). It ships as a Claude
+fleet of workers, in [Superset](https://superset.sh) or in plain
+[tmux](https://github.com/tmux/tmux) anywhere else. It ships as a Claude
 Code plugin. The coordinating agent, called Jarvis, plans the work and writes
-a short brief for each task. It starts worker agents in separate Superset
-terminals, reviews what they hand back, and commits it. You never manage the
+a short brief for each task. It starts worker agents (Claude Code, Codex,
+OpenCode, or any other agent CLI) in separate terminals, reviews what they
+hand back, and commits it. You never manage the
 workers. You talk to Jarvis, and Jarvis manages them.
 
 ```
@@ -29,6 +31,7 @@ you ──▶ Jarvis (Claude Code · opus 5.5 · high)
 - [Talking to Jarvis](#talking-to-jarvis)
 - [How it works](#how-it-works)
 - [What gets added to your repo](#what-gets-added-to-your-repo)
+- [Hosts and agents](#hosts-and-agents)
 - [Model routing](#model-routing)
 - [Usage-aware spending](#usage-aware-spending)
 - [Token efficiency](#token-efficiency)
@@ -46,7 +49,8 @@ you ──▶ Jarvis (Claude Code · opus 5.5 · high)
 
 Jarvis is a good fit if you:
 
-- **Already use Superset** with Claude Code, and maybe Codex or OpenCode too.
+- **Use Claude Code**, and maybe Codex or OpenCode too, in Superset or in a
+  terminal with tmux (locally, over SSH, or on a server).
 - **Build a product day to day** and want several agents working in parallel
   without keeping track of each terminal yourself.
 - **Keep running out of usage**, and want the expensive models saved for hard
@@ -58,9 +62,9 @@ Jarvis is a good fit if you:
 
 It's probably not for you if:
 
-- **You don't use Superset.** Jarvis runs on `superset agents create` and
-  `superset terminals read|send`. It won't work in a plain terminal or
-  another IDE.
+- **You can use neither Superset nor tmux.** Workers need terminals Jarvis
+  can start, read and type into. A host of your own is seven shell
+  functions (see [Hosts and agents](#hosts-and-agents)).
 - **You only need one large parallel job**, like splitting a migration into
   ten slices, each on its own branch. Superset's built-in
   `superset:orchestrate` skill is made for that. See the
@@ -73,7 +77,7 @@ It's probably not for you if:
 | | |
 | --- | --- |
 | 🧠 **One lead agent** | You talk only to Jarvis. It plans, decides, and briefs, and it does no editing in its own terminal. |
-| 🛠️ **Parallel workers** | Each task runs in its own Superset terminal in the same workspace. Jarvis starts independent tasks at the same time. |
+| 🛠️ **Parallel workers** | Each task runs in its own terminal (a Superset terminal or a tmux window) on the same checkout. Jarvis starts independent tasks at the same time. |
 | 🎯 **Model routing** | Each task goes to the cheapest agent and model that can do it well: Claude Code (`fable` / `claude-opus-5-5` / `sonnet` / `haiku`), Codex, or OpenCode's free models. |
 | 📉 **Usage bands** | Jarvis reads Claude Code's own 5-hour usage numbers and the burn rate. Past 50%, or on pace to run out before the window resets, workers stop getting `fable`. Past 75%, new heavy work goes to Codex. `jarvis spawn` enforces both. |
 | 🚦 **A cap on Claude sessions** | At most 3 Claude sessions run at once by default, Jarvis included. Codex and OpenCode don't count. Extra briefs wait in a queue or go to the free tier, so parallel work doesn't use up your 5-hour window in two hours. |
@@ -93,12 +97,12 @@ The plugin has two skills:
 
 | Requirement | Why |
 | --- | --- |
-| [Superset](https://docs.superset.sh/install) desktop app and CLI (built against CLI v1.28) | Jarvis starts and talks to workers through `superset agents` and `superset terminals` |
-| [Claude Code](https://claude.com/claude-code) configured as a Superset agent | Jarvis itself and most workers run on it |
+| A host for the workers: the [Superset](https://docs.superset.sh/install) desktop app and CLI (built against CLI v1.28), **or** [tmux](https://github.com/tmux/tmux/wiki/Installing) 3.0+ | Jarvis starts, reads and types into worker terminals through it. See [Hosts and agents](#hosts-and-agents). |
+| [Claude Code](https://claude.com/claude-code) (on Superset, configured as an agent) | Jarvis itself and most workers run on it |
 | A git repository | Jarvis commits each handoff |
-| *Optional:* Codex agent in Superset | Images and other media, computer-use testing, and extra work when your Claude usage is high |
-| *Optional:* OpenCode agent in Superset | Free models for small, tightly scoped tasks |
-| `jq` (and `python3` for `jarvis usage`) | `handoffs/bin/jarvis` reads JSON from Superset and Claude Code. Without `jq` the cap, band and idle guard fail open. |
+| *Optional:* Codex | Images and other media, computer-use testing, and extra work when your Claude usage is high |
+| *Optional:* OpenCode | Free models for small, tightly scoped tasks |
+| `jq` (and `python3` for `jarvis usage`) | `handoffs/bin/jarvis` reads JSON from the host and Claude Code. Without `jq` the cap, band and idle guard fail open. |
 | *Optional:* a [TypeSafe](https://docs.typesafe.ai) API key in `TYPESAFE_API_KEY` | Brief lint and one-line worker polling through Jev. See [Optional: Jev](#optional-jev). |
 
 Without Codex or OpenCode, Jarvis still works. Those tasks go to Claude
@@ -148,12 +152,13 @@ see `setup` and `run` from the `jarvis` plugin.
 
 ### 1. Set up Jarvis in your repo (once)
 
-Open your project's workspace in Superset. In any Claude Code session, say:
+Open your project in Superset, or in a terminal inside tmux. In any Claude
+Code session, say:
 
 > **set up Jarvis in this repo**
 
-`jarvis:setup` checks that the `superset` CLI works and which agents you have
-configured. Then it asks all its questions in one message, with answers
+`jarvis:setup` checks the host (Superset or tmux) and which agents you have
+installed. Then it asks all its questions in one message, with answers
 already guessed from your repo, so you can often just say "yes":
 
 1. Project name
@@ -172,24 +177,19 @@ already guessed from your repo, so you can often just say "yes":
 It then writes `CLAUDE.md`, `AGENTS.md`, `handoffs/` and `.claude/`. If any
 of them already exist, it **merges** the new sections into them and shows
 you the diff first. Running it again in a repo set up with an older version
-upgrades that repo. It also checks which model IDs your
-Superset host accepts and replaces any it doesn't recognize.
+upgrades that repo. On Superset it also checks which model
+IDs the host accepts and replaces any it doesn't recognize.
 
 ### 2. Start Jarvis
 
-From a Superset terminal (find your project ID with `superset projects list`):
+**On Superset**, from a Superset terminal (find your project ID with
+`superset projects list`):
 
 ```bash
 superset ws create --project <projectId> --name main --checkout local --local \
   --agent claude --model claude-opus-5-5 --effort high \
   --prompt "You are Jarvis. Use the jarvis:run skill: read handoffs/JARVIS.md and handoffs/OPEN.md, run handoffs/bin/jarvis start, then tell me what's open."
-superset terminals create --workspace <workspaceId> --command "handoffs/bin/jarvis watch"
 ```
-
-The second command starts the watcher. It's a plain loop with no model, so
-it costs no tokens. It wakes Jarvis when a handoff lands, or when a worker
-hits a usage limit, sits at a prompt, or freezes. Jarvis starts it itself if
-it isn't running.
 
 Or, in the Superset desktop app, open the project's shared-checkout
 workspace, launch Claude Code with model **claude-opus-5-5** and effort **high**, and
@@ -197,6 +197,21 @@ send the same first message.
 
 > `--checkout local` matters. Jarvis and its workers share one working copy,
 > and only Jarvis uses git.
+
+**Anywhere else, with tmux**, from the repo root:
+
+```bash
+tmux new-session -s jarvis \
+  "claude --model claude-opus-5-5 --effort high 'You are Jarvis. Use the jarvis:run skill: read handoffs/JARVIS.md and handoffs/OPEN.md, run handoffs/bin/jarvis start, then tell me what is open.'"
+```
+
+Workers open as windows in that session. `prefix + w` lists them, and
+`tmux attach -t jarvis` gets you back in after you detach or log out.
+
+On either host Jarvis then starts the watcher (`handoffs/bin/jarvis watch
+--start`). It's a plain loop with no model, so it costs no tokens. It wakes
+Jarvis when a handoff lands, or when a worker hits a usage limit, sits at a
+prompt, or freezes.
 
 ### 3. Talk to it
 
@@ -249,14 +264,14 @@ command that proves it, and which files the worker may and may not touch.
 **The more precise the brief, the smaller the model it needs.**
 
 **2. Start.** `handoffs/bin/jarvis spawn <brief>` lints the brief and
-checks the usage band and the Claude cap. Then it runs `superset agents
-create` with the agent, model, and effort from the brief header, and records
-the terminal ID in the brief and in `OPEN.md`.
+checks the usage band and the Claude cap. Then it starts the worker in a
+new terminal on the host, with the agent, model, and effort from the brief
+header, and records the terminal ID in the brief and in `OPEN.md`.
 
 **3. Ask once.** If a worker has questions, it writes them all into its first
 handoff with `status: blocked`. Jarvis collects questions from every blocked
 worker into one message for you, then sends each worker its answers with
-`superset terminals send`.
+`jarvis send`.
 
 **4. Build.** The worker does the one phase its brief describes, runs the
 checks, and writes a handoff listing the files it changed. A job with
@@ -305,6 +320,31 @@ Two rules keep the shared checkout safe:
 
 `handoffs/` is **tracked in git on purpose**. It's your project's record of
 what was decided and why.
+
+## Hosts and agents
+
+Jarvis keeps two things apart: the **host**, which runs worker terminals,
+and the **agent**, which is the CLI inside each one.
+
+| Host | Picked when | Workers run as |
+| --- | --- | --- |
+| Superset | `$SUPERSET_WORKSPACE_ID` is set (a Superset terminal) | Superset terminals, via `superset agents create` |
+| tmux | `$TMUX` is set (inside tmux) | windows in Jarvis's tmux session, tagged so Jarvis only closes its own |
+| your own | `JARVIS_HOST=<name>` in `handoffs/jarvis.conf` | whatever `handoffs/bin/hosts/<name>.sh` does: seven functions (`self`, `spawn`, `run`, `list`, `read`, `send`, `close`) |
+
+Every command works the same on each host: `jarvis spawn | read | send |
+close | watch --start`. The skills only use those, never a host's own CLI.
+
+Agents: Superset launches its own presets, so any of them works as
+`worker:` in a brief. On tmux, `handoffs/jarvis.conf` holds one launch line
+per agent. `claude`, `codex` and `opencode` are built in with the same flags
+Superset uses. Another agent is one more line:
+
+```sh
+JARVIS_AGENT_gemini='gemini --approval-mode=auto_edit ${JARVIS_MODEL:+-m "$JARVIS_MODEL"} "$JARVIS_PROMPT"'
+```
+
+Details: [`hosts.md`](plugins/jarvis/skills/run/references/hosts.md).
 
 ## Model routing
 
@@ -433,7 +473,7 @@ first, but masking can miss things. If terminal contents must not leave your
 machine, don't set `TYPESAFE_API_KEY` in that repo. Run any command with
 `--dry-run` to see exactly what would be sent.
 
-To turn it on, set `TYPESAFE_API_KEY` in the shell profile your Superset
+To turn it on, set `TYPESAFE_API_KEY` in the shell profile your worker
 terminals load. Details are in
 [`jev.md`](plugins/jarvis/skills/run/references/jev.md). The labelled fixtures
 and the pass/fail gates used to test the questions are in [`eval/`](eval/).
@@ -466,11 +506,10 @@ They work well together. Use Jarvis for daily work, and have it use
 
 ## FAQ and troubleshooting
 
-**`superset: command not found`**
-Jarvis only works inside Superset. Install it from
-[docs.superset.sh/install](https://docs.superset.sh/install) and run Jarvis
-from a Superset terminal, where `superset` and `$SUPERSET_WORKSPACE_ID` are
-available.
+**`jarvis: no host`**
+Jarvis isn't running in a Superset terminal or inside tmux. Start it in one
+of them (see [Start Jarvis](#2-start-jarvis)), or set `JARVIS_HOST` in
+`handoffs/jarvis.conf`.
 
 **A worker won't start: "unknown model"**
 Your host doesn't accept that model ID. The error lists the IDs it does
@@ -478,8 +517,9 @@ accept. Update the table in your `CLAUDE.md`, or run `jarvis:setup` again to
 check the IDs.
 
 **Codex or OpenCode rows don't work**
-Check `superset agents list --local`. If an agent isn't configured there,
-Jarvis sends those tasks to Claude models until you add it.
+On Superset, check `superset agents list --local`. On tmux, check that
+`codex` / `opencode` are on your PATH. Until an agent is available, Jarvis
+sends those tasks to Claude models.
 
 **Two Jarvis sessions are running**
 `jarvis start` writes the session's terminal ID to `OPEN.md`. If the recorded
@@ -508,11 +548,11 @@ reading, Jarvis asks you for your `/usage` numbers.
 when a worker sits at a trust or approval prompt, or when the screen hasn't
 changed for `JARVIS_STALL_MIN` minutes and the worker has no handoff. Jarvis
 reads the terminal and answers the prompt or sends a nudge with
-`superset terminals send`. It treats a prompt for something outside the
+`jarvis send`. It treats a prompt for something outside the
 brief as a question for you. You can also say "check on the workers".
 
 **A Codex worker sat at "Trust this folder?"**
-Codex asks once for each folder path, and every Superset project has its own
+Codex asks once for each folder path, and every checkout has its own
 path. Since 0.3.2, `jarvis spawn` records the checkout as trusted in
 `~/.codex/config.toml` (or `$CODEX_HOME`) before a Codex worker starts, as
 answering "Yes" would. An existing entry for that path, trusted or not, is
@@ -555,8 +595,11 @@ Codex, the red band can't move heavy work anywhere, so you'll need to manage
 usage more carefully.
 
 **Does it work with other agents?**
-Workers can be any Superset agent that reads `AGENTS.md`, such as Claude Code,
-Codex, or OpenCode. Jarvis itself is written for Claude Code.
+Yes. Workers can be any agent CLI that reads `AGENTS.md`: Claude Code, Codex
+and OpenCode are built in, and on Superset every agent preset works. On tmux,
+add one line to `handoffs/jarvis.conf` for another agent (see
+[Hosts and agents](#hosts-and-agents)). Jarvis itself is written for Claude
+Code.
 
 **Should `handoffs/` be in `.gitignore`?**
 No. It's tracked on purpose as the project's memory. The one exception is
@@ -564,7 +607,7 @@ No. It's tracked on purpose as the project's memory. The one exception is
 
 **`jev.sh` always says `skipped`**
 The reason is in the brackets: `TYPESAFE_API_KEY not set` (export it in the
-profile your Superset terminals load), `jq not installed`, or
+profile your worker terminals load), `jq not installed`, or
 `TypeSafe API unavailable` (a bad key, a network problem, or a reply slower
 than 8 seconds). None of these stop Jarvis from working.
 
@@ -583,7 +626,7 @@ plugins/jarvis/
     run/
       SKILL.md                       jarvis:run: the operating playbook
       references/
-        superset-cli.md              exact commands, flags, JSON shapes
+        hosts.md                     Superset and tmux hosts, agent launch lines, adding either
         model-routing.md             routing table and reasoning
         handoffs.md                  brief and handoff formats, review steps
         efficiency.md                where tokens go and how to spend fewer

@@ -19,7 +19,7 @@ said before Jev existed.
 | --- | --- | --- |
 | `jev.sh brief <brief.md>` | after the header is filled in, before spawning | The missing ones of the five brief elements (exact files · pattern to copy · done + proving command · may/must-not fence · prior handoff). Exit 1 if any of the first four is missing; `prior` is advice only, since a fresh task has nothing to link. |
 | `jev.sh triage <id>...` | inside `jarvis status`, for workers without a handoff yet | One line per worker. The last 15 lines of the screen are added only when the worker isn't plainly `working`, or confidence is under 0.6. |
-| `jev.sh outcome <brief.md> <result>` | `jarvis merge --outcome <result>` records it; call it directly when a brief is abandoned | Records `clean` (merged as handed off), `corrected` (needed a `terminals send` correction), `escalated` (respawned a tier up), or `respawned` (respawned for any other reason). |
+| `jev.sh outcome <brief.md> <result>` | `jarvis merge --outcome <result>` records it; call it directly when a brief is abandoned | Records `clean` (merged as handed off), `corrected` (needed a `jarvis send` correction), `escalated` (respawned a tier up), or `respawned` (respawned for any other reason). |
 | `jev.sh report` | when the user asks, or at 30 outcomes | The summary below. |
 
 `--dry-run` on any of them prints the request instead of sending it.

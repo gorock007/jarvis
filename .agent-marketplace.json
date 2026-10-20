@@ -1,7 +1,7 @@
 {
 	"$schema": "https://superset.sh/schemas/marketplace/1.0.0.json",
 	"name": "superset-jarvis",
-	"description": "The Jarvis workflow for Superset: a main agent that delegates to workers on separate terminals.",
+	"description": "The Jarvis workflow: a main agent that delegates to workers on separate terminals, in Superset or tmux.",
 	"owner": {
 		"name": "Gorock",
 		"url": "https://github.com/gorock007"
@@ -9,7 +9,7 @@
 	"plugins": [
 		{
 			"name": "jarvis",
-			"description": "One main agent you talk to; workers on separate Superset terminals do the building. Model routing across Claude Code and Codex, a shared-checkout worker contract, and a handoff/OPEN.md system.",
+			"description": "One main agent you talk to; workers on separate terminals (Superset or tmux) do the building, in Claude Code, Codex, OpenCode or any agent CLI. Model routing, a shared-checkout worker contract, and a handoff/OPEN.md system.",
 			"author": {
 				"name": "Gorock"
 			},

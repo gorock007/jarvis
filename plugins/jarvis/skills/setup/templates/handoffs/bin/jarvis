@@ -4,8 +4,12 @@
 #
 #   jarvis start                       claim this terminal as Jarvis in OPEN.md, then status
 #   jarvis status                      band, workers, new handoffs, git — one short screen
-#   jarvis spawn <brief.md> [--after <partial-handoff>] [--force]
+#   jarvis spawn <brief.md> [--after <partial-handoff>] [--attach <file>]... [--force]
 #                                      lint, enforce the band and the Claude cap, spawn, record
+#   jarvis read <terminal> [<lines>]   the bottom of a worker's screen
+#   jarvis send <terminal> <text>      type into a worker's terminal and press Enter
+#   jarvis send <terminal> --keys <k,k> press keys: enter, esc, tab, shift+tab, up, 1, y, ctrl+c…
+#   jarvis close <terminal>            close a worker's terminal and drop it from OPEN.md
 #   jarvis merge <handoff.md> --check  file list vs git status, diff stat; changes nothing
 #   jarvis merge <handoff.md> [-m <msg>] [--outcome <o>] [--no-push] [--keep-open] [--force]
 #                                      commit exactly the listed files + the handoff move,
@@ -15,15 +19,19 @@
 #                                      processes workers started that outlived them (their
 #                                      scratch folder on the command line); --stop ends them
 #   jarvis leftovers --mine [--stop]   (a worker) what this session started that's still running
-#   jarvis watch [--once]             run in its own terminal (no model): wakes Jarvis when a
+#   jarvis watch [--once | --start]   run in its own terminal (no model): wakes Jarvis when a
 #                                      handoff lands or a worker is limited, waiting at a prompt
-#                                      or frozen; /clears it first after a long idle
+#                                      or frozen; /clears it first after a long idle. --start
+#                                      opens that terminal, unless a watcher is already running
 #   jarvis band                        the usage band from the latest statusline reading
 #   jarvis usage [--days N | --since DATE]
 #                                      coordinating vs building, from local transcripts
 #   jarvis hook prompt                 UserPromptSubmit guard (from .claude/settings.json)
 #   jarvis statusline                  statusline tap: saves the 5-hour reading, then runs yours
 #
+# Workers run on a host: Superset, tmux, or one added in handoffs/bin/hosts/ (see
+# "hosts" below). The agent in each terminal is any CLI: claude, codex, opencode, or
+# one added as JARVIS_AGENT_<name> in jarvis.conf.
 # Settings live in handoffs/jarvis.conf. Works on the stock macOS bash (3.2).
 # jq is needed for spawn, the hooks and the band; everything fails open without it.
 set -u
@@ -44,6 +52,17 @@ JARVIS_WATCH_SEC=60
 JARVIS_STALL_MIN=15      # a worker screen unchanged this long, with no handoff, wakes Jarvis
 JARVIS_PUSH=1
 JARVIS_REAP=1            # merge stops what the closed worker left running (0 = only list it)
+JARVIS_HOST=""           # superset | tmux | <name> with handoffs/bin/hosts/<name>.sh; empty = detect
+# How a terminal host that isn't an agent launcher itself (tmux) starts each worker:
+# a sh command line reading $JARVIS_MODEL, $JARVIS_EFFORT and $JARVIS_PROMPT from its
+# environment. The flags are the ones Superset's agent presets launch with, so a
+# worker behaves the same on either host. Any other agent CLI is one more line.
+# shellcheck disable=SC2016,SC2034
+JARVIS_AGENT_claude='claude --dangerously-skip-permissions ${JARVIS_MODEL:+--model "$JARVIS_MODEL"} ${JARVIS_EFFORT:+--effort "$JARVIS_EFFORT"} "$JARVIS_PROMPT"'
+# shellcheck disable=SC2016,SC2034
+JARVIS_AGENT_codex='codex --dangerously-bypass-approvals-and-sandbox --dangerously-bypass-hook-trust ${JARVIS_MODEL:+-m "$JARVIS_MODEL"} ${JARVIS_EFFORT:+-c model_reasoning_effort="$JARVIS_EFFORT"} -- "$JARVIS_PROMPT"'
+# shellcheck disable=SC2016,SC2034
+JARVIS_AGENT_opencode='opencode ${JARVIS_MODEL:+-m "$JARVIS_MODEL"} --prompt "$JARVIS_PROMPT"'
 # shellcheck disable=SC1090
 [ -f "$H/jarvis.conf" ] && . "$H/jarvis.conf"
 WS="${SUPERSET_WORKSPACE_ID:-}"
@@ -59,6 +78,158 @@ have() { command -v "$1" >/dev/null 2>&1; }
 now() { date +%s; }
 short() { printf '%s' "$1" | cut -c1-8; }
 mtime() { stat -f %m "$1" 2>/dev/null || stat -c %Y "$1" 2>/dev/null || echo 0; }
+
+# ---------------------------------------------------------------- hosts
+
+# A host runs agents in terminals that Jarvis can read and type into. It is seven
+# functions named <host>_<op>; everything else in this script is the same on any host.
+#   self                                 this terminal's id
+#   spawn <agent> <model> <effort> <prompt> <name> [<attachment>...]
+#                                        start a worker in a new terminal in this checkout,
+#                                        print its terminal id; errors go to stderr
+#   run <name> <command>                 a plain command in a terminal of its own
+#   list                                 the ids of the open terminals, one per line;
+#                                        fails when the host can't be asked (none open is not a failure)
+#   read <id> <lines>                    the bottom of a terminal's screen, as text
+#   send <id> <text>                     type text and press Enter
+#   send <id> --keys <k,k>               press keys, in Superset's names (enter, esc,
+#                                        tab, shift+tab, up, ctrl+c, a single character)
+#   close <id>                           close a terminal
+# Built in: superset and tmux. Another (Ultron, an IDE) defines the same functions in
+# handoffs/bin/hosts/<name>.sh and is picked with JARVIS_HOST=<name> in jarvis.conf.
+
+superset_self() { printf '%s' "${SUPERSET_TERMINAL_ID:-}"; }
+
+superset_spawn() {
+  local agent=$1 model=$2 effort=$3 prompt=$4 a out
+  shift 5
+  # each attachment becomes "--attachment <path>" at the end of the list, the original dropped
+  for a in "$@"; do set -- "$@" --attachment "$a"; shift; done
+  set -- "$@" --workspace "$WS" --agent "$agent" --prompt "$prompt" --json
+  case "$model" in ""|\<*) ;; *) set -- "$@" --model "$model" ;; esac
+  [ -n "$effort" ] && set -- "$@" --effort "$effort"
+  out=$(superset agents create "$@" 2>&1) || { echo "$out" >&2; return 1; }
+  printf '%s' "$out" | jq -r '.sessionId // empty' 2>/dev/null | grep . || { echo "no sessionId in: $out" >&2; return 1; }
+}
+
+superset_run() { superset terminals create --workspace "$WS" --command "$2" --json >/dev/null; }
+
+superset_list() {
+  local out
+  out=$(superset terminals list --workspace "$WS" --json 2>/dev/null) || return 1
+  printf '%s' "$out" | jq -r '.sessions[]? | select(.exited | not) | .terminalId'
+}
+
+superset_read() {
+  superset terminals read --workspace "$WS" --terminal "$1" --max-lines "$2" --json 2>/dev/null \
+    | { have jq && jq -r '.text // empty' || cat; }
+}
+
+superset_send() {
+  if [ "${2:-}" = --keys ]; then
+    superset terminals send --workspace "$WS" --terminal "$1" --keys "${3:-}" >/dev/null
+  else
+    superset terminals send --workspace "$WS" --terminal "$1" --text "$2" >/dev/null
+  fi
+}
+
+superset_close() { superset terminals close --workspace "$WS" --terminal "$1" >/dev/null 2>&1; }
+
+# tmux: each worker gets a window in Jarvis's tmux session, named after its brief and
+# tagged @jarvis, so close never touches a pane Jarvis didn't open. When the agent
+# exits, the window stays up with its last screen until merge closes it.
+tmux_self() { printf '%s' "${TMUX_PANE:-}"; }
+
+tmux_session() { # the session Jarvis runs in, where workers go
+  tmux display-message -p -t "${TMUX_PANE:-$(jarvis_terminal)}" '#{session_id}' 2>/dev/null
+}
+
+tmux_spawn() {
+  local agent=$1 model=$2 effort=$3 prompt=$4 name=$5 cmd a sess launch id
+  shift 5
+  cmd=$(agent_cmd "$agent") || { echo "no launch command for agent '$agent': add JARVIS_AGENT_$agent to $H/jarvis.conf" >&2; return 1; }
+  sess=$(tmux_session) || { echo "can't find Jarvis's tmux session" >&2; return 1; }
+  for a in "$@"; do prompt="$prompt Read this attached file first: $a"; done
+  # a script file, not a tmux command string: tmux runs those in the user's shell, and
+  # the launch line is written for sh
+  mkdir -p "$STATE/launch"
+  launch="$STATE/launch/$name.sh"
+  {
+    echo "# written by jarvis spawn; tmux runs it in the worker's window"
+    echo "unset CLAUDECODE CLAUDE_CODE_SESSION_ID CLAUDE_CODE_ENTRYPOINT"
+    echo "$cmd"
+    # shellcheck disable=SC2016
+    echo 's=$?; printf "\n[jarvis] %s exited (%s). Its window stays open until jarvis merge or close.\n" "$JARVIS_AGENT" "$s"'
+    echo "exec tail -f /dev/null"
+  } > "$launch"
+  id=$(tmux new-window -d -P -F '#{pane_id}' -t "$sess:" -n "$name" -c "$ROOT" \
+    -e "JARVIS_AGENT=$agent" -e "JARVIS_MODEL=$model" -e "JARVIS_EFFORT=$effort" -e "JARVIS_PROMPT=$prompt" \
+    "sh $launch") || return 1
+  tmux set-option -p -t "$id" @jarvis "$name" 2>/dev/null
+  echo "$id"
+}
+
+tmux_run() { tmux new-window -d -t "$(tmux_session):" -n "$1" -c "$ROOT" "$2"; }
+
+tmux_list() { tmux list-panes -a -F '#{pane_id}' 2>/dev/null; }
+
+tmux_read() { # the screen plus scrollback, trailing blank lines dropped, then the last $2
+  tmux capture-pane -p -J -t "$1" -S "-$2" 2>/dev/null | sed -e 's/[[:space:]]*$//' \
+    | awk '{l[NR] = $0} NF {last = NR} END {for (i = 1; i <= last; i++) print l[i]}' | tail -n "$2"
+}
+
+tmux_send() {
+  local id=$1 k
+  if [ "${2:-}" = --keys ]; then
+    for k in $(printf '%s' "${3:-}" | tr ',' ' '); do
+      case "$k" in
+        enter) k=Enter ;; esc|escape) k=Escape ;; tab) k=Tab ;; shift+tab) k=BTab ;; space) k=Space ;;
+        up) k=Up ;; down) k=Down ;; left) k=Left ;; right) k=Right ;; backspace) k=BSpace ;;
+        ctrl+?) k="C-${k#ctrl+}" ;; alt+*) k="M-${k#alt+}" ;; f[0-9]|f1[0-2]) k=$(printf '%s' "$k" | tr f F) ;;
+        ?) tmux send-keys -t "$id" -l -- "$k" || return 1; continue ;;
+      esac
+      tmux send-keys -t "$id" "$k" || return 1
+    done
+    return 0
+  fi
+  # one line: a newline would press Enter mid-message. The pause lets a TUI take the
+  # text as typed before Enter arrives.
+  tmux send-keys -t "$id" -l -- "$(printf '%s' "$2" | tr '\n' ' ')" && sleep 0.5 && tmux send-keys -t "$id" Enter
+}
+
+tmux_close() {
+  [ -n "$(tmux display-message -p -t "$1" '#{@jarvis}' 2>/dev/null)" ] || return 1
+  tmux kill-pane -t "$1" 2>/dev/null
+}
+
+agent_cmd() { # $1 = agent: the sh command line a terminal host runs for it
+  local v
+  case "$1" in ""|*[!a-z0-9_]*) return 1 ;; esac
+  eval "v=\${JARVIS_AGENT_$1:-}"
+  [ -n "$v" ] && printf '%s\n' "$v"
+}
+
+host_pick() {
+  if [ -n "$JARVIS_HOST" ]; then echo "$JARVIS_HOST"
+  elif [ -n "${SUPERSET_WORKSPACE_ID:-}" ]; then echo superset
+  elif [ -n "${TMUX:-}" ]; then echo tmux
+  fi
+}
+HOST=$(host_pick)
+# shellcheck disable=SC1090
+[ -n "$HOST" ] && [ -f "$BIN/hosts/$HOST.sh" ] && . "$BIN/hosts/$HOST.sh"
+
+need_host() {
+  [ -n "$HOST" ] || die "no host: run Jarvis in a Superset terminal or inside tmux, or set JARVIS_HOST in $H/jarvis.conf"
+}
+
+host() { # $1 = op, then its arguments
+  local op=$1
+  shift
+  need_host
+  type "${HOST}_$op" >/dev/null 2>&1 || die "host $HOST has no $op: define ${HOST}_$op in $BIN/hosts/$HOST.sh"
+  "${HOST}_$op" "$@"
+}
 
 # ---------------------------------------------------------------- OPEN.md
 
@@ -129,12 +300,12 @@ cmd_band() { band | tr '\t' ' '; }
 
 cmd_start() {
   local me old
-  me="${SUPERSET_TERMINAL_ID:-}"
   [ -f "$OPEN" ] || die "no $OPEN — run jarvis:setup first"
-  [ -n "$me" ] || die "SUPERSET_TERMINAL_ID not set — run Jarvis in a Superset terminal"
+  me=$(host self)
+  [ -n "$me" ] || die "host $HOST gives no id for this terminal — run Jarvis in a Superset terminal or a tmux pane"
   old=$(jarvis_terminal)
-  if [ -n "$old" ] && [ "$old" != "$me" ] && [ "${1:-}" != --force ] && [ -n "$WS" ] \
-     && superset terminals list --workspace "$WS" --json 2>/dev/null | grep -q "$old"; then
+  if [ -n "$old" ] && [ "$old" != "$me" ] && [ "${1:-}" != --force ] \
+     && host list | grep -qxF "$old"; then
     die "another Jarvis ($old) is still open — ask the user, then: jarvis start --force"
   fi
   open_set "Jarvis session" "$me"
@@ -176,8 +347,7 @@ EOF
     else
       for id in $ids; do
         printf '  %s\n' "$(short "$id")"
-        superset terminals read --workspace "$WS" --terminal "$id" --max-lines 40 --json 2>/dev/null \
-          | { have jq && jq -r '.text // empty' || cat; } | sed -e 's/[[:space:]]*$//' | grep -v '^$' | tail -n 4 | sed 's/^/      /'
+        host read "$id" 40 | sed -e 's/[[:space:]]*$//' | grep -v '^$' | tail -n 4 | sed 's/^/      /'
       done
     fi
   fi
@@ -200,6 +370,7 @@ EOF
   n=$(awk '/^## /{on = ($0 ~ /^## To-do/); next} on && /^- /' "$OPEN" | wc -l | tr -d ' ')
   q=$(awk '/^## /{on = ($0 ~ /^## Questions for the user/); next} on && /^- /' "$OPEN" | wc -l | tr -d ' ')
   printf 'OPEN.md: %s question(s) for the user · %s to-do\n' "$q" "$n"
+  watch_running || echo "watcher: not running — start it: handoffs/bin/jarvis watch --start"
   cmd_leftovers --quiet
 }
 
@@ -218,23 +389,30 @@ codex_trust() {
 }
 
 cmd_spawn() {
-  local brief="" after="" force=0 worker model effort tier prompt out id b cap_now
+  local brief="" after="" force=0 atts="" worker model effort tier prompt name id b cap_now ifs
   while [ $# -gt 0 ]; do
     case "$1" in
       --after) after="${2:-}"; shift 2 ;;
+      --attach) [ -f "${2:-}" ] || die "no file to attach: ${2:-}"; atts="$atts${atts:+
+}$2"; shift 2 ;;
       --force) force=1; shift ;;
       *) brief="$1"; shift ;;
     esac
   done
-  [ -f "$brief" ] || die "usage: jarvis spawn <handoffs/briefs/file.md> [--after <partial handoff>] [--force]"
+  [ -f "$brief" ] || die "usage: jarvis spawn <handoffs/briefs/file.md> [--after <partial handoff>] [--attach <file>]... [--force]"
   have jq || die "jq is needed to read the spawn result"
-  [ -n "$WS" ] || die "SUPERSET_WORKSPACE_ID not set"
+  need_host
 
   worker=$(field worker "$brief" | awk '{print $1}')
   model=$(field model "$brief" | awk '{print $1}')
   effort=$(field effort "$brief" | awk '{print $1}')
-  case "$worker" in claude|codex|opencode) ;; *) die "brief header needs worker: claude | codex | opencode" ;; esac
-  case "$model" in \<*|"") [ "$worker" = opencode ] || die "brief header needs a model" ;; esac
+  case "$worker" in
+    ""|\<*|*[!a-z0-9_]*) die "brief header needs worker: claude | codex | opencode | another agent the host knows" ;;
+  esac
+  case "$model" in \<*) model="" ;; esac
+  case "$effort" in \<*) effort="" ;; esac
+  case "$worker" in claude|codex) [ -n "$model" ] || die "brief header needs a model" ;; esac
+  [ "$worker" = opencode ] && effort=""
   case "$model" in fable) tier=top ;; claude-opus-5-5|opus) tier=workhorse ;; *) tier=other ;; esac
 
   if [ -x "$BIN/jev.sh" ]; then
@@ -258,14 +436,20 @@ cmd_spawn() {
   [ "$worker" = opencode ] && prompt="$prompt Touch only the files it lists. Never run git commands that change state."
   prompt="$prompt Put every question in one first handoff (status: blocked); once answered, finish this brief and hand off."
 
-  set -- --workspace "$WS" --agent "$worker" --prompt "$prompt" --json
-  case "$worker" in
-    opencode) [ -n "$model" ] && case "$model" in \<*) ;; *) set -- "$@" --model "$model" ;; esac ;;
-    *) set -- "$@" --model "$model"; [ -n "$effort" ] && set -- "$@" --effort "$effort" ;;
-  esac
-  out=$(superset agents create "$@" 2>&1) || die "spawn failed (a failed Claude spawn means the red band): $out"
-  id=$(printf '%s' "$out" | jq -r '.sessionId // empty' 2>/dev/null)
-  [ -n "$id" ] || die "no sessionId in: $out"
+  # the brief's slug names the terminal: 2026-10-20-1030-fix-login.md → fix-login
+  name=$(basename "$brief" .md | sed -E 's/^[0-9]{4}-[0-9]{2}-[0-9]{2}-[0-9]{4}-//; s/[^A-Za-z0-9._-]/-/g')
+  # attachments as the trailing arguments, one per line of $atts
+  ifs=$IFS
+  IFS='
+'
+  set -f
+  # shellcheck disable=SC2086
+  set -- $atts
+  set +f
+  IFS=$ifs
+  id=$(host spawn "$worker" "$model" "$effort" "$prompt" "$name" "$@") \
+    || die "spawn failed on $HOST (a failed Claude spawn can mean the red band)"
+  [ -n "$id" ] || die "spawn on $HOST returned no terminal id"
 
   sed -i.bak -E "s/^started:.*/started: $(date '+%Y-%m-%d %H:%M') · terminal: $id/" "$brief" && rm -f "$brief.bak"
   open_add_running "- $(date '+%Y-%m-%d %H:%M') · $worker/${model:-default}${effort:+ $effort} · term $id · $brief"
@@ -463,7 +647,7 @@ merge_leftovers() {
 }
 
 cmd_leftovers() {
-  local brief="" stop=0 force=0 mine=0 quiet=0 map b sids procs open="" any=0 state term keep
+  local brief="" stop=0 force=0 mine=0 quiet=0 map b sids procs open="" listed any=0 state term keep
   while [ $# -gt 0 ]; do
     case "$1" in
       --stop) stop=1; shift ;;
@@ -489,15 +673,16 @@ cmd_leftovers() {
   map=$(worker_sessions "$brief")
   [ -n "$map" ] || { [ $quiet = 1 ] || echo "nothing left running by ${brief:-any worker}"; return 0; }
 
-  [ -n "$WS" ] && open=$(superset terminals list --workspace "$WS" --json 2>/dev/null)
+  listed=0
+  [ -n "$HOST" ] && open=$(host list 2>/dev/null) && listed=1
   for b in $(printf '%s\n' "$map" | awk '{print $1}' | sort -u); do
     sids=$(printf '%s\n' "$map" | awk -v b="$b" '$1 == b {print $2}')
     # shellcheck disable=SC2086
     procs=$(owned_procs $sids)
     [ -n "$procs" ] || continue
     term=$(brief_terminal "$b")
-    if [ -z "$open" ]; then state=unknown
-    elif [ -n "$term" ] && printf '%s' "$open" | grep -qF "$term"; then state=open
+    if [ $listed = 0 ]; then state=unknown
+    elif [ -n "$term" ] && printf '%s\n' "$open" | grep -qxF "$term"; then state=open
     else state=closed; fi
     [ $quiet = 1 ] && [ "$state" != closed ] && continue
     # status leaves out what the worker declared it left running on purpose
@@ -605,8 +790,8 @@ cmd_merge() {
     if git push -q 2>/dev/null; then line="$line · pushed"; else line="$line · push FAILED (run git push)"; fi
   fi
   closed=0
-  if [ $keep = 0 ] && [ -n "$term" ] && [ -n "$WS" ]; then
-    superset terminals close --workspace "$WS" --terminal "$term" >/dev/null 2>&1 && line="$line · closed $(short "$term")" && closed=1
+  if [ $keep = 0 ] && [ -n "$term" ] && [ -n "$HOST" ]; then
+    host close "$term" && line="$line · closed $(short "$term")" && closed=1
   fi
   if [ -n "$outcome" ] && [ -x "$BIN/jev.sh" ] && [ -n "$brief" ]; then
     "$BIN/jev.sh" outcome "$brief" "$outcome" >/dev/null 2>&1
@@ -614,6 +799,25 @@ cmd_merge() {
   echo "$line · OPEN.md updated in the same commit"
   [ -n "$brief" ] && [ -f "$brief" ] && merge_leftovers "$brief" "$dest" "$closed"
   return 0
+}
+
+# ---------------------------------------------------------------- read / send / close
+
+cmd_read() {
+  [ -n "${1:-}" ] || die "usage: jarvis read <terminal> [<lines>]"
+  host read "$1" "${2:-80}"
+}
+
+cmd_send() {
+  [ $# -ge 2 ] || die "usage: jarvis send <terminal> <text> | jarvis send <terminal> --keys <k,k>"
+  if [ "$2" = --keys ]; then host send "$1" --keys "${3:-}"; else host send "$1" "$2"; fi
+}
+
+cmd_close() { # a worker given up on; a merged one is closed by merge
+  [ -n "${1:-}" ] || die "usage: jarvis close <terminal>"
+  host close "$1" || die "couldn't close $1 on $HOST"
+  open_drop "term $1 "
+  echo "closed $(short "$1") and dropped it from Running workers"
 }
 
 # ---------------------------------------------------------------- watch
@@ -627,7 +831,13 @@ jarvis_idle_min() { # minutes since the Jarvis transcript last changed; empty if
 }
 
 send_jarvis() { # $1 = text
-  superset terminals send --workspace "$WS" --terminal "$(jarvis_terminal)" --text "$1" >/dev/null 2>&1
+  host send "$(jarvis_terminal)" "$1" >/dev/null 2>&1
+}
+
+watch_running() { # a `jarvis watch` loop for this checkout is alive
+  local p
+  p=$(cat "$STATE/watch.pid" 2>/dev/null) && [ -n "$p" ] \
+    && ps -p "$p" -o command= 2>/dev/null | grep -q "jarvis watch"
 }
 
 watch_tick() {
@@ -644,8 +854,7 @@ watch_tick() {
   while IFS= read -r line; do
     id=$(printf '%s' "$line" | sed -n 's/.*term \([^ ]*\).*/\1/p')
     [ -n "$id" ] || continue
-    tail_=$(superset terminals read --workspace "$WS" --terminal "$id" --max-lines 15 --json 2>/dev/null \
-      | { have jq && jq -r '.text // empty' || cat; } | sed -e 's/[[:space:]]*$//')
+    tail_=$(host read "$id" 15 2>/dev/null | sed -e 's/[[:space:]]*$//')
     [ -n "$tail_" ] || continue
     sum=$(printf '%s' "$tail_" | cksum | cut -d' ' -f1)
     if printf '%s' "$tail_" | grep -Eiq "$LIMIT_RE"; then
@@ -689,9 +898,16 @@ EOF
 }
 
 cmd_watch() {
-  [ -n "$WS" ] || die "SUPERSET_WORKSPACE_ID not set"
+  need_host
   mkdir -p "$STATE"
   if [ "${1:-}" = --once ]; then watch_tick; return; fi
+  if [ "${1:-}" = --start ]; then
+    watch_running && { echo "jarvis watch is already running (pid $(cat "$STATE/watch.pid"))"; return 0; }
+    host run jarvis-watch "handoffs/bin/jarvis watch" && echo "started jarvis watch in its own terminal on $HOST"
+    return
+  fi
+  watch_running && die "jarvis watch is already running (pid $(cat "$STATE/watch.pid"))"
+  echo $$ > "$STATE/watch.pid"
   # first pass only learns what's already there
   for ho in "$H"/*.md; do
     [ -f "$ho" ] && echo "$ho $(mtime "$ho") $(field status "$ho")" >> "$STATE/watch.seen"
@@ -709,12 +925,13 @@ hook_prompt() {
   local in sid tp prompt me last gap ctx model price usd marker
   have jq || exit 0
   in=$(cat)
-  me="${SUPERSET_TERMINAL_ID:-}"
+  me=""
+  [ -n "$HOST" ] && type "${HOST}_self" >/dev/null 2>&1 && me=$("${HOST}_self")
   sid=$(printf '%s' "$in" | jq -r '.session_id // empty')
   # every terminal: which Claude sessions ran in it, so `jarvis leftovers` can
-  # tell what a worker started even after it ran /clear
+  # tell what a worker started even after it ran /clear (tmux pane ids are %N)
   case "$me$sid" in
-    *[!A-Za-z0-9_-]*) ;;
+    *[!A-Za-z0-9_%-]*) ;;
     *) if [ -n "$me" ] && [ -n "$sid" ] && ! grep -qxF "$sid" "$STATE/sessions/$me" 2>/dev/null; then
          mkdir -p "$STATE/sessions" && echo "$sid" >> "$STATE/sessions/$me"
        fi ;;
@@ -780,8 +997,8 @@ cmd_usage() {
   [ -f "$audit" ] || die "no $audit — re-run jarvis:setup"
   set -- --project="$PROJ" \
     --role worker='^You are a Jarvis worker' \
-    --role-tool orchestrator='superset agents create|handoffs/bin/jarvis (start|status|spawn|merge)' \
-    --bash-category coordination='terminals (read|send|list|close)|handoffs/|OPEN\.md|jev\.sh|bin/jarvis' \
+    --role-tool orchestrator='superset agents create|handoffs/bin/jarvis (start|status|spawn|merge|send|read|close)' \
+    --bash-category coordination='terminals (read|send|list|close)|tmux |handoffs/|OPEN\.md|jev\.sh|bin/jarvis' \
     "$@"
   json=$(python3 "$audit" "$@" --json) || exit 1
   since_arg=$(printf '%s' "$json" | jq -r '.period[0]')
@@ -812,6 +1029,9 @@ case "$cmd" in
   status) cmd_status ;;
   band) cmd_band ;;
   spawn) cmd_spawn "$@" ;;
+  read) cmd_read "$@" ;;
+  send) cmd_send "$@" ;;
+  close) cmd_close "$@" ;;
   merge) cmd_merge "$@" ;;
   leftovers) cmd_leftovers "$@" ;;
   watch) cmd_watch "$@" ;;
@@ -822,5 +1042,5 @@ case "$cmd" in
       prompt) hook_prompt ;;
       *) exit 0 ;;
     esac ;;
-  *) sed -n '2,24p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
+  *) awk 'NR > 1 && !/^#/ {exit} NR > 1 {sub(/^# ?/, ""); print}' "$0"; exit 2 ;;
 esac

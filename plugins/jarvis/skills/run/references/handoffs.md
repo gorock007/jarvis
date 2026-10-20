@@ -45,7 +45,7 @@ brief: handoffs/briefs/<file>.md
 
 - `blocked` means: questions in **Questions for the user**, nothing built yet.
   Jarvis batches them; the worker keeps its terminal open and waits for
-  `terminals send`.
+  `jarvis send`.
 - `partial` means: some phases done, something stopped it. The **Files** list
   is still exact for what was touched.
 - A worker that gets more instructions for the same task updates the same

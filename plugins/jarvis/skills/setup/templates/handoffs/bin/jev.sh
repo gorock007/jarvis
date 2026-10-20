@@ -229,12 +229,10 @@ triage_one() { # $1 = id, $2 = file ("" = read the live terminal), $3 = jev usab
   local id="$1" src="$2" jev="$3" text tail_ state="" conf="" source="" note="" resp rc read shown=0
   if [ -n "$src" ]; then text=$(cat "$src" 2>/dev/null)
   else
-    text=$(superset terminals read --workspace "${SUPERSET_WORKSPACE_ID:-}" --terminal "$id" \
-      --max-lines 60 --json 2>/dev/null)
-    # without jq the raw JSON is still better than nothing
-    command -v jq >/dev/null 2>&1 && text=$(printf '%s' "$text" | jq -r '.text // empty' 2>/dev/null)
+    # through jarvis, so it reads the terminal on whichever host the workers run on
+    text=$("$(dirname "$0")/jarvis" read "$id" 60 2>/dev/null)
   fi
-  [ -n "$text" ] || { echo "$id unreadable — check it with superset terminals read"; return; }
+  [ -n "$text" ] || { echo "$id unreadable — check it with handoffs/bin/jarvis read $id"; return; }
   # trailing spaces off, blank runs collapsed: a TUI screen is mostly padding
   text=$(printf '%s\n' "$text" | clean | sed -e 's/[[:space:]]*$//' | awk 'NF{b=0; print; next} !b{print; b=1}')
   read=$(printf '%s\n' "$text" | wc -l | tr -d ' ')

@@ -147,30 +147,24 @@ OpenCode task.
 
 ### Spawning
 
-```bash
-superset agents create --workspace "$SUPERSET_WORKSPACE_ID" \
-  --agent opencode \
-  --prompt "You are a Jarvis worker. Read AGENTS.md, then do the task in handoffs/briefs/<file>.md. Touch only the files it lists. Never run git commands that change state. Put every question in one first handoff." \
-  --json
-```
+`handoffs/bin/jarvis spawn` handles OpenCode like any worker: header
+`worker: opencode`, and the prompt gets the extra fence ("touch only the
+files it lists, never run git commands that change state"). Two mechanics
+differ from Claude and Codex:
 
-Two mechanics differ from Claude and Codex:
-
-- **Omit `--effort`.** Superset lists effort levels for Claude, Amp, Codex,
-  Mastracode, Pi and Copilot; other agents reject an explicit effort
-  override and use their own default.
-- **`--model` is uncertain.** Which ids OpenCode accepts depends on the
-  providers configured on that machine, and the free model list rotates. Omit
-  `--model` to use whatever the user has selected in OpenCode's own picker,
-  or probe once (`--model __probe__`) and read the accepted ids from the
-  error. Don't hardcode a free model name into a brief — it may be gone next
-  week.
+- **No effort.** `spawn` drops it for OpenCode. Superset's agents reject an
+  explicit effort override, and the tmux launch line has no flag for it.
+- **The model is uncertain.** Which ids OpenCode accepts depends on the
+  providers configured on that machine, and the free model list rotates.
+  Leave `model:` as a `<placeholder>` to use whatever the user has selected
+  in OpenCode's own picker, or check `opencode models` once. Don't hardcode
+  a free model name into a brief — it may be gone next week.
 
 ### Escalation: fail cheap, once
 
 An OpenCode worker that stalls, loops, ignores the scope fence, or hands back
-a handoff that fails checks gets **one** correction over `terminals send`.
-If the second attempt is still wrong, stop: close the terminal, revert
+a handoff that fails checks gets **one** correction over `jarvis send`.
+If the second attempt is still wrong, stop: `jarvis close` it, revert
 nothing yourself (the worker's edits are uncommitted — have the worker leave
 a `status: partial` handoff, or if it's incoherent, note the files it touched
 and check them in the diff), and respawn on `sonnet`. Two failed rounds of
@@ -197,9 +191,9 @@ thresholds are in `handoffs/jarvis.conf`.
 Never kill a worker mid-edit — its work is uncommitted in the shared
 checkout and would be lost. Instead:
 
-1. `terminals send` it: *"Usage band changed. Finish the phase you're on, write a `status: partial` handoff with the exact file list and what's left, then stop."*
+1. `jarvis send` it: *"Usage band changed. Finish the phase you're on, write a `status: partial` handoff with the exact file list and what's left, then stop."*
 2. When the handoff appears, review and commit what's done as normal.
-3. `terminals close` the terminal.
+3. `jarvis close` the terminal (merge closes it for you unless you passed `--keep-open`).
 4. Change the brief header to `model: claude-opus-5-5 (amber band; fable-tier
    task)`. Then respawn from the **same brief**, naming the partial handoff so
    the new worker picks up where the old one stopped:
@@ -214,7 +208,7 @@ band is to stop *new* `fable` spend, not to churn.
 
 ### How Jarvis reads usage
 
-There is no `superset usage` CLI command. Claude Code itself hands its
+No host reports Claude usage (there is no `superset usage`). Claude Code itself hands its
 statusline the account's rate-limit numbers: 5-hour and 7-day percentages
 and when each resets. The repo's statusline is `jarvis statusline`, a tap
 that saves those numbers to `handoffs/.jarvis/usage.json` and then runs the
@@ -227,10 +221,10 @@ the reading, workers included, since they all spend from one account.
   minutes says so.
 - **No reading** (`band: unknown`): ask the user for their `/usage` numbers
   and write the band by hand.
-- **Worker terminals**: `terminals read` shows a usage-limit or rate-limit
+- **Worker terminals**: `jarvis read` shows a usage-limit or rate-limit
   message when one is hit. One of those means Red for that fleet regardless
   of what the percentage said.
-- **A failed spawn** (`superset agents create --agent claude` errors out) is
+- **A failed spawn** (`jarvis spawn` of a Claude brief fails at the host) is
   also Red.
 - **The user** may just tell you ("I'm at 60%"). Take it, record the band,
   don't re-derive it.

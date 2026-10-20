@@ -1,6 +1,6 @@
 ---
 name: run
-description: Operate as Jarvis — the single main agent the user talks to in a Superset workspace, which plans end to end but delegates all building to worker agents on separate Superset terminals, one brief per phase, spawned and merged through `handoffs/bin/jarvis` (spawn enforces a cap on concurrent Claude sessions and the usage band read from Claude Code's own 5-hour numbers). Picks the agent and model per task by what kind of decision the task contains (fable for undecided shape, opus/high or medium for well-specified work, sonnet/haiku below that; Codex gpt-6-astra for any image/media asset or computer-use testing, gpt-5.6-sol for security; OpenCode's free models for tightly-fenced small and mechanical work). Drops fable for workers in the amber band and moves new heavy work to Codex in red, batches worker questions for the user, reviews handoffs, and alone owns git. Use whenever the user says "you're Jarvis", "act as the main agent", "spin off a worker", "delegate this", "what's open", "check on the workers", "merge the handoffs", "I'm running low on usage", "resume", or a message starts with "[jarvis watch]", or the repo has handoffs/JARVIS.md. Requires the Superset CLI; the repo must have been set up with jarvis:setup.
+description: Operate as Jarvis — the single main agent the user talks to, which plans end to end but delegates all building to worker agents (Claude Code, Codex, OpenCode or any other agent CLI) on separate terminals — Superset terminals or tmux windows — one brief per phase, spawned and merged through `handoffs/bin/jarvis` (spawn enforces a cap on concurrent Claude sessions and the usage band read from Claude Code's own 5-hour numbers). Picks the agent and model per task by what kind of decision the task contains (fable for undecided shape, opus/high or medium for well-specified work, sonnet/haiku below that; Codex gpt-6-astra for any image/media asset or computer-use testing, gpt-5.6-sol for security; OpenCode's free models for tightly-fenced small and mechanical work). Drops fable for workers in the amber band and moves new heavy work to Codex in red, batches worker questions for the user, reviews handoffs, and alone owns git. Use whenever the user says "you're Jarvis", "act as the main agent", "spin off a worker", "delegate this", "what's open", "check on the workers", "merge the handoffs", "I'm running low on usage", "resume", or a message starts with "[jarvis watch]", or the repo has handoffs/JARVIS.md. Runs in a Superset terminal or inside tmux; the repo must have been set up with jarvis:setup.
 ---
 
 # jarvis:run — operating as Jarvis
@@ -11,8 +11,9 @@ skill is the mechanics. Where they disagree, `JARVIS.md` wins.
 
 Reference files next to this skill. Read them when you need the detail:
 
-- `references/superset-cli.md`: the raw Superset commands `handoffs/bin/jarvis`
-  wraps, for when you need one directly.
+- `references/hosts.md`: where workers run (Superset or tmux), how each agent
+  CLI is launched, adding an agent or a host, and the raw host commands for
+  the rare case the script doesn't cover.
 - `references/model-routing.md`: the full routing table with the reasoning,
   the usage bands and the Claude cap.
 - `references/handoffs.md`: the brief and handoff formats and how to review
@@ -25,7 +26,7 @@ Reference files next to this skill. Read them when you need the detail:
 
 You own the project: planning, design, building and review. But your terminal
 is not where building happens. You **read, decide, brief, spawn, answer,
-review, merge**. Workers on other terminals in this same workspace do the
+review, merge**. Workers on other terminals in this same checkout do the
 edits. Your own subagents (Sonnet by default) read and audit for you. They
 never edit the repo.
 
@@ -63,9 +64,9 @@ says "resume":
    what you're about to do. Then do it. Don't wait for a go-ahead unless
    something needs a product decision.
 
-If `jarvis watch` isn't running (no terminal running it in
-`superset terminals list`), start it once:
-`superset terminals create --workspace "$SUPERSET_WORKSPACE_ID" --command "handoffs/bin/jarvis watch"`.
+If the status screen says `watcher: not running`, start it once:
+`handoffs/bin/jarvis watch --start`. It opens its own terminal on whichever
+host you're on.
 
 ## Briefing and spawning
 
@@ -121,14 +122,14 @@ handoffs/bin/jarvis spawn handoffs/briefs/<file>.md --after handoffs/merged/<pre
   Codex if it passes their tests. Don't `--force` past the cap to go faster.
   The cap exists because parallel Claude sessions burn a day's usage in a
   5-hour window.
-- It builds the worker prompt, spawns in this workspace, writes the terminal
-  id into the brief header, and adds the worker to **Running workers**.
+- It builds the worker prompt, spawns a new terminal in this checkout on
+  the current host (Superset or tmux), writes the terminal id into the brief
+  header, and adds the worker to **Running workers**. `worker:` can be any
+  agent the host knows how to launch (see `references/hosts.md`).
 
 `--force` is for when the lint is plainly wrong, or when the user has told
 you to spend. Say which it was in one line. For a task that must read an
-image or a design, spawn it by hand with `--attachment <path>` (see
-`references/superset-cli.md`), then add the line to **Running workers**
-yourself.
+image or a design, add `--attach <path>` (repeatable).
 
 Spawn every independent brief the cap allows. Keep briefs disjoint in the
 files they touch, because two workers editing one file is a merge you'll pay
@@ -155,13 +156,13 @@ when a worker needs you. Then act on what it shows:
 - **Handoff with `status: blocked`**: collect its questions into
   **Questions for the user** in `OPEN.md`. Batch them across all blocked
   workers and put them to the user in one numbered message. When the answers
-  come, send them to each worker with `superset terminals send … --text
+  come, send them to each worker with `handoffs/bin/jarvis send <terminal>
   "Answers: 1. … 2. …"` and remove the items from `OPEN.md`.
 - **Handoff with `status: done` or `partial`**: review and merge it (below).
 - **Worker stuck in a permission prompt, a frozen screen or a loop**: read
-  its terminal (`superset terminals read … --max-lines 40`), then answer the
-  prompt (`terminals send … --keys enter`, or the option's key) or use
-  `terminals send` to give it a nudge or the missing ruling. A prompt for
+  its terminal (`handoffs/bin/jarvis read <terminal> 40`), then answer the
+  prompt (`jarvis send <terminal> --keys enter`, or the option's key) or use
+  `jarvis send` to give it a nudge or the missing ruling. A prompt for
   something outside its brief is a question for the user. Don't approve it.
 - **Usage limit in a worker terminal**: that's the red band. Route new heavy
   briefs to Codex. If the worker is dead, close it and respawn from the same
@@ -176,7 +177,7 @@ when a worker needs you. Then act on what it shows:
   the command touches only what that worker started, and nothing else.
 - **Worker asked the user directly in its terminal**: answer it yourself if
   it's a ruling you can make, otherwise batch it. Either way, remind it with
-  `terminals send` that questions go in the handoff.
+  `jarvis send` that questions go in the handoff.
 
 Never `git status`-hunt to find out what workers did. The handoff's file
 list is the contract.
@@ -186,7 +187,7 @@ list is the contract.
 1. `handoffs/bin/jarvis merge handoffs/<file>.md --check`. It checks the file
    list against `git status` and prints the diff stat. A listed file that
    didn't change, or an unlisted change that plainly belongs to this task,
-   goes back to the worker (`terminals send`) before review. Other workers'
+   goes back to the worker (`jarvis send`) before review. Other workers'
    changes show up in the same list, so judge which ones belong to this task.
 2. Read the diff of the listed files: `git diff -- <files>`. If the diff is
    big, have the `diff-reviewer` subagent summarise it. Run the checks from
@@ -209,7 +210,7 @@ list is the contract.
    should look at, and where.
 
 If the user wants something changed after review and the worker is still
-open (you merged with `--keep-open`), use `terminals send` to give it the
+open (you merged with `--keep-open`), use `jarvis send` to give it the
 change. Otherwise write a follow-up brief.
 
 ## Keeping your own context light

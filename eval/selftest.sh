@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Offline self-test of jev.sh (fail-open paths, request shape, secret masking)
 # and of bin/jarvis (spawn cap and band, merge, the idle guard, the watcher,
-# the statusline tap, leftover processes), against a throwaway repo, a fake
+# the statusline tap, leftover processes, the tmux host), against a throwaway repo, a fake
 # `superset` and real processes of its own, all stopped before it exits.
 # No API key, no network, no cost — run it after any change to either script.
 #
@@ -83,7 +83,7 @@ echo "superset $*" >> "$FAKE_LOG"
 case "$1 $2" in
   "agents create") n=$(grep -c 'agents create' "$FAKE_LOG"); printf '{"kind":"terminal","sessionId":"term-%s"}\n' "$n" ;;
   "terminals read") printf '{"text":"%s"}\n' "${FAKE_SCREEN:-Working… esc to interrupt}" ;;
-  "terminals list") echo "${FAKE_OPEN:-[]}" ;;
+  "terminals list") printf '{"sessions":[%s]}\n' "$(printf '%s' "${FAKE_OPEN:-}" | sed -E 's/([^ ]+)/{"terminalId":"\1","exited":false}/g; s/ /,/g')" ;;
 esac
 EOT
   chmod +x "$tmp/fake/superset"
@@ -211,9 +211,9 @@ EOT
     printf '%s' "$out" | grep -q '<scratch>/scratchpad/lab'; check "…and shortens the scratch path" $?
     ! printf '%s' "$out" | grep -q "pid $pj "; check "a session that isn't a worker's is never listed" $?
     $J status | grep -q 'left running by closed workers'; check "status reports closed workers' leftovers" $?
-    ! FAKE_OPEN='["term-a","term-b","term-c"]' $J status | grep -q 'left running'; check "…but not open workers'" $?
+    ! FAKE_OPEN='term-a term-b term-c' $J status | grep -q 'left running'; check "…but not open workers'" $?
 
-    FAKE_OPEN='["term-a"]' $J leftovers handoffs/briefs/la.md --stop | grep -q 'not stopped'; check "--stop refuses while the worker's terminal is open" $?
+    FAKE_OPEN='term-a' $J leftovers handoffs/briefs/la.md --stop | grep -q 'not stopped'; check "--stop refuses while the worker's terminal is open" $?
     alive "$pa" && alive "$orphan"; check "…and leaves its processes running" $?
 
     echo la > la.txt
@@ -245,6 +245,53 @@ EOT
   n=$(grep -c '^  FAIL' "$tmp/jarvis.out"); fails=$((fails + n))
 else
   echo "bin/jarvis: skipped (jq not installed)"
+fi
+
+# The tmux host, on a tmux server of its own (its own socket), with a stand-in
+# agent that echoes its launch and each line typed into it. The user's tmux
+# sessions are never touched.
+if command -v tmux >/dev/null 2>&1 && command -v jq >/dev/null 2>&1; then
+  echo "tmux host"
+  tb="$tmp/tb"; mkdir -p "$tb"
+  (
+    cd "$tb" || exit 1
+    git init -q && git commit -q --allow-empty -m init
+    cp -R "$tpl/handoffs" . && sed -e 's/{{MAX_CLAUDE}}/3/' -e 's/{{AMBER}}/50/' -e 's/{{RED}}/75/' "$tpl/handoffs/jarvis.conf" > handoffs/jarvis.conf
+    rm -f handoffs/bin/jev.sh
+    # shellcheck disable=SC2016
+    printf '%s\n' 'JARVIS_PUSH=0' \
+      'JARVIS_AGENT_fake='"'"'echo "fake model=$JARVIS_MODEL effort=$JARVIS_EFFORT"; echo "prompt=$JARVIS_PROMPT"; while read -r l; do echo "got: $l"; done'"'" \
+      >> handoffs/jarvis.conf
+    printf '# t\nworker: fake\nmodel: m1\neffort: low\nstarted: <x>\n' > handoffs/briefs/2026-10-20-1200-tw.md
+    git add -A && git commit -q -m setup
+    sock="jarvis-selftest-$$"
+    env -u SUPERSET_WORKSPACE_ID -u SUPERSET_TERMINAL_ID -u TMUX -u TMUX_PANE tmux -L "$sock" new-session -d -c "$tb" -x 160 -y 40
+    tenv=$(tmux -L "$sock" display-message -p '#{socket_path},#{pid},0')
+    T() { env -u SUPERSET_WORKSPACE_ID -u SUPERSET_TERMINAL_ID TMUX="$tenv" TMUX_PANE=%0 handoffs/bin/jarvis "$@"; }
+
+    T start >/dev/null && grep -qx 'Jarvis session: %0' handoffs/OPEN.md; check "start records the tmux pane" $?
+    echo hi > note.txt
+    T spawn handoffs/briefs/2026-10-20-1200-tw.md --attach note.txt | grep -q '^spawned %1 fake/m1 low'; check "spawn opens a window for any configured agent" $?
+    [ "$(tmux -L "$sock" display-message -p -t %1 '#{window_name} #{@jarvis}')" = "tw tw" ]; check "…named after the brief and tagged" $?
+    grep -q '^started:.*terminal: %1' handoffs/briefs/2026-10-20-1200-tw.md && grep -q '· term %1 ·' handoffs/OPEN.md; check "…and recorded in the brief and OPEN.md" $?
+    sleep 1
+    T read %1 10 | grep -q '^fake model=m1 effort=low'; check "read shows the screen; model and effort reach the agent" $?
+    T read %1 10 | grep -q 'Read this attached file first: note.txt'; check "--attach names the file in the prompt" $?
+    T send %1 "Answers: 1. yes
+2. no" && sleep 1 && T read %1 5 | grep -qx 'got: Answers: 1. yes 2. no'; check "send types one line and presses Enter" $?
+    T send %1 --keys "a,b,enter" && sleep 1 && T read %1 5 | grep -qx 'got: ab'; check "send --keys presses keys" $?
+    T close %0 >/dev/null 2>&1; [ $? = 1 ] && tmux -L "$sock" list-panes -a -F '#{pane_id}' | grep -qx %0; check "close refuses a pane Jarvis didn't open" $?
+    T send %1 --keys ctrl+d && sleep 1 && T read %1 3 | grep -q 'exited (0)'; check "an agent that exits leaves its window up" $?
+    printf '# done\nstatus: done\nbrief: handoffs/briefs/2026-10-20-1200-tw.md\nagent: fake m1\n\n## Files\n- note.txt\n' > handoffs/htw.md
+    T watch --once | grep -q 'woke Jarvis: handoff handoffs/htw.md'; check "the watcher wakes Jarvis's pane" $?
+    T merge handoffs/htw.md --no-push | grep -q 'closed %1' && ! tmux -L "$sock" list-panes -a -F '#{pane_id}' | grep -qx %1; check "merge closes the worker's window" $?
+    env -u SUPERSET_WORKSPACE_ID -u TMUX -u TMUX_PANE handoffs/bin/jarvis read %1 >/dev/null 2>&1; [ $? = 1 ]; check "with no host, jarvis says so" $?
+    tmux -L "$sock" kill-server
+    rm -f "${tenv%%,*}"
+  ) | tee "$tmp/tmux.out"
+  n=$(grep -c '^  FAIL' "$tmp/tmux.out"); fails=$((fails + n))
+else
+  echo "tmux host: skipped (tmux or jq not installed)"
 fi
 
 rm -rf "$tmp"

@@ -1,6 +1,6 @@
 # Working in {{PROJECT_NAME}} as a worker
 
-This repo runs the Jarvis workflow on Superset. **If you are Codex, OpenCode,
+This repo runs the Jarvis workflow. **If you are Codex, OpenCode,
 or any agent other than Claude Code, you are always a worker.** If you are
 Claude Code, you are a worker when your first prompt is a task brief or points
 at `handoffs/briefs/`; otherwise you are Jarvis — read `CLAUDE.md` instead.
