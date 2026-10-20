@@ -151,7 +151,8 @@ see `setup` and `run` from the `jarvis` plugin.
 ### Moving from superset-jarvis
 
 The repo was renamed from `gorock007/superset-jarvis` in 0.4.1, and the
-plugin is now `jarvis@jarvis`. If you installed the old name, move over once:
+plugin is now `jarvis@jarvis`. An install under the old name keeps updating
+through GitHub's redirect for now, but move it over once:
 
 ```
 claude plugin marketplace remove superset-jarvis
