@@ -22,10 +22,12 @@ handoffs/bin/jarvis watch --start                    # the watcher, in a termina
 
 1. `JARVIS_HOST` in `handoffs/jarvis.conf`, if it's set.
 2. **superset**, when `$SUPERSET_WORKSPACE_ID` is set (a Superset terminal).
-3. **tmux**, when `$TMUX` is set (inside a tmux session).
+3. **ultron**, when `$ULTRON_SESSION_ID` is set (an Ultron session).
+4. **tmux**, when `$TMUX` is set (inside a tmux session).
 
 Otherwise it stops and says so. Jarvis's own terminal id comes from the
-host: `$SUPERSET_TERMINAL_ID` on Superset, `$TMUX_PANE` (`%12`) on tmux.
+host: `$SUPERSET_TERMINAL_ID` on Superset, `$ULTRON_SESSION_ID` (`s_1a2b3c4d`)
+on Ultron, `$TMUX_PANE` (`%12`) on tmux.
 
 ### Superset
 
@@ -35,6 +37,26 @@ any of its presets works as `worker:`. Run `superset agents list --local` to
 see them. `--attach` becomes Superset's `--attachment` (an upload). Start
 Jarvis in the project's **local** workspace (`--checkout local`). The default
 worktree workspace is a different model, `superset:orchestrate`.
+
+### Ultron
+
+Workers start with `ultron agent spawn --role worker` in this checkout's
+Ultron project, titled after the brief. Ultron launches each agent itself,
+so any agent `ultron agent list` shows works as `worker:`, and it refuses a
+model id the agent doesn't accept (`ultron agent models --agent <a>`).
+`--attach` becomes Ultron's `--attachment`. The checkout must be an Ultron
+project: `ultron project add .` once.
+
+A Claude Jarvis on Ultron is usually a chat session, not a terminal. It
+works the same: `jarvis read` shows its conversation, and `jarvis send`
+(the watcher included) sends a chat turn. A chat session takes text, not
+`--keys`. After a long idle the watcher restarts Jarvis on a fresh context
+with `ultron term clear`, which keeps the session id, instead of typing
+`/clear`.
+
+Ultron's daemon also has its own event stream, tasks and asks, which its
+own Jarvis kit (`ultron-jarvis`) uses. This plugin doesn't: its watcher
+polls like on the other hosts.
 
 ### tmux
 
@@ -75,7 +97,8 @@ The launch script for each worker is written to
 ## Adding a host
 
 A host is seven shell functions, `<name>_self`, `_spawn`, `_run`, `_list`,
-`_read`, `_send` and `_close`, in `handoffs/bin/hosts/<name>.sh`. Select it
+`_read`, `_send` and `_close`, in `handoffs/bin/hosts/<name>.sh`, plus an
+optional `_clear` if the host can restart an agent on a fresh context. Select it
 with `JARVIS_HOST=<name>` in `jarvis.conf`. The contract is spelled out in
 the "hosts" comment block of `handoffs/bin/jarvis`, and the superset and
 tmux functions next to it are working examples. Nothing else in the
@@ -89,6 +112,14 @@ Superset (inside a Superset terminal, `$SUPERSET_WORKSPACE_ID` is set):
 superset agents create --workspace "$SUPERSET_WORKSPACE_ID" --agent claude --resume-session <id>   # restore a killed agent
 superset agents create … --model __probe__ --prompt x    # the error lists every model id that agent accepts
 open "superset://v2-workspace/$SUPERSET_WORKSPACE_ID?terminalId=<id>"   # focus one worker in the desktop app
+```
+
+Ultron:
+
+```bash
+ultron term list                       # sessions, with role, agent, model and state
+ultron term attach <id>                # watch one worker's terminal
+ultron agent resume <id>               # relaunch an ended Claude/Codex session on its saved conversation
 ```
 
 tmux:
@@ -115,4 +146,16 @@ tmux new-session -s jarvis \
   "claude --model claude-opus-5-5 --effort high 'You are Jarvis. Use the jarvis:run skill: read handoffs/JARVIS.md and handoffs/OPEN.md, run handoffs/bin/jarvis start, then tell me what is open.'"
 ```
 
-On either host, Jarvis then runs `handoffs/bin/jarvis watch --start` once.
+On Ultron, from the repo root:
+
+```bash
+ultron project add .
+ultron agent spawn --role jarvis --agent claude --model claude-opus-5-5 --effort high \
+  --permission-mode bypassPermissions --title jarvis \
+  --prompt "You are Jarvis. Use the jarvis:run skill: read handoffs/JARVIS.md and handoffs/OPEN.md, run handoffs/bin/jarvis start, then tell me what's open."
+```
+
+A chat Jarvis needs `bypassPermissions`: nobody can answer a permission
+prompt in chat mode.
+
+On any host, Jarvis then runs `handoffs/bin/jarvis watch --start` once.

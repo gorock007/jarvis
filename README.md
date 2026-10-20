@@ -3,7 +3,8 @@
 **You talk to one agent. A team of agents does the building.**
 
 Jarvis is an open-source workflow for running one coordinating agent plus a
-fleet of workers, in [Superset](https://superset.sh) or in plain
+fleet of workers, in [Superset](https://superset.sh),
+[Ultron](https://github.com/subiixu/Ultron), or plain
 [tmux](https://github.com/tmux/tmux) anywhere else. It ships as a Claude
 Code plugin. The coordinating agent, called Jarvis, plans the work and writes
 a short brief for each task. It starts worker agents (Claude Code, Codex,
@@ -49,7 +50,7 @@ you ──▶ Jarvis (Claude Code · opus 5.5 · high)
 
 Jarvis is a good fit if you:
 
-- **Use Claude Code**, and maybe Codex or OpenCode too, in Superset or in a
+- **Use Claude Code**, and maybe Codex or OpenCode too, in Superset, in Ultron, or in a
   terminal with tmux (locally, over SSH, or on a server).
 - **Build a product day to day** and want several agents working in parallel
   without keeping track of each terminal yourself.
@@ -62,7 +63,7 @@ Jarvis is a good fit if you:
 
 It's probably not for you if:
 
-- **You can use neither Superset nor tmux.** Workers need terminals Jarvis
+- **You can use none of Superset, Ultron or tmux.** Workers need terminals Jarvis
   can start, read and type into. A host of your own is seven shell
   functions (see [Hosts and agents](#hosts-and-agents)).
 - **You only need one large parallel job**, like splitting a migration into
@@ -77,7 +78,7 @@ It's probably not for you if:
 | | |
 | --- | --- |
 | 🧠 **One lead agent** | You talk only to Jarvis. It plans, decides, and briefs, and it does no editing in its own terminal. |
-| 🛠️ **Parallel workers** | Each task runs in its own terminal (a Superset terminal or a tmux window) on the same checkout. Jarvis starts independent tasks at the same time. |
+| 🛠️ **Parallel workers** | Each task runs in its own terminal (a Superset terminal, an Ultron session or a tmux window) on the same checkout. Jarvis starts independent tasks at the same time. |
 | 🎯 **Model routing** | Each task goes to the cheapest agent and model that can do it well: Claude Code (`fable` / `claude-opus-5-5` / `sonnet` / `haiku`), Codex, or OpenCode's free models. |
 | 📉 **Usage bands** | Jarvis reads Claude Code's own 5-hour usage numbers and the burn rate. Past 50%, or on pace to run out before the window resets, workers stop getting `fable`. Past 75%, new heavy work goes to Codex. `jarvis spawn` enforces both. |
 | 🚦 **A cap on Claude sessions** | At most 3 Claude sessions run at once by default, Jarvis included. Codex and OpenCode don't count. Extra briefs wait in a queue or go to the free tier, so parallel work doesn't use up your 5-hour window in two hours. |
@@ -97,7 +98,7 @@ The plugin has two skills:
 
 | Requirement | Why |
 | --- | --- |
-| A host for the workers: the [Superset](https://docs.superset.sh/install) desktop app and CLI (built against CLI v1.28), **or** [tmux](https://github.com/tmux/tmux/wiki/Installing) 3.0+ | Jarvis starts, reads and types into worker terminals through it. See [Hosts and agents](#hosts-and-agents). |
+| A host for the workers: the [Superset](https://docs.superset.sh/install) desktop app and CLI (built against CLI v1.28), **or** [Ultron](https://github.com/subiixu/Ultron), **or** [tmux](https://github.com/tmux/tmux/wiki/Installing) 3.0+ | Jarvis starts, reads and types into worker terminals through it. See [Hosts and agents](#hosts-and-agents). |
 | [Claude Code](https://claude.com/claude-code) (on Superset, configured as an agent) | Jarvis itself and most workers run on it |
 | A git repository | Jarvis commits each handoff |
 | *Optional:* Codex | Images and other media, computer-use testing, and extra work when your Claude usage is high |
@@ -166,12 +167,12 @@ Repos you set up with Jarvis need no changes.
 
 ### 1. Set up Jarvis in your repo (once)
 
-Open your project in Superset, or in a terminal inside tmux. In any Claude
+Open your project in Superset, in Ultron, or in a terminal inside tmux. In any Claude
 Code session, say:
 
 > **set up Jarvis in this repo**
 
-`jarvis:setup` checks the host (Superset or tmux) and which agents you have
+`jarvis:setup` checks the host (Superset, Ultron or tmux) and which agents you have
 installed. Then it asks all its questions in one message, with answers
 already guessed from your repo, so you can often just say "yes":
 
@@ -222,7 +223,18 @@ tmux new-session -s jarvis \
 Workers open as windows in that session. `prefix + w` lists them, and
 `tmux attach -t jarvis` gets you back in after you detach or log out.
 
-On either host Jarvis then starts the watcher (`handoffs/bin/jarvis watch
+**On Ultron**, from the repo root:
+
+```bash
+ultron project add .
+ultron agent spawn --role jarvis --agent claude --model claude-opus-5-5 --effort high \
+  --permission-mode bypassPermissions --title jarvis \
+  --prompt "You are Jarvis. Use the jarvis:run skill: read handoffs/JARVIS.md and handoffs/OPEN.md, run handoffs/bin/jarvis start, then tell me what's open."
+```
+
+Then talk to it in the Ultron app. Workers show up there as sessions.
+
+On any host Jarvis then starts the watcher (`handoffs/bin/jarvis watch
 --start`). It's a plain loop with no model, so it costs no tokens. It wakes
 Jarvis when a handoff lands, or when a worker hits a usage limit, sits at a
 prompt, or freezes.
@@ -343,14 +355,15 @@ and the **agent**, which is the CLI inside each one.
 | Host | Picked when | Workers run as |
 | --- | --- | --- |
 | Superset | `$SUPERSET_WORKSPACE_ID` is set (a Superset terminal) | Superset terminals, via `superset agents create` |
+| Ultron | `$ULTRON_SESSION_ID` is set (an Ultron session) | Ultron sessions, via `ultron agent spawn`; a chat Jarvis is read and woken through `ultron chat` |
 | tmux | `$TMUX` is set (inside tmux) | windows in Jarvis's tmux session, tagged so Jarvis only closes its own |
 | your own | `JARVIS_HOST=<name>` in `handoffs/jarvis.conf` | whatever `handoffs/bin/hosts/<name>.sh` does: seven functions (`self`, `spawn`, `run`, `list`, `read`, `send`, `close`) |
 
 Every command works the same on each host: `jarvis spawn | read | send |
 close | watch --start`. The skills only use those, never a host's own CLI.
 
-Agents: Superset launches its own presets, so any of them works as
-`worker:` in a brief. On tmux, `handoffs/jarvis.conf` holds one launch line
+Agents: Superset and Ultron launch their own agents, so any agent they list
+works as `worker:` in a brief. On tmux, `handoffs/jarvis.conf` holds one launch line
 per agent. `claude`, `codex` and `opencode` are built in with the same flags
 Superset uses. Another agent is one more line:
 
@@ -521,7 +534,7 @@ They work well together. Use Jarvis for daily work, and have it use
 ## FAQ and troubleshooting
 
 **`jarvis: no host`**
-Jarvis isn't running in a Superset terminal or inside tmux. Start it in one
+Jarvis isn't running in a Superset terminal, an Ultron session or inside tmux. Start it in one
 of them (see [Start Jarvis](#2-start-jarvis)), or set `JARVIS_HOST` in
 `handoffs/jarvis.conf`.
 
@@ -531,7 +544,7 @@ accept. Update the table in your `CLAUDE.md`, or run `jarvis:setup` again to
 check the IDs.
 
 **Codex or OpenCode rows don't work**
-On Superset, check `superset agents list --local`. On tmux, check that
+On Superset, check `superset agents list --local`; on Ultron, `ultron agent list`. On tmux, check that
 `codex` / `opencode` are on your PATH. Until an agent is available, Jarvis
 sends those tasks to Claude models.
 
@@ -610,7 +623,7 @@ usage more carefully.
 
 **Does it work with other agents?**
 Yes. Workers can be any agent CLI that reads `AGENTS.md`: Claude Code, Codex
-and OpenCode are built in, and on Superset every agent preset works. On tmux,
+and OpenCode are built in, and on Superset or Ultron every agent they list works. On tmux,
 add one line to `handoffs/jarvis.conf` for another agent (see
 [Hosts and agents](#hosts-and-agents)). Jarvis itself is written for Claude
 Code.
@@ -640,7 +653,7 @@ plugins/jarvis/
     run/
       SKILL.md                       jarvis:run: the operating playbook
       references/
-        hosts.md                     Superset and tmux hosts, agent launch lines, adding either
+        hosts.md                     Superset, Ultron and tmux hosts, agent launch lines, adding either
         model-routing.md             routing table and reasoning
         handoffs.md                  brief and handoff formats, review steps
         efficiency.md                where tokens go and how to spend fewer

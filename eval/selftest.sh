@@ -294,5 +294,57 @@ else
   echo "tmux host: skipped (tmux or jq not installed)"
 fi
 
+# The Ultron host, on a daemon of its own (its own ULTRON_HOME and socket) with a
+# stand-in `claude` first on its PATH. A running Ultron is never touched. Needs an
+# `ultron` binary: on PATH, or ULTRON_BIN=<path>.
+ub=${ULTRON_BIN:-$(command -v ultron 2>/dev/null)}
+if [ -n "$ub" ] && command -v jq >/dev/null 2>&1; then
+  echo "ultron host"
+  ux="$tmp/ux"; mkdir -p "$ux/home/bin" "$ux/shim" "$ux/repo"
+  (
+    cp "$ub" "$ux/home/bin/ultron"
+    # shellcheck disable=SC2016
+    printf '%s\n' '#!/bin/sh' 'm=""; p=""; while [ $# -gt 0 ]; do [ "$1" = --model ] && m=$2; p=$1; shift; done' \
+      'echo "fake model=$m"; echo "prompt=$p"; while read -r l; do echo "got: $l"; done' > "$ux/shim/claude"
+    chmod +x "$ux/shim/claude"
+    export ULTRON_HOME="$ux/home" ULTRON_SOCKET="$ux/u.sock" PATH="$ux/home/bin:$ux/shim:$PATH"
+    cd "$ux/repo" || exit 1
+    git init -q && git commit -q --allow-empty -m init
+    cp -R "$tpl/handoffs" . && sed -e 's/{{MAX_CLAUDE}}/3/' -e 's/{{AMBER}}/50/' -e 's/{{RED}}/75/' "$tpl/handoffs/jarvis.conf" > handoffs/jarvis.conf
+    rm -f handoffs/bin/jev.sh; echo 'JARVIS_PUSH=0' >> handoffs/jarvis.conf
+    printf '# u\nworker: claude\nmodel: claude-haiku-5-5\neffort: low\nstarted: <x>\n' > handoffs/briefs/2026-10-20-1200-uw.md
+    git add -A && git commit -q -m setup
+    ultron daemon run > "$ux/daemon.log" 2>&1 &
+    for _ in $(seq 40); do ultron daemon status --json 2>/dev/null | grep -q '"pid"' && break; sleep 0.25; done
+    ultron project add . --json >/dev/null
+    J=$(ultron agent spawn --agent claude --role jarvis --transport pty --title jarvis --prompt "be jarvis" --json | jq -r .id)
+    U() { env -u SUPERSET_WORKSPACE_ID -u SUPERSET_TERMINAL_ID -u TMUX -u TMUX_PANE ULTRON_SESSION_ID="$J" handoffs/bin/jarvis "$@"; }
+
+    U start >/dev/null && grep -qx "Jarvis session: $J" handoffs/OPEN.md; check "start records the Ultron session" $?
+    echo hi > note.txt
+    U spawn handoffs/briefs/2026-10-20-1200-uw.md --attach note.txt >/dev/null
+    W=$(grep -o 'term s_[0-9a-f]*' handoffs/OPEN.md | head -n 1 | cut -d' ' -f2)
+    [ -n "$W" ] && [ "$(ultron term get "$W" --json | jq -r '.title + " " + .role')" = "uw worker" ]; check "spawn starts a worker session titled after the brief" $?
+    sleep 1
+    U read "$W" 20 | grep -q '^fake model=claude-haiku-5-5'; check "read shows the screen; the model reaches the agent" $?
+    U read "$W" 40 | grep -q 'note.txt'; check "--attach hands the file over" $?
+    U send "$W" "Answers: 1. yes
+2. no" && sleep 1 && U read "$W" 5 | grep -q '^got: Answers: 1. yes 2. no *$'; check "send types one line and presses Enter" $?
+    U send "$W" --keys "a,b,enter" && sleep 1 && U read "$W" 5 | grep -q '^got: ab *$'; check "send --keys presses keys" $?
+    printf '# done\nstatus: done\nbrief: handoffs/briefs/2026-10-20-1200-uw.md\nagent: claude\n\n## Files\n- note.txt\n' > handoffs/hu.md
+    U watch --once | grep -q 'woke Jarvis: handoff handoffs/hu.md' && sleep 1 && U read "$J" 5 | grep -q 'got: \[jarvis watch\] handoff'; check "the watcher wakes Jarvis's session" $?
+    touch -t 202601010000 "$ux/old.jsonl"
+    printf '{"transcript_path":"%s"}' "$ux/old.jsonl" > handoffs/.jarvis/session.json
+    printf '# b\nstatus: blocked\nbrief: handoffs/briefs/x.md\n' > handoffs/hb.md
+    U watch --once | grep -q 'cleared Jarvis' && ultron events --json 2>/dev/null | grep -q 'session.cleared'; check "after a long idle the watcher clears Jarvis with term clear" $?
+    rm -f handoffs/hb.md
+    U merge handoffs/hu.md --no-push | grep -q 'closed' && [ "$(ultron term get "$W" --json | jq -r .state)" = exited ]; check "merge closes the worker's session" $?
+    ultron daemon stop --json >/dev/null 2>&1
+  ) | tee "$tmp/ultron.out"
+  n=$(grep -c '^  FAIL' "$tmp/ultron.out"); fails=$((fails + n))
+else
+  echo "ultron host: skipped (no ultron binary: put it on PATH or set ULTRON_BIN; jq needed too)"
+fi
+
 rm -rf "$tmp"
 echo; [ "$fails" = 0 ] && echo "selftest: all passed" || { echo "selftest: $fails failed"; exit 1; }

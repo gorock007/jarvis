@@ -29,7 +29,7 @@
 #   jarvis hook prompt                 UserPromptSubmit guard (from .claude/settings.json)
 #   jarvis statusline                  statusline tap: saves the 5-hour reading, then runs yours
 #
-# Workers run on a host: Superset, tmux, or one added in handoffs/bin/hosts/ (see
+# Workers run on a host: Superset, Ultron, tmux, or one added in handoffs/bin/hosts/ (see
 # "hosts" below). The agent in each terminal is any CLI: claude, codex, opencode, or
 # one added as JARVIS_AGENT_<name> in jarvis.conf.
 # Settings live in handoffs/jarvis.conf. Works on the stock macOS bash (3.2).
@@ -52,7 +52,7 @@ JARVIS_WATCH_SEC=60
 JARVIS_STALL_MIN=15      # a worker screen unchanged this long, with no handoff, wakes Jarvis
 JARVIS_PUSH=1
 JARVIS_REAP=1            # merge stops what the closed worker left running (0 = only list it)
-JARVIS_HOST=""           # superset | tmux | <name> with handoffs/bin/hosts/<name>.sh; empty = detect
+JARVIS_HOST=""           # superset | ultron | tmux | <name> with handoffs/bin/hosts/<name>.sh; empty = detect
 # How a terminal host that isn't an agent launcher itself (tmux) starts each worker:
 # a sh command line reading $JARVIS_MODEL, $JARVIS_EFFORT and $JARVIS_PROMPT from its
 # environment. The flags are the ones Superset's agent presets launch with, so a
@@ -95,8 +95,12 @@ mtime() { stat -f %m "$1" 2>/dev/null || stat -c %Y "$1" 2>/dev/null || echo 0; 
 #   send <id> --keys <k,k>               press keys, in Superset's names (enter, esc,
 #                                        tab, shift+tab, up, ctrl+c, a single character)
 #   close <id>                           close a terminal
-# Built in: superset and tmux. Another (Ultron, an IDE) defines the same functions in
-# handoffs/bin/hosts/<name>.sh and is picked with JARVIS_HOST=<name> in jarvis.conf.
+#   clear <id>                           optional: restart Jarvis's agent on a fresh
+#                                        context in the same terminal; without it the
+#                                        watcher types /clear
+# Built in: superset, ultron and tmux. Another (an IDE, a remote box) defines the same
+# functions in handoffs/bin/hosts/<name>.sh and is picked with JARVIS_HOST=<name> in
+# jarvis.conf.
 
 superset_self() { printf '%s' "${SUPERSET_TERMINAL_ID:-}"; }
 
@@ -134,6 +138,79 @@ superset_send() {
 }
 
 superset_close() { superset terminals close --workspace "$WS" --terminal "$1" >/dev/null 2>&1; }
+
+# Ultron: its daemon runs each agent in a session (s_…) in this checkout's project and
+# launches the agent itself, as Superset does. A Claude Jarvis there is usually a chat
+# session (stream transport): it has no screen, so read and send go through `chat`.
+ult() { if have ultron; then ultron "$@"; else "$HOME/.ultron/bin/ultron" "$@"; fi; }
+
+ultron_self() { printf '%s' "${ULTRON_SESSION_ID:-}"; }
+
+ultron_chat() { # whether session $1 is a chat session
+  [ "$(ult term get "$1" --json 2>/dev/null | jq -r '.transport // empty' 2>/dev/null)" = stream ]
+}
+
+ultron_spawn() {
+  local agent=$1 model=$2 effort=$3 prompt=$4 name=$5 a out
+  shift 5
+  for a in "$@"; do set -- "$@" --attachment "$a"; shift; done
+  set -- "$@" --agent "$agent" --role worker --title "$name" --cwd "$ROOT" --prompt "$prompt" --json
+  case "$model" in ""|\<*) ;; *) set -- "$@" --model "$model" ;; esac
+  [ -n "$effort" ] && set -- "$@" --effort "$effort"
+  out=$(ult agent spawn "$@" 2>&1) || { echo "$out (is this checkout an Ultron project? ultron project add .)" >&2; return 1; }
+  printf '%s' "$out" | jq -r '.id // empty' 2>/dev/null | grep . || { echo "no id in: $out" >&2; return 1; }
+}
+
+ultron_run() { ult term create --title "$1" --command "$2" --cwd "$ROOT" --json >/dev/null; }
+
+ultron_list() {
+  local out
+  out=$(ult term list --json 2>/dev/null) || return 1
+  printf '%s' "$out" | jq -r '.[]? | select(.state | IN("exited", "failed") | not) | .id'
+}
+
+ultron_read() { # a chat session's conversation stands in for its screen
+  if ultron_chat "$1"; then
+    ult chat history "$1" --limit 200 --json 2>/dev/null | jq -r '.events[]? | .data as $d
+      | if .kind == "user_message" then ($d.text // "" | split("\n")[] | "> " + .)
+        elif .kind == "assistant_message" then ($d.text // "")
+        elif .kind == "tool_use" then "[tool \($d.name // "?")]"
+        elif .kind == "turn_finished" then "[turn done]"
+        else empty end' 2>/dev/null | tail -n "$2"
+    return
+  fi
+  ult term read "$1" --max-lines "$2" --json 2>/dev/null | { have jq && jq -r '.screen // empty' || cat; }
+}
+
+ultron_send() {
+  local id=$1 k b
+  if [ "${2:-}" = --keys ]; then
+    ultron_chat "$id" && { echo "$id is a chat session: it takes text, not keys" >&2; return 1; }
+    # term send types its text as is, so a key is the bytes a terminal sends for it
+    for k in $(printf '%s' "${3:-}" | tr ',' ' '); do
+      case "$k" in
+        enter) ult term send "$id" --text "" --json >/dev/null || return 1; continue ;;
+        esc|escape) b=$'\e' ;; tab) b=$'\t' ;; shift+tab) b=$'\e[Z' ;; space) b=" " ;; backspace) b=$'\x7f' ;;
+        up) b=$'\e[A' ;; down) b=$'\e[B' ;; right) b=$'\e[C' ;; left) b=$'\e[D' ;;
+        ctrl+[a-z]) b=$(printf "\\$(printf '%03o' $(( $(printf '%d' "'${k#ctrl+}") - 96 )))") ;;
+        alt+?) b=$'\e'"${k#alt+}" ;;
+        ?) b=$k ;;
+        *) echo "ultron: no key '$k'" >&2; return 1 ;;
+      esac
+      ult term send "$id" --text "$b" --no-submit --json >/dev/null || return 1
+    done
+    return 0
+  fi
+  if ultron_chat "$id"; then
+    ult chat send "$id" --text "$2" --json >/dev/null
+  else
+    ult term send "$id" --text "$(printf '%s' "$2" | tr '\n' ' ')" --json >/dev/null
+  fi
+}
+
+ultron_close() { ult term close "$1" --json >/dev/null 2>&1; }
+
+ultron_clear() { ult term clear "$1" --json >/dev/null; } # same session id, fresh agent
 
 # tmux: each worker gets a window in Jarvis's tmux session, named after its brief and
 # tagged @jarvis, so close never touches a pane Jarvis didn't open. When the agent
@@ -212,6 +289,7 @@ agent_cmd() { # $1 = agent: the sh command line a terminal host runs for it
 host_pick() {
   if [ -n "$JARVIS_HOST" ]; then echo "$JARVIS_HOST"
   elif [ -n "${SUPERSET_WORKSPACE_ID:-}" ]; then echo superset
+  elif [ -n "${ULTRON_SESSION_ID:-}" ]; then echo ultron
   elif [ -n "${TMUX:-}" ]; then echo tmux
   fi
 }
@@ -220,7 +298,7 @@ HOST=$(host_pick)
 [ -n "$HOST" ] && [ -f "$BIN/hosts/$HOST.sh" ] && . "$BIN/hosts/$HOST.sh"
 
 need_host() {
-  [ -n "$HOST" ] || die "no host: run Jarvis in a Superset terminal or inside tmux, or set JARVIS_HOST in $H/jarvis.conf"
+  [ -n "$HOST" ] || die "no host: run Jarvis in a Superset terminal, an Ultron session or inside tmux, or set JARVIS_HOST in $H/jarvis.conf"
 }
 
 host() { # $1 = op, then its arguments
@@ -302,7 +380,7 @@ cmd_start() {
   local me old
   [ -f "$OPEN" ] || die "no $OPEN — run jarvis:setup first"
   me=$(host self)
-  [ -n "$me" ] || die "host $HOST gives no id for this terminal — run Jarvis in a Superset terminal or a tmux pane"
+  [ -n "$me" ] || die "host $HOST gives no id for this terminal — run Jarvis in a Superset terminal, an Ultron session or a tmux pane"
   old=$(jarvis_terminal)
   if [ -n "$old" ] && [ "$old" != "$me" ] && [ "${1:-}" != --force ] \
      && host list | grep -qxF "$old"; then
@@ -887,8 +965,9 @@ EOF
   [ -n "$term" ] || { echo "$(date +%H:%M) events but no Jarvis session in $OPEN:$events"; return 0; }
   idle=$(jarvis_idle_min)
   if [ -n "$idle" ] && [ "$idle" -ge "$JARVIS_IDLE_MIN" ]; then
-    send_jarvis "/clear"
-    sleep 3
+    if type "${HOST}_clear" >/dev/null 2>&1; then host clear "$term" && sleep 5
+    else send_jarvis "/clear"; sleep 3
+    fi
     send_jarvis "[jarvis watch] Fresh session: Jarvis was idle ${idle} min, so its cache had expired. You are Jarvis — use the jarvis:run skill, read handoffs/JARVIS.md and handoffs/OPEN.md, run handoffs/bin/jarvis status, then handle:$events"
     echo "$(date +%H:%M) cleared Jarvis (idle ${idle} min) and woke it:$events"
   else
@@ -997,8 +1076,8 @@ cmd_usage() {
   [ -f "$audit" ] || die "no $audit — re-run jarvis:setup"
   set -- --project="$PROJ" \
     --role worker='^You are a Jarvis worker' \
-    --role-tool orchestrator='superset agents create|handoffs/bin/jarvis (start|status|spawn|merge|send|read|close)' \
-    --bash-category coordination='terminals (read|send|list|close)|tmux |handoffs/|OPEN\.md|jev\.sh|bin/jarvis' \
+    --role-tool orchestrator='superset agents create|ultron agent spawn|handoffs/bin/jarvis (start|status|spawn|merge|send|read|close)' \
+    --bash-category coordination='terminals (read|send|list|close)|term (read|send|list|close)|chat send|tmux |handoffs/|OPEN\.md|jev\.sh|bin/jarvis' \
     "$@"
   json=$(python3 "$audit" "$@" --json) || exit 1
   since_arg=$(printf '%s' "$json" | jq -r '.period[0]')

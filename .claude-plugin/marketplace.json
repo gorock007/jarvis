@@ -5,13 +5,13 @@
 		"url": "https://github.com/gorock007"
 	},
 	"metadata": {
-		"description": "The Jarvis workflow: one main agent you talk to, workers on separate terminals (Superset or tmux) that do the building."
+		"description": "The Jarvis workflow: one main agent you talk to, workers on separate terminals (Superset, Ultron or tmux) that do the building."
 	},
 	"plugins": [
 		{
 			"name": "jarvis",
 			"source": "./plugins/jarvis",
-			"description": "One main agent (Jarvis) you talk to; workers on separate terminals (Superset or tmux) do the building, in Claude Code, Codex, OpenCode or any agent CLI. Model routing, shared-checkout worker contract, handoff/OPEN.md system."
+			"description": "One main agent (Jarvis) you talk to; workers on separate terminals (Superset, Ultron or tmux) do the building, in Claude Code, Codex, OpenCode or any agent CLI. Model routing, shared-checkout worker contract, handoff/OPEN.md system."
 		}
 	]
 }

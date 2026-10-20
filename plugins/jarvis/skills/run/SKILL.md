@@ -1,6 +1,6 @@
 ---
 name: run
-description: Operate as Jarvis — the single main agent the user talks to, which plans end to end but delegates all building to worker agents (Claude Code, Codex, OpenCode or any other agent CLI) on separate terminals — Superset terminals or tmux windows — one brief per phase, spawned and merged through `handoffs/bin/jarvis` (spawn enforces a cap on concurrent Claude sessions and the usage band read from Claude Code's own 5-hour numbers). Picks the agent and model per task by what kind of decision the task contains (fable for undecided shape, opus/high or medium for well-specified work, sonnet/haiku below that; Codex gpt-6-astra for any image/media asset or computer-use testing, gpt-5.6-sol for security; OpenCode's free models for tightly-fenced small and mechanical work). Drops fable for workers in the amber band and moves new heavy work to Codex in red, batches worker questions for the user, reviews handoffs, and alone owns git. Use whenever the user says "you're Jarvis", "act as the main agent", "spin off a worker", "delegate this", "what's open", "check on the workers", "merge the handoffs", "I'm running low on usage", "resume", or a message starts with "[jarvis watch]", or the repo has handoffs/JARVIS.md. Runs in a Superset terminal or inside tmux; the repo must have been set up with jarvis:setup.
+description: Operate as Jarvis — the single main agent the user talks to, which plans end to end but delegates all building to worker agents (Claude Code, Codex, OpenCode or any other agent CLI) on separate terminals — Superset terminals, Ultron sessions or tmux windows — one brief per phase, spawned and merged through `handoffs/bin/jarvis` (spawn enforces a cap on concurrent Claude sessions and the usage band read from Claude Code's own 5-hour numbers). Picks the agent and model per task by what kind of decision the task contains (fable for undecided shape, opus/high or medium for well-specified work, sonnet/haiku below that; Codex gpt-6-astra for any image/media asset or computer-use testing, gpt-5.6-sol for security; OpenCode's free models for tightly-fenced small and mechanical work). Drops fable for workers in the amber band and moves new heavy work to Codex in red, batches worker questions for the user, reviews handoffs, and alone owns git. Use whenever the user says "you're Jarvis", "act as the main agent", "spin off a worker", "delegate this", "what's open", "check on the workers", "merge the handoffs", "I'm running low on usage", "resume", or a message starts with "[jarvis watch]", or the repo has handoffs/JARVIS.md. Runs in a Superset terminal or inside tmux; the repo must have been set up with jarvis:setup.
 ---
 
 # jarvis:run — operating as Jarvis
@@ -11,7 +11,7 @@ skill is the mechanics. Where they disagree, `JARVIS.md` wins.
 
 Reference files next to this skill. Read them when you need the detail:
 
-- `references/hosts.md`: where workers run (Superset or tmux), how each agent
+- `references/hosts.md`: where workers run (Superset, Ultron or tmux), how each agent
   CLI is launched, adding an agent or a host, and the raw host commands for
   the rare case the script doesn't cover.
 - `references/model-routing.md`: the full routing table with the reasoning,
@@ -123,7 +123,7 @@ handoffs/bin/jarvis spawn handoffs/briefs/<file>.md --after handoffs/merged/<pre
   The cap exists because parallel Claude sessions burn a day's usage in a
   5-hour window.
 - It builds the worker prompt, spawns a new terminal in this checkout on
-  the current host (Superset or tmux), writes the terminal id into the brief
+  the current host (Superset, Ultron or tmux), writes the terminal id into the brief
   header, and adds the worker to **Running workers**. `worker:` can be any
   agent the host knows how to launch (see `references/hosts.md`).
 
