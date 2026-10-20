@@ -6,8 +6,8 @@
 		"name": "Gorock",
 		"url": "https://github.com/gorock007"
 	},
-	"homepage": "https://github.com/gorock007/superset-jarvis",
-	"repository": "https://github.com/gorock007/superset-jarvis",
+	"homepage": "https://github.com/gorock007/jarvis",
+	"repository": "https://github.com/gorock007/jarvis",
 	"license": "MIT",
 	"keywords": ["superset", "tmux", "orchestration", "multi-agent", "workflow"]
 }

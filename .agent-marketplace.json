@@ -1,6 +1,6 @@
 {
 	"$schema": "https://superset.sh/schemas/marketplace/1.0.0.json",
-	"name": "superset-jarvis",
+	"name": "jarvis",
 	"description": "The Jarvis workflow: a main agent that delegates to workers on separate terminals, in Superset or tmux.",
 	"owner": {
 		"name": "Gorock",

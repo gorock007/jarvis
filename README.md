@@ -117,8 +117,8 @@ Pick **one** of these.
 Inside Claude Code:
 
 ```
-/plugin marketplace add gorock007/superset-jarvis
-/plugin install jarvis@superset-jarvis
+/plugin marketplace add gorock007/jarvis
+/plugin install jarvis@jarvis
 ```
 
 Updates arrive through `/plugin`, and the skills are named `jarvis:setup`
@@ -129,7 +129,7 @@ and `jarvis:run`.
 For Claude Code, Codex, or any agent that reads `SKILL.md` files:
 
 ```bash
-npx skills add gorock007/superset-jarvis
+npx skills add gorock007/jarvis
 ```
 
 It finds two skills, `setup` and `run`. Install both.
@@ -137,16 +137,29 @@ It finds two skills, `setup` and `run`. Install both.
 ### Option 3: Manual
 
 ```bash
-git clone https://github.com/gorock007/superset-jarvis.git
+git clone https://github.com/gorock007/jarvis.git
 mkdir -p ~/.claude/skills
-cp -R superset-jarvis/plugins/jarvis/skills/setup ~/.claude/skills/jarvis-setup
-cp -R superset-jarvis/plugins/jarvis/skills/run   ~/.claude/skills/jarvis-run
+cp -R jarvis/plugins/jarvis/skills/setup ~/.claude/skills/jarvis-setup
+cp -R jarvis/plugins/jarvis/skills/run   ~/.claude/skills/jarvis-run
 ```
 
 ### Check that it installed
 
 Open a new Claude Code session and ask *"what skills do you have?"* You should
 see `setup` and `run` from the `jarvis` plugin.
+
+### Moving from superset-jarvis
+
+The repo was renamed from `gorock007/superset-jarvis` in 0.4.1, and the
+plugin is now `jarvis@jarvis`. If you installed the old name, move over once:
+
+```
+claude plugin marketplace remove superset-jarvis
+claude plugin marketplace add gorock007/jarvis
+claude plugin install jarvis@jarvis
+```
+
+Repos you set up with Jarvis need no changes.
 
 ## Quick start
 
@@ -654,7 +667,7 @@ Run `eval/selftest.sh` first. It's offline and free, and it covers
 a second commit:
 
 ```bash
-v=0.4.0   # the new version
+v=0.4.1   # the new version
 sed -i '' -E "s/\"version\": \"[0-9.]+\"/\"version\": \"$v\"/" \
   .agent-marketplace.json plugins/jarvis/plugin.json plugins/jarvis/.claude-plugin/plugin.json
 git commit -am "publish jarvis@$v"
@@ -666,8 +679,8 @@ three files the same. (Superset CLI 1.38 dropped `superset plugins`, which
 used to do the bump as `superset plugins publish jarvis --bump patch`.)
 
 Existing installs don't update themselves. Claude Code users run
-`claude plugin marketplace update superset-jarvis` and
-`claude plugin update jarvis@superset-jarvis`, then restart. Repos already
+`claude plugin marketplace update jarvis` and
+`claude plugin update jarvis@jarvis`, then restart. Repos already
 set up keep their copied `handoffs/` files until someone says "update Jarvis
 in this repo".
 
