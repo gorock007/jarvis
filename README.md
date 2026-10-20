@@ -1,4 +1,4 @@
-# superset-jarvis
+# Jarvis
 
 **You talk to one agent. A team of agents does the building.**
 
