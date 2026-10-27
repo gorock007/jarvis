@@ -944,18 +944,39 @@ run_by_start() { # $1 = brief, $2 = a process's start time: the run of that brie
   echo "$best"
 }
 
+merged_at() { # $1 = a handoff in handoffs/merged/: when it was added there (its commit, else its mtime)
+  local t
+  [ -f "$1" ] || return 0
+  t=$(git log --diff-filter=A --format=%ct -1 -- "$1" 2>/dev/null)
+  [ -n "$t" ] || t=$(mtime "$1")
+  [ "$t" != 0 ] && echo "$t"
+}
+
+# Someone resuming a finished worker's transcript later (claude --resume) runs a
+# new process with the worker's session. One that started more than 60 s after
+# the run ended is never the run's worker.
+after_end() { # $1 = a start time from lstart_of, $2 = when the run ended (epoch; empty = it hasn't)
+  local t
+  case "$2" in ""|*[!0-9]*) return 1 ;; esac
+  t=$(start_epoch "$1")
+  [ -n "$t" ] && [ "$t" -gt $(($2 + 60)) ]
+}
+
 # The Claude processes of a run, as claude_here lines. A session is the run's when
 # the prompt hook saw it in the run's terminal, or, when no terminal's record names
 # it, when its transcript opens with the spawn prompt for the run's brief (and, if
 # the brief was spawned more than once, the run is the last one spawned before the
-# process started). Never this command or anything above it.
+# process started). Never this command or anything above it, nor a process that
+# started after the run ended (after_end).
 agent_procs() { # $1 = run
-  local run=$1 brief n=0 anc pid ps sid st own
+  local run=$1 brief n=0 anc end pid ps sid st own
   brief=$(run_get "$run" brief)
+  end=$(run_get "$run" ended)
   [ -n "$brief" ] && n=$(runs_of "$brief" | wc -l | tr -d ' ')
   anc=" $(ancestors)"
   claude_here | while read -r pid ps sid st; do
     case "$anc" in *" $pid "*) continue ;; esac
+    after_end "$ps" "$end" && continue
     own=$(grep -lxF "$sid" "$STATE"/sessions/* 2>/dev/null)
     if [ -n "$own" ]; then
       printf '%s\n' "$own" | grep -qxF "$STATE/sessions/$run" || continue
@@ -1237,12 +1258,14 @@ doc_up() { # $1 = a start time from lstart_of: how long ago, e.g. 3d04h, 2h05m, 
 
 # "<pid> <procstart> <session> <status> <class> <run> <brief> <terminal>" for each
 # claude_here line, "-" for an empty field; class is jarvis | running | finished |
-# other. The run is the registry's. A worker from before the registry has none: its
-# brief comes from its transcript, its terminal from its prompt hook or brief. Jarvis
-# is the session its prompt hook recorded or, when this runs in Jarvis's terminal,
-# the Claude process above this command.
+# resumed | other. The run is the registry's. A worker from before the registry has
+# none: its brief comes from its transcript, its terminal from its prompt hook or
+# brief. Jarvis is the session its prompt hook recorded or, when this runs in
+# Jarvis's terminal, the Claude process above this command. A worker's session in a
+# process that started after its run ended (the registry's ended, or when the
+# handoff went into merged/) is resumed: someone reopened the transcript later.
 doc_procs() { # $1 = Jarvis's terminal
-  local jt=$1 jsid="" anc="" pid ps sid st t b r n class term
+  local jt=$1 jsid="" anc="" pid ps sid st t b r n class term e
   have jq && jsid=$(jq -r '.session_id // empty' "$STATE/session.json" 2>/dev/null)
   [ -n "$jt" ] && [ -n "$HOST" ] && [ "$("${HOST}_self" 2>/dev/null)" = "$jt" ] && anc=" $(ancestors)"
   claude_here | while read -r pid ps sid st; do
@@ -1262,6 +1285,10 @@ doc_procs() { # $1 = Jarvis's terminal
     elif [ -n "$b" ]; then
       if [ -n "$(doc_merged "$b")" ]; then class=finished; else class=running; fi
     fi
+    e=""
+    if [ -n "$r" ]; then e=$(run_get "$r" ended)
+    elif [ "$class" = finished ]; then e=$(merged_at "$(doc_merged "$b")"); fi
+    after_end "$ps" "$e" && class=resumed
     echo "$pid $ps $sid $st $class ${r:--} ${b:--} ${term:--}"
   done
 }
@@ -1352,6 +1379,7 @@ cmd_doctor() {
     case "$class" in
       jarvis) echo "Jarvis" ;;
       other) echo "not a worker (left alone)" ;;
+      resumed) echo "resumed after its brief finished (left alone) · $(doc_brief "$brief")" ;;
       running|finished)
         [ "$class" = finished ] && printf 'worker, FINISHED' || printf 'worker, running'
         printf ' · %s · ' "$(doc_brief "$brief")"
@@ -1408,8 +1436,8 @@ cmd_doctor() {
     [ "$class" = finished ] || continue
     s=$(printf '%s\n' "$procs" | awk -v t="$id" '$8 == t && ($4 == "busy" || $4 == "shell") {print $1}' | tr '\n' ' ')
     if [ -n "$s" ]; then echo "doctor: left $(short "$id") open: its agent is busy (pid ${s% })"; continue; fi
-    if [ "$run" = - ]; then
-      run_set "$id" run "$id" brief "$brief" host "$HOST" state running
+    if [ "$run" = - ]; then # ended, so stop_run's agent_procs leaves a resumed session alone
+      run_set "$id" run "$id" brief "$brief" host "$HOST" state running ended "$(merged_at "$(doc_merged "$brief")")"
       s=merged
     else s=$(run_get "$id" state); fi
     echo "doctor: $(stop_run "$id" "$s" "jarvis doctor --apply" </dev/null) ($(doc_brief "$brief"), finished)"

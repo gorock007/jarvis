@@ -152,7 +152,10 @@ act on the FINISHED and lost ones (nothing else is touched): handoffs/bin/jarvis
 - **Agent processes** are Jarvis, `worker, running`, `worker, FINISHED` (its
   run is merged or closed, or it has no record and its handoff is in
   `merged/`), or `not a worker (left alone)`. A busy finished worker is
-  marked `busy: left alone`.
+  marked `busy: left alone`. A worker's session in a process that started
+  more than 60 s after its run ended (or its handoff went into `merged/`) is
+  `resumed after its brief finished (left alone)`: someone reopened the
+  transcript later, so it is never counted, closed or signalled.
 - **Terminals** are Jarvis, `worker, running`, `FINISHED but open` or
   `unknown (left alone)`. An unknown terminal shows its title when the host
   has the optional `titles` op (see `hosts.md`).

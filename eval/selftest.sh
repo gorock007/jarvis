@@ -311,7 +311,9 @@ EOT
     export JARVIS_LOCK_DIR="$tmp/locks"
     lb() { printf '# %s\nworker: claude\nmodel: claude-opus-5-5\neffort: high\nstarted: 2026-10-19 10:00 · terminal: %s\n\n## Goal\nx\n' "$1" "$2" > "handoffs/briefs/$1.md"; }
     mh() { printf '# %s\nstatus: done\nbrief: handoffs/briefs/%s.md\n## Files\n- x\n' "$1" "$1" > "handoffs/merged/h$1.md"; }
-    merged() { run_f="$runs/$1"; sed 's/^state: running$/state: merged/' "$run_f" > "$tmp/r" && cat "$tmp/r" > "$run_f"; }
+    merged() { run_f="$runs/$1"; sed 's/^state: running$/state: merged/' "$run_f" > "$tmp/r" && { cat "$tmp/r"; echo "ended: ${2:-$(date +%s)}"; } > "$run_f"; } # $2 = ended
+    ago=$(( $(date +%s) - 7200 ))
+    commit_ago() { git add "$1" && GIT_COMMITTER_DATE="$ago +0000" git commit -q -m "$1" -- "$1"; } # $1 = a merged handoff, added 2 h ago
     js=$(uuid); pjv=$(agent "" "$js"); printf '{"session_id":"%s"}\n' "$js" > handoffs/.jarvis/session.json
     nb d1; $J spawn handoffs/briefs/d1.md --force >/dev/null 2>&1; d1=$(tid d1); pd1=$(agent d1 "$(uuid)")           # running
     nb d2; $J spawn handoffs/briefs/d2.md --force >/dev/null 2>&1; d2=$(tid d2); pd2=$(agent d2 "$(uuid)"); merged "$d2" # finished, terminal open
@@ -321,6 +323,10 @@ EOT
     nb d6; $J spawn handoffs/briefs/d6.md --force >/dev/null 2>&1; d6=$(tid d6); pd6=$(agent d6 "$(uuid)" "" busy); merged "$d6" # finished but busy
     nb d7; $J spawn handoffs/briefs/d7.md --force >/dev/null 2>&1; d7=$(tid d7)                                       # lost
     pnw=$(agent "" "$(uuid)")                                                                                          # not a worker
+    # sessions resumed (claude --resume) after their brief finished: legacy, merged 2 h ago (commit, then mtime), and a registry run ended 2 h ago
+    lb d8 term-d8; mh d8; commit_ago handoffs/merged/hd8.md >/dev/null; pd8=$(agent d8 "$(uuid)")
+    lb d12 term-d12; mh d12; touch -t "$(date -r "$ago" +%Y%m%d%H%M.%S 2>/dev/null || date -d "@$ago" +%Y%m%d%H%M.%S)" handoffs/merged/hd12.md; pd12=$(agent d12 "$(uuid)")
+    nb d9; $J spawn handoffs/briefs/d9.md --force >/dev/null 2>&1; d9=$(tid d9); merged "$d9" "$ago"; pd9=$(agent d9 "$(uuid)")
     export FAKE_OPEN="jarvis-t $d1 $d2 term-d5 $d6 term-u"
     sum() { find handoffs -type f -exec cksum {} + | sort; }
     before=$(sum); : > "$FAKE_LOG"
@@ -336,10 +342,13 @@ EOT
       && printf '%s' "$out" | grep -q "^  term-d5 · FINISHED but open · d5 · no run record"; check "doctor: finished terminals still open, registry and legacy" $?
     printf '%s' "$out" | grep -q '^  term-u · unknown (left alone) · "shell-term-u"'; check "doctor: an unknown terminal, with its title" $?
     printf '%s' "$out" | grep -q "^  run $d7 · lost"; check "doctor: a lost run" $?
+    printf '%s' "$out" | grep -q "pid $pd8 .* resumed after its brief finished (left alone) · d8\$" \
+      && printf '%s' "$out" | grep -q "pid $pd12 .* resumed after its brief finished (left alone) · d12\$"; check "doctor: a session resumed after its legacy brief was merged (commit time, else mtime)" $?
+    printf '%s' "$out" | grep -q "pid $pd9 .* resumed after its brief finished (left alone) · d9\$"; check "doctor: a session resumed after its run ended" $?
     [ "$before" = "$(sum)" ] && ! grep -q 'terminals close' "$FAKE_LOG" \
-      && alive "$pd1" && alive "$pd2" && alive "$pd3" && alive "$pd4" && alive "$pd6" && alive "$pnw" && alive "$pjv"; check "doctor without --apply changes nothing: handoffs/ identical, no close, every process alive" $?
+      && alive "$pd1" && alive "$pd2" && alive "$pd3" && alive "$pd4" && alive "$pd6" && alive "$pnw" && alive "$pjv" && alive "$pd8" && alive "$pd9" && alive "$pd12"; check "doctor without --apply changes nothing: handoffs/ identical, no close, every process alive" $?
     q="doctor: 4 finished workers still running · 3 finished terminals open · 1 lost run — handoffs/bin/jarvis doctor"
-    [ "$($J doctor --quiet)" = "$q" ]; check "doctor --quiet is one line" $?
+    [ "$($J doctor --quiet)" = "$q" ]; check "doctor --quiet is one line, resumed sessions not counted" $?
     $J status | grep -qxF "$q" && $J start | grep -qxF "$q"; check "status and start print it" $?
     $J lock docker -- sleep 30 & lk=$!; echo "$lk" >> "$groups"
     for _ in 1 2 3 4 5 6 7 8 9 10; do ls "$JARVIS_LOCK_DIR"/docker.slot* >/dev/null 2>&1 && break; sleep 0.3; done; sleep 0.3
@@ -351,6 +360,7 @@ EOT
     [ "$(grep -c 'terminals close' "$FAKE_LOG")" = 2 ]; check "…and no other terminal: running, busy, unknown and Jarvis's stay open" $?
     sleep 1; ! alive "$pd2" && ! alive "$pd3" && ! alive "$pd4"; check "--apply stops the finished workers' agents (registry and legacy)" $?
     alive "$pd1" && alive "$pd6" && alive "$pnw" && alive "$pjv"; check "…and leaves running, busy, non-worker and Jarvis alone" $?
+    alive "$pd8" && alive "$pd9" && alive "$pd12" && ! grep -qE "pid=($pd8|$pd9|$pd12) " handoffs/.jarvis/audit.log; check "…and every resumed session" $?
     grep -qx 'state: lost' "$runs/$d7" && grep -qx 'state: merged' "$runs/term-d5" && grep -qx 'state: running' "$runs/$d1"; check "--apply marks the lost run, records the legacy close" $?
     [ "$(wc -l < handoffs/.jarvis/audit.log | tr -d ' ')" = 6 ] \
       && grep -q "close run=$d2 .*result=ok" handoffs/.jarvis/audit.log && grep -q "signal run=$d2 .*pid=$pd2 .*TERM sent" handoffs/.jarvis/audit.log \
@@ -366,7 +376,13 @@ EOT
       "$(TZ=UTC LC_ALL=C ps -o lstart= -p "$me" | tr -s ' ' | sed 's/ $//')" > "$CLAUDE_CONFIG_DIR/sessions/$me.json"
     $J doctor | grep -q "pid $me .* · Jarvis\$" && SUPERSET_TERMINAL_ID=term-x $J doctor | grep -q "pid $me .* · not a worker"; check "doctor knows Jarvis as the Claude above it in Jarvis's terminal, and only there" $?
     rm -f "$CLAUDE_CONFIG_DIR/sessions/$me.json"
-    kill "$pd1" "$pnw" "$pjv" 2>/dev/null
+    # closing a finished terminal (stop_run) never stops a session resumed after the run ended
+    nb d10; $J spawn handoffs/briefs/d10.md --force >/dev/null 2>&1; d10=$(tid d10); merged "$d10" "$ago"; pd10=$(agent d10 "$(uuid)")
+    lb d11 term-d11; mh d11; commit_ago handoffs/merged/hd11.md >/dev/null; pd11=$(agent d11 "$(uuid)")
+    export FAKE_OPEN="jarvis-t $d1 term-u $d10 term-d11"; : > "$FAKE_LOG"; $J doctor --apply > "$tmp/doctor2.out"
+    grep -q "terminals close --workspace ws --terminal $d10\$" "$FAKE_LOG" && grep -q 'terminal term-d11$' "$FAKE_LOG"; check "--apply closes finished terminals whose session was resumed elsewhere" $?
+    sleep 1; alive "$pd10" && alive "$pd11" && ! grep -qE "pid=($pd10|$pd11) " handoffs/.jarvis/audit.log; check "…and stop_run leaves the resumed sessions alone (registry and legacy)" $?
+    kill "$pd1" "$pnw" "$pjv" "$pd8" "$pd9" "$pd10" "$pd11" "$pd12" 2>/dev/null
   ) | tee "$tmp/jarvis.out"
   n=$(grep -c '^  FAIL' "$tmp/jarvis.out"); fails=$((fails + n))
 else
