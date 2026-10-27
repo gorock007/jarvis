@@ -85,7 +85,7 @@ case "$1 $2" in
     printf '{"kind":"terminal","sessionId":"term-%s"}\n' "$n" ;;
   "terminals close") [ -z "${FAKE_CLOSE_FAIL:-}" ] || { echo "Error: terminal $6 not found" >&2; exit 1; } ;;
   "terminals read") printf '{"text":"%s"}\n' "${FAKE_SCREEN:-Working… esc to interrupt}" ;;
-  "terminals list") printf '{"sessions":[%s]}\n' "$(printf '%s' "${FAKE_OPEN:-}" | sed -E 's/([^ ]+)/{"terminalId":"\1","exited":false}/g; s/ /,/g')" ;;
+  "terminals list") printf '{"sessions":[%s]}\n' "$(printf '%s' "${FAKE_OPEN:-}" | sed -E 's/([^ ]+)/{"terminalId":"\1","exited":false,"title":"shell-\1"}/g; s/ /,/g')" ;;
 esac
 EOT
   chmod +x "$tmp/fake/superset"
@@ -252,10 +252,10 @@ EOT
     hof() { echo "$1" > "$1.txt"; printf '# %s\nstatus: done\nagent: claude claude-opus-5-5\nbrief: handoffs/briefs/%s.md\n## Files\n- %s.txt — created\n## Processes left running\nnone\n' "$1" "$1" "$1" > "handoffs/h$1.md"; }
     # a stand-in for a worker's claude: a real process, its session record (as Claude Code
     # writes them) and a transcript that opens with the spawn prompt for brief $1
-    agent() { # $1 = brief name ("" = not a worker), $2 = session id, [$3 = procStart to record] → its pid
+    agent() { # $1 = brief name ("" = not a worker), $2 = session id, [$3 = procStart to record], [$4 = status] → its pid
       sleep 300 >/dev/null 2>&1 & p=$!; echo "$p" >> "$groups"
       st=${3:-$(TZ=UTC LC_ALL=C ps -o lstart= -p "$p" | tr -s ' ' | sed 's/ $//')}
-      printf '{"pid":%s,"sessionId":"%s","cwd":"%s","procStart":"%s","status":"idle"}\n' "$p" "$2" "$cwd" "$st" > "$CLAUDE_CONFIG_DIR/sessions/$p.json"
+      printf '{"pid":%s,"sessionId":"%s","cwd":"%s","procStart":"%s","status":"%s"}\n' "$p" "$2" "$cwd" "$st" "${4:-idle}" > "$CLAUDE_CONFIG_DIR/sessions/$p.json"
       if [ -n "$1" ]; then printf '{"type":"user","message":{"role":"user","content":"You are a Jarvis worker. Read AGENTS.md, then do the task in handoffs/briefs/%s.md. Put every question in one first handoff."}}\n' "$1"
       else echo '{"type":"user","message":{"role":"user","content":"hi"}}'; fi > "$CLAUDE_CONFIG_DIR/projects/$proj/$2.jsonl"
       echo "$p"
@@ -305,6 +305,68 @@ EOT
     $J close term-zz >/dev/null && grep -q 'terminal term-zz$' "$FAKE_LOG" && grep -qx 'state: closed' "$runs/term-zz"; check "…a terminal with no record too" $?
     $J close jarvis-t >/dev/null 2>&1; [ $? = 1 ]; check "…but never Jarvis's own" $?
     kill "$pn" "$pw" "$p5" 2>/dev/null
+
+    echo "bin/jarvis doctor (census, dry run, --apply; real processes as agents)"
+    rm -rf "$runs" handoffs/.jarvis/audit.log; rm -f "$CLAUDE_CONFIG_DIR"/sessions/*.json
+    export JARVIS_LOCK_DIR="$tmp/locks"
+    lb() { printf '# %s\nworker: claude\nmodel: claude-opus-5-5\neffort: high\nstarted: 2026-10-19 10:00 · terminal: %s\n\n## Goal\nx\n' "$1" "$2" > "handoffs/briefs/$1.md"; }
+    mh() { printf '# %s\nstatus: done\nbrief: handoffs/briefs/%s.md\n## Files\n- x\n' "$1" "$1" > "handoffs/merged/h$1.md"; }
+    merged() { run_f="$runs/$1"; sed 's/^state: running$/state: merged/' "$run_f" > "$tmp/r" && cat "$tmp/r" > "$run_f"; }
+    js=$(uuid); pjv=$(agent "" "$js"); printf '{"session_id":"%s"}\n' "$js" > handoffs/.jarvis/session.json
+    nb d1; $J spawn handoffs/briefs/d1.md --force >/dev/null 2>&1; d1=$(tid d1); pd1=$(agent d1 "$(uuid)")           # running
+    nb d2; $J spawn handoffs/briefs/d2.md --force >/dev/null 2>&1; d2=$(tid d2); pd2=$(agent d2 "$(uuid)"); merged "$d2" # finished, terminal open
+    nb d3; $J spawn handoffs/briefs/d3.md --force >/dev/null 2>&1; d3=$(tid d3); pd3=$(agent d3 "$(uuid)"); merged "$d3" # finished, terminal gone
+    lb d4 term-d4; mh d4; pd4=$(agent d4 "$(uuid)")                                                                   # legacy finished, terminal gone
+    lb d5 term-d5; mh d5                                                                                               # legacy finished terminal, open
+    nb d6; $J spawn handoffs/briefs/d6.md --force >/dev/null 2>&1; d6=$(tid d6); pd6=$(agent d6 "$(uuid)" "" busy); merged "$d6" # finished but busy
+    nb d7; $J spawn handoffs/briefs/d7.md --force >/dev/null 2>&1; d7=$(tid d7)                                       # lost
+    pnw=$(agent "" "$(uuid)")                                                                                          # not a worker
+    export FAKE_OPEN="jarvis-t $d1 $d2 term-d5 $d6 term-u"
+    sum() { find handoffs -type f -exec cksum {} + | sort; }
+    before=$(sum); : > "$FAKE_LOG"
+    out=$($J doctor); echo "$out" > "$tmp/doctor.out"
+    printf '%s' "$out" | grep -q "pid $pjv .* · Jarvis\$"; check "doctor: Jarvis's process" $?
+    printf '%s' "$out" | grep -q "pid $pd1 .* worker, running · d1 · run $d1 (running)"; check "doctor: a running worker" $?
+    printf '%s' "$out" | grep -q "pid $pd2 .* worker, FINISHED · d2 · run $d2 (merged)" \
+      && printf '%s' "$out" | grep -q "pid $pd3 .* worker, FINISHED · d3"; check "doctor: finished workers, from the registry" $?
+    printf '%s' "$out" | grep -q "pid $pd4 .* worker, FINISHED · d4 · no run record, handoff merged"; check "doctor: a finished worker from before the registry" $?
+    printf '%s' "$out" | grep -q "pid $pd6 .* busy .* worker, FINISHED · d6 .* busy: left alone"; check "doctor: a busy finished worker is left alone" $?
+    printf '%s' "$out" | grep -q "pid $pnw .* not a worker"; check "doctor: a session that isn't a worker's" $?
+    printf '%s' "$out" | grep -q "^  $d2 · FINISHED but open · d2 · merged" \
+      && printf '%s' "$out" | grep -q "^  term-d5 · FINISHED but open · d5 · no run record"; check "doctor: finished terminals still open, registry and legacy" $?
+    printf '%s' "$out" | grep -q '^  term-u · unknown (left alone) · "shell-term-u"'; check "doctor: an unknown terminal, with its title" $?
+    printf '%s' "$out" | grep -q "^  run $d7 · lost"; check "doctor: a lost run" $?
+    [ "$before" = "$(sum)" ] && ! grep -q 'terminals close' "$FAKE_LOG" \
+      && alive "$pd1" && alive "$pd2" && alive "$pd3" && alive "$pd4" && alive "$pd6" && alive "$pnw" && alive "$pjv"; check "doctor without --apply changes nothing: handoffs/ identical, no close, every process alive" $?
+    q="doctor: 4 finished workers still running · 3 finished terminals open · 1 lost run — handoffs/bin/jarvis doctor"
+    [ "$($J doctor --quiet)" = "$q" ]; check "doctor --quiet is one line" $?
+    $J status | grep -qxF "$q" && $J start | grep -qxF "$q"; check "status and start print it" $?
+    $J lock docker -- sleep 30 & lk=$!; echo "$lk" >> "$groups"
+    for _ in 1 2 3 4 5 6 7 8 9 10; do ls "$JARVIS_LOCK_DIR"/docker.slot* >/dev/null 2>&1 && break; sleep 0.3; done; sleep 0.3
+    $J doctor | grep -A1 '^  docker · machine' | grep -q "held  pid [0-9]* .* sleep 30\$"; check "doctor shows a machine-wide lease that's held" $?
+    kill "$lk" 2>/dev/null; wait "$lk" 2>/dev/null
+
+    : > "$FAKE_LOG"; out=$($J doctor --apply); echo "$out" >> "$tmp/doctor.out"
+    grep -q "terminals close --workspace ws --terminal $d2\$" "$FAKE_LOG" && grep -q 'terminal term-d5$' "$FAKE_LOG"; check "--apply closes the finished terminals, registry and legacy" $?
+    [ "$(grep -c 'terminals close' "$FAKE_LOG")" = 2 ]; check "…and no other terminal: running, busy, unknown and Jarvis's stay open" $?
+    sleep 1; ! alive "$pd2" && ! alive "$pd3" && ! alive "$pd4"; check "--apply stops the finished workers' agents (registry and legacy)" $?
+    alive "$pd1" && alive "$pd6" && alive "$pnw" && alive "$pjv"; check "…and leaves running, busy, non-worker and Jarvis alone" $?
+    grep -qx 'state: lost' "$runs/$d7" && grep -qx 'state: merged' "$runs/term-d5" && grep -qx 'state: running' "$runs/$d1"; check "--apply marks the lost run, records the legacy close" $?
+    [ "$(wc -l < handoffs/.jarvis/audit.log | tr -d ' ')" = 6 ] \
+      && grep -q "close run=$d2 .*result=ok" handoffs/.jarvis/audit.log && grep -q "signal run=$d2 .*pid=$pd2 .*TERM sent" handoffs/.jarvis/audit.log \
+      && grep -q "close run=term-d5 .*result=ok" handoffs/.jarvis/audit.log && grep -q "signal run=$d3 .*pid=$pd3 .*TERM sent" handoffs/.jarvis/audit.log \
+      && grep -q "signal run=term-d4 brief=handoffs/briefs/d4.md pid=$pd4 .*TERM sent" handoffs/.jarvis/audit.log \
+      && grep -q "lost run=$d7 .*result=marked lost" handoffs/.jarvis/audit.log; check "…one audit line per action" $?
+    [ "$(printf '%s\n' "$out" | grep -c '^doctor: ')" -ge 5 ] && printf '%s' "$out" | grep -q "^doctor: left $d6 open: its agent is busy"; check "…and a printed line for each" $?
+    kill "$pd6" 2>/dev/null; export FAKE_OPEN="jarvis-t $d1 term-u"; sleep 1
+    [ -z "$($J doctor --quiet)" ] && ! $J status | grep -q '^doctor:' && ! $J start | grep -q '^doctor:'; check "clean: --quiet, status and start say nothing" $?
+    # Jarvis with no prompt-hook record: the Claude process above `jarvis doctor` in Jarvis's terminal
+    sh -c 'echo $PPID' > "$tmp/me"; me=$(cat "$tmp/me")
+    printf '{"pid":%s,"sessionId":"%s","cwd":"%s","procStart":"%s","status":"busy"}\n' "$me" "$(uuid)" "$cwd" \
+      "$(TZ=UTC LC_ALL=C ps -o lstart= -p "$me" | tr -s ' ' | sed 's/ $//')" > "$CLAUDE_CONFIG_DIR/sessions/$me.json"
+    $J doctor | grep -q "pid $me .* · Jarvis\$" && SUPERSET_TERMINAL_ID=term-x $J doctor | grep -q "pid $me .* · not a worker"; check "doctor knows Jarvis as the Claude above it in Jarvis's terminal, and only there" $?
+    rm -f "$CLAUDE_CONFIG_DIR/sessions/$me.json"
+    kill "$pd1" "$pnw" "$pjv" 2>/dev/null
   ) | tee "$tmp/jarvis.out"
   n=$(grep -c '^  FAIL' "$tmp/jarvis.out"); fails=$((fails + n))
 else
