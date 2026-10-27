@@ -410,5 +410,6 @@ else
   echo "ultron host: skipped (no ultron binary: put it on PATH or set ULTRON_BIN; jq needed too)"
 fi
 
+echo "jarvis lock (eval/locktest.sh)"; "$BASH" "$here/locktest.sh" 2>&1 | tee "$tmp/lock.out"; grep -q '^locktest: all passed' "$tmp/lock.out" || { n=$(grep -c '^  FAIL' "$tmp/lock.out"); fails=$((fails + (n > 0 ? n : 1))); }
 rm -rf "$tmp"
 echo; [ "$fails" = 0 ] && echo "selftest: all passed" || { echo "selftest: $fails failed"; exit 1; }
