@@ -155,7 +155,8 @@ act on the FINISHED and lost ones (nothing else is touched): handoffs/bin/jarvis
   marked `busy: left alone`. A worker's session in a process that started
   more than 60 s after its run ended (or its handoff went into `merged/`) is
   `resumed after its brief finished (left alone)`: someone reopened the
-  transcript later, so it is never counted, closed or signalled.
+  transcript later, so it is never counted or signalled, its brief's finished
+  terminal is left open, and what it runs is never a leftover.
 - **Terminals** are Jarvis, `worker, running`, `FINISHED but open` or
   `unknown (left alone)`. An unknown terminal shows its title when the host
   has the optional `titles` op (see `hosts.md`).

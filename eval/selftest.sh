@@ -376,13 +376,33 @@ EOT
       "$(TZ=UTC LC_ALL=C ps -o lstart= -p "$me" | tr -s ' ' | sed 's/ $//')" > "$CLAUDE_CONFIG_DIR/sessions/$me.json"
     $J doctor | grep -q "pid $me .* · Jarvis\$" && SUPERSET_TERMINAL_ID=term-x $J doctor | grep -q "pid $me .* · not a worker"; check "doctor knows Jarvis as the Claude above it in Jarvis's terminal, and only there" $?
     rm -f "$CLAUDE_CONFIG_DIR/sessions/$me.json"
-    # closing a finished terminal (stop_run) never stops a session resumed after the run ended
+    # a finished terminal whose session was resumed after the brief finished may be where it runs now: left open
     nb d10; $J spawn handoffs/briefs/d10.md --force >/dev/null 2>&1; d10=$(tid d10); merged "$d10" "$ago"; pd10=$(agent d10 "$(uuid)")
     lb d11 term-d11; mh d11; commit_ago handoffs/merged/hd11.md >/dev/null; pd11=$(agent d11 "$(uuid)")
-    export FAKE_OPEN="jarvis-t $d1 term-u $d10 term-d11"; : > "$FAKE_LOG"; $J doctor --apply > "$tmp/doctor2.out"
-    grep -q "terminals close --workspace ws --terminal $d10\$" "$FAKE_LOG" && grep -q 'terminal term-d11$' "$FAKE_LOG"; check "--apply closes finished terminals whose session was resumed elsewhere" $?
-    sleep 1; alive "$pd10" && alive "$pd11" && ! grep -qE "pid=($pd10|$pd11) " handoffs/.jarvis/audit.log; check "…and stop_run leaves the resumed sessions alone (registry and legacy)" $?
-    kill "$pd1" "$pnw" "$pjv" "$pd8" "$pd9" "$pd10" "$pd11" "$pd12" 2>/dev/null
+    export FAKE_OPEN="jarvis-t $d1 term-u $d10 term-d11"; out=$($J doctor)
+    printf '%s' "$out" | grep -q "^  $d10 · FINISHED but open · d10 · merged · a session resumed there after the brief finished (left alone)\$" \
+      && printf '%s' "$out" | grep -q "^  term-d11 · FINISHED but open · d11 · no run record, handoff merged · a session resumed there after the brief finished (left alone)\$"; check "doctor: a finished terminal with a resumed session, registry and legacy" $?
+    [ -z "$($J doctor --quiet)" ]; check "…isn't counted by --quiet" $?
+    : > "$FAKE_LOG"; na=$(wc -l < handoffs/.jarvis/audit.log); out=$($J doctor --apply)
+    printf '%s' "$out" | grep -qx "doctor: skipped $d10: a session resumed there after the brief finished" \
+      && printf '%s' "$out" | grep -qx "doctor: skipped term-d11: a session resumed there after the brief finished"; check "--apply skips a finished terminal with a resumed session, saying so" $?
+    ! grep -q 'terminals close' "$FAKE_LOG" && [ "$(wc -l < handoffs/.jarvis/audit.log)" = "$na" ] && [ ! -f "$runs/term-d11" ] && alive "$pd10" && alive "$pd11"; check "…closing nothing, auditing nothing, both sessions alive" $?
+    $J close "$d10" | grep -q "closed $d10" && sleep 1 && alive "$pd10" && ! grep -q "pid=$pd10 " handoffs/.jarvis/audit.log; check "stop_run (jarvis close) on an ended run leaves a session resumed after it alone" $?
+    # leftovers: what a resumed session runs is its own, never a finished worker's leftover
+    s13=$(uuid); nb d13; $J spawn handoffs/briefs/d13.md --force >/dev/null 2>&1; d13=$(tid d13); merged "$d13" "$ago"; pd13=$(agent d13 "$s13"); pg13=$(fixture "$s13")
+    s15=$(uuid); lb d15 term-d15; mh d15; commit_ago handoffs/merged/hd15.md >/dev/null; pd15=$(agent d15 "$s15"); pg15=$(fixture "$s15")
+    s14=$(uuid); nb d14; $J spawn handoffs/briefs/d14.md --force >/dev/null 2>&1; d14=$(tid d14); pd14=$(agent d14 "$s14"); merged "$d14"; pg14=$(fixture "$s14") # ended after it started
+    sleep 1; out=$($J leftovers)
+    ! printf '%s' "$out" | grep -q 'briefs/d13\.md' && ! printf '%s' "$out" | grep -q 'briefs/d15\.md' \
+      && ! $J status | grep -qE 'briefs/d1[35]\.md'; check "leftovers and status don't list a resumed session's processes (registry and legacy)" $?
+    printf '%s' "$out" | grep -q 'briefs/d14\.md (worker terminal closed)'; check "…but still list a finished worker's that started before the end" $?
+    $J leftovers handoffs/briefs/d13.md --stop | grep -qx 'nothing left running by handoffs/briefs/d13.md' \
+      && $J leftovers handoffs/briefs/d15.md --stop >/dev/null && alive "$pg13" && alive "$pg15"; check "leftovers --stop leaves them running" $?
+    hof d13; out=$($J merge handoffs/hd13.md --no-push)
+    ! printf '%s' "$out" | grep -q 'the worker left these running' && sleep 1 && alive "$pg13"; check "…and so does merge's reap" $?
+    $J leftovers handoffs/briefs/d14.md --stop | grep -q 'stopped 2' && sleep 1 && ! alive "$pg14"; check "…which still stops the finished worker's" $?
+    kill "$pd1" "$pnw" "$pjv" "$pd8" "$pd9" "$pd10" "$pd11" "$pd12" "$pd13" "$pd14" "$pd15" 2>/dev/null
+    kill -- "-$pg13" "-$pg15" 2>/dev/null
   ) | tee "$tmp/jarvis.out"
   n=$(grep -c '^  FAIL' "$tmp/jarvis.out"); fails=$((fails + n))
 else

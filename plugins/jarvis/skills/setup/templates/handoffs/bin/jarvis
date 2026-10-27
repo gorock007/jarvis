@@ -630,13 +630,30 @@ brief_of_session() { # the brief a session of this checkout worked from, if it w
   [ -n "${b:-}" ] && [ -f "$b" ] && echo "$b"
 }
 
+# A session resumed after its brief finished (claude --resume, after_end) is
+# someone's live session again: what it runs is its own, never a leftover.
 worker_sessions() { # "<brief> <session id>" for each worker session something still names; $1 = only this brief
-  local s b
+  local s b here="" got=0
   for s in $(live_sids); do
     b=$(brief_of_session "$s") || continue
     [ -z "${1:-}" ] || [ "$b" = "$1" ] || continue
+    [ $got = 1 ] || { here=$(claude_here); got=1; }
+    resumed_sid "$b" "$s" "$here" && continue
     echo "$b $s"
   done
+}
+
+resumed_sid() { # $1 = brief, $2 = session id, $3 = claude_here lines: a live process of it started after the brief's run ended?
+  local pid ps sid st r e
+  while read -r pid ps sid st; do
+    [ -n "$pid" ] && [ "$sid" = "$2" ] || continue
+    r=$(run_by_start "$1" "$ps")
+    if [ -n "$r" ]; then e=$(run_get "$r" ended); else e=$(merged_at "$(doc_merged "$1")"); fi
+    after_end "$ps" "$e" && return 0
+  done <<EOF
+$3
+EOF
+  return 1
 }
 
 # What the given sessions left running, one process per line:
@@ -1294,7 +1311,8 @@ doc_procs() { # $1 = Jarvis's terminal
 }
 
 # "<terminal> <class> <run> <brief>" for each terminal the host lists; class is
-# jarvis | running | finished | unknown. With no run record, a terminal is a
+# jarvis | running | finished | unknown (cmd_doctor makes a finished one resumed
+# when it is a resumed session's terminal or of its brief). With no run record, a terminal is a
 # worker's when a brief's started: line or a Running workers line names it.
 doc_terms() { # $1 = host list, $2 = Jarvis's terminal
   local id b legacy
@@ -1357,6 +1375,10 @@ cmd_doctor() {
   [ -n "$HOST" ] && open=$(host list 2>/dev/null) && listed=1
   procs=$(doc_procs "$jt")
   if [ $listed = 1 ]; then terms=$(doc_terms "$open" "$jt"); lost=$(doc_lost "$open" "$procs"); fi
+  # a finished terminal of a brief whose session was resumed may be where it runs now: resumed, left open
+  terms=$(printf '%s\n' "$terms" | J_RT="$(printf '%s\n' "$procs" | awk '$5 == "resumed" {print $8; print "brief " $7}')" awk '
+    BEGIN { n = split(ENVIRON["J_RT"], r, "\n"); for (i = 1; i <= n; i++) if (r[i] != "-" && r[i] != "brief -") rt[r[i]] = 1 }
+    NF { if ($2 == "finished" && (($1 in rt) || (("brief " $4) in rt))) $2 = "resumed"; print }')
   n1=$(printf '%s\n' "$procs" | awk '$5 == "finished"' | wc -l | tr -d ' ')
   n2=$(printf '%s\n' "$terms" | awk '$2 == "finished"' | wc -l | tr -d ' ')
   n3=$(printf '%s\n' "$lost" | awk 'NF' | wc -l | tr -d ' ')
@@ -1403,7 +1425,10 @@ cmd_doctor() {
       case "$class" in
         jarvis) echo "Jarvis" ;;
         running) echo "worker, running · $(doc_brief "$brief")$([ "$run" = - ] && echo ' · no run record')" ;;
-        finished) echo "FINISHED but open · $(doc_brief "$brief") · $(if [ "$run" = - ]; then echo 'no run record, handoff merged'; else run_get "$run" state; fi)" ;;
+        finished|resumed)
+          printf 'FINISHED but open · %s · %s' "$(doc_brief "$brief")" "$(if [ "$run" = - ]; then echo 'no run record, handoff merged'; else run_get "$run" state; fi)"
+          [ "$class" = resumed ] && printf ' · a session resumed there after the brief finished (left alone)'
+          echo ;;
         *) printf 'unknown (left alone)%s' "$([ "$run" != - ] && echo " · run $(run_get "$run" state) · $(doc_brief "$brief")")"
            s=$(printf '%s\n' "$titles" | awk -F '\t' -v t="$id" '$1 == t {print $2; exit}')
            [ -n "$s" ] && printf ' · "%s"' "$s"
@@ -1433,6 +1458,7 @@ cmd_doctor() {
   # 1. a finished run's terminal still open: close it; stop_run stops its agent if it survives
   anc=" $(ancestors)"
   printf '%s\n' "$terms" | while read -r id class run brief; do
+    [ "$class" = resumed ] && { echo "doctor: skipped $(short "$id"): a session resumed there after the brief finished"; continue; }
     [ "$class" = finished ] || continue
     s=$(printf '%s\n' "$procs" | awk -v t="$id" '$8 == t && ($4 == "busy" || $4 == "shell") {print $1}' | tr '\n' ' ')
     if [ -n "$s" ]; then echo "doctor: left $(short "$id") open: its agent is busy (pid ${s% })"; continue; fi
