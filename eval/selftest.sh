@@ -81,7 +81,9 @@ if command -v jq >/dev/null 2>&1; then
 #!/bin/bash
 echo "superset $*" >> "$FAKE_LOG"
 case "$1 $2" in
-  "agents create") n=$(grep -c 'agents create' "$FAKE_LOG"); printf '{"kind":"terminal","sessionId":"term-%s"}\n' "$n" ;;
+  "agents create") n=$(( $(cat "$FAKE_LOG.n" 2>/dev/null || echo 0) + 1 )); echo "$n" > "$FAKE_LOG.n"
+    printf '{"kind":"terminal","sessionId":"term-%s"}\n' "$n" ;;
+  "terminals close") [ -z "${FAKE_CLOSE_FAIL:-}" ] || { echo "Error: terminal $6 not found" >&2; exit 1; } ;;
   "terminals read") printf '{"text":"%s"}\n' "${FAKE_SCREEN:-Working… esc to interrupt}" ;;
   "terminals list") printf '{"sessions":[%s]}\n' "$(printf '%s' "${FAKE_OPEN:-}" | sed -E 's/([^ ]+)/{"terminalId":"\1","exited":false}/g; s/ /,/g')" ;;
 esac
@@ -241,6 +243,68 @@ EOT
     CLAUDE_CODE_SESSION_ID=$wj $J leftovers --mine --stop >/dev/null; sleep 1; ! alive "$pj" && alive "$ps_self"; check "--mine --stop stops them, not the caller" $?
     env -u CLAUDE_CODE_SESSION_ID $J leftovers --mine >/dev/null 2>&1; [ $? = 1 ]; check "--mine without a Claude session refuses" $?
     [ "$($J leftovers)" = "nothing left running by any worker" ]; check "nothing left afterwards" $?
+
+    echo "bin/jarvis lifecycle (run registry, verified close; real processes as agents)"
+    echo 'JARVIS_STOP_GRACE=1' >> handoffs/jarvis.conf
+    mkdir -p "$CLAUDE_CONFIG_DIR/sessions"; cwd=$(pwd -P); runs=handoffs/.jarvis/runs
+    nb() { printf '# %s\nworker: claude\nmodel: claude-opus-5-5\neffort: high\n\n## Goal\nx\n' "$1" > "handoffs/briefs/$1.md"; }
+    tid() { sed -n 's/^started:.*terminal: //p' "handoffs/briefs/$1.md"; }
+    hof() { echo "$1" > "$1.txt"; printf '# %s\nstatus: done\nagent: claude claude-opus-5-5\nbrief: handoffs/briefs/%s.md\n## Files\n- %s.txt — created\n## Processes left running\nnone\n' "$1" "$1" "$1" > "handoffs/h$1.md"; }
+    # a stand-in for a worker's claude: a real process, its session record (as Claude Code
+    # writes them) and a transcript that opens with the spawn prompt for brief $1
+    agent() { # $1 = brief name ("" = not a worker), $2 = session id, [$3 = procStart to record] → its pid
+      sleep 300 >/dev/null 2>&1 & p=$!; echo "$p" >> "$groups"
+      st=${3:-$(TZ=UTC LC_ALL=C ps -o lstart= -p "$p" | tr -s ' ' | sed 's/ $//')}
+      printf '{"pid":%s,"sessionId":"%s","cwd":"%s","procStart":"%s","status":"idle"}\n' "$p" "$2" "$cwd" "$st" > "$CLAUDE_CONFIG_DIR/sessions/$p.json"
+      if [ -n "$1" ]; then printf '{"type":"user","message":{"role":"user","content":"You are a Jarvis worker. Read AGENTS.md, then do the task in handoffs/briefs/%s.md. Put every question in one first handoff."}}\n' "$1"
+      else echo '{"type":"user","message":{"role":"user","content":"hi"}}'; fi > "$CLAUDE_CONFIG_DIR/projects/$proj/$2.jsonl"
+      echo "$p"
+    }
+
+    nb r1; $J spawn handoffs/briefs/r1.md --force >/dev/null 2>&1; r1=$(tid r1)
+    [ -n "$r1" ] && sed -n 5p handoffs/briefs/r1.md | grep -q "^started: .* · terminal: $r1\$"; check "spawn adds a started: line after the header when the brief has none" $?
+    grep -qx 'brief: handoffs/briefs/r1.md' "$runs/$r1" && grep -qx 'state: running' "$runs/$r1" && grep -qx 'agent: claude' "$runs/$r1"; check "…and writes the run registry" $?
+    sed -i.bak '/^started:/d' handoffs/briefs/r1.md && sed -i.bak '/r1\.md/d' handoffs/OPEN.md && rm -f handoffs/briefs/r1.md.bak handoffs/OPEN.md.bak
+    hof r1; out=$($J merge handoffs/hr1.md --no-push)
+    printf '%s' "$out" | grep -q "closed $r1" && grep -q "terminals close --workspace ws --terminal $r1\$" "$FAKE_LOG"; check "merge closes the worker through the registry alone" $?
+    grep -qx 'state: merged' "$runs/$r1" && grep -q '^outcome: closed' "$runs/$r1"; check "…and marks the run merged" $?
+
+    nb r2; awk '{print} /^## Running workers/ {print "- 2026-10-19 10:00 · claude/claude-opus-5-5 high · term term-L2 · handoffs/briefs/r2.md"}' handoffs/OPEN.md > "$tmp/o" && cat "$tmp/o" > handoffs/OPEN.md
+    hof r2; $J merge handoffs/hr2.md --no-push | grep -q 'closed term-L2'; check "a brief from before the registry closes through its OPEN.md line" $?
+    grep -qx 'state: merged' "$runs/term-L2"; check "…and gets a run record" $?
+    nb r0; hof r0; $J merge handoffs/hr0.md --no-push | grep -q 'no worker terminal recorded for handoffs/briefs/r0.md'; check "merge says so when no terminal is recorded" $?
+
+    nb r3; $J spawn handoffs/briefs/r3.md --force >/dev/null 2>&1; r3=$(tid r3)
+    hof r3; out=$(FAKE_CLOSE_FAIL=1 $J merge handoffs/hr3.md --no-push)
+    printf '%s' "$out" | grep -q "close FAILED for $r3: Error: terminal $r3 not found"; check "a failed close is on the merge line, with the host's error" $?
+    grep -q '^outcome: close FAILED' "$runs/$r3" && grep -q "close run=$r3 .*result=FAILED" handoffs/.jarvis/audit.log; check "…and kept in the run record and the audit log" $?
+
+    nb r4; $J spawn handoffs/briefs/r4.md --force >/dev/null 2>&1; r4=$(tid r4)
+    p4=$(agent r4 "$(uuid)"); pn=$(agent "" "$(uuid)"); pw=$(agent r4 "$(uuid)" "Thu Jan 1 00:00:00 2026")
+    $J status | grep -q 'claude processes alive in this checkout: 2'; check "status counts live Claude processes here, a stale session record left out" $?
+    hof r4; out=$($J merge handoffs/hr4.md --no-push)
+    printf '%s' "$out" | grep -q "worker pid $p4 didn't exit on close: stopped (TERM)"; check "merge stops a worker agent the close left running" $?
+    sleep 1; ! alive "$p4"; check "…and it's gone" $?
+    grep -q "signal run=$r4 brief=handoffs/briefs/r4.md pid=$p4 procstart=.* result=TERM sent" handoffs/.jarvis/audit.log; check "…with an audit line" $?
+    alive "$pw" && ! grep -q "pid=$pw " handoffs/.jarvis/audit.log; check "a PID whose start time doesn't match the session record is never signalled" $?
+    alive "$pn" && ! grep -q "pid=$pn " handoffs/.jarvis/audit.log; check "a non-worker session in the same checkout is never signalled" $?
+
+    echo 'JARVIS_REAP=0' >> handoffs/jarvis.conf
+    nb r5; $J spawn handoffs/briefs/r5.md --force >/dev/null 2>&1; p5=$(agent r5 "$(uuid)")
+    hof r5; out=$($J merge handoffs/hr5.md --no-push)
+    printf '%s' "$out" | grep -q "worker pid $p5 didn't exit on close: still running (JARVIS_REAP=0; stop it: kill $p5)" && alive "$p5"; check "JARVIS_REAP=0 names a surviving agent and leaves it" $?
+    sed -i.bak '/^JARVIS_REAP=0$/d' handoffs/jarvis.conf && rm -f handoffs/jarvis.conf.bak
+
+    nb r6; $J spawn handoffs/briefs/r6.md --force >/dev/null 2>&1; r6a=$(tid r6)
+    $J spawn handoffs/briefs/r6.md --force 2>&1 | grep -q "already had a running worker ($r6a); merge closes every worker of this brief"; check "respawning a brief warns" $?
+    r6b=$(tid r6); hof r6; out=$($J merge handoffs/hr6.md --no-push)
+    [ "$r6a" != "$r6b" ] && printf '%s' "$out" | grep -q "closed $r6a" && printf '%s' "$out" | grep -q "closed $r6b"; check "…and merge closes both runs" $?
+
+    nb r7; $J spawn handoffs/briefs/r7.md --force >/dev/null 2>&1; r7=$(tid r7)
+    $J close "$r7" | grep -q "closed $r7 · dropped it" && grep -qx 'state: closed' "$runs/$r7" && ! grep -q 'r7\.md' handoffs/OPEN.md; check "jarvis close closes the run and marks it closed" $?
+    $J close term-zz >/dev/null && grep -q 'terminal term-zz$' "$FAKE_LOG" && grep -qx 'state: closed' "$runs/term-zz"; check "…a terminal with no record too" $?
+    $J close jarvis-t >/dev/null 2>&1; [ $? = 1 ]; check "…but never Jarvis's own" $?
+    kill "$pn" "$pw" "$p5" 2>/dev/null
   ) | tee "$tmp/jarvis.out"
   n=$(grep -c '^  FAIL' "$tmp/jarvis.out"); fails=$((fails + n))
 else
