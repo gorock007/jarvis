@@ -21,6 +21,9 @@ Reference files next to this skill. Read them when you need the detail:
 - `references/efficiency.md`: where Jarvis's usage actually went when it was
   measured, and which mechanism now handles each cause. Read it when usage is
   climbing or before you change how the loop works.
+- `references/lifecycle.md`: how merge and close end a worker and check it's
+  gone, the run registry, `jarvis doctor`, and `jarvis lock` for heavy
+  suites. Read it when a `doctor:` line appears or a lock blocks someone.
 
 ## The shape of the job
 
@@ -175,6 +178,15 @@ when a worker needs you. Then act on what it shows:
   --stop`, unless the worker's handoff explains why one must stay up; ask the
   user about those. Never stop a process by name or pattern (`pkill chrome`):
   the command touches only what that worker started, and nothing else.
+- **A `doctor:` line at the end of status** (finished workers still running,
+  finished terminals open, lost runs): run `handoffs/bin/jarvis doctor` and
+  read it. If it lists only finished and lost things, run `jarvis doctor
+  --apply`. It acts only on runs Jarvis recorded, checks identity before each
+  signal, and leaves unknown terminals and non-worker sessions alone. A busy
+  finished worker is a question first: is it really done?
+- **A worker waiting on a lock**: that's normal. The lease frees itself when
+  the holder's processes exit. `jarvis resources` shows who holds it. Never
+  kill the holder to hurry it.
 - **Worker asked the user directly in its terminal**: answer it yourself if
   it's a ruling you can make, otherwise batch it. Either way, remind it with
   `jarvis send` that questions go in the handoff.
@@ -190,16 +202,25 @@ list is the contract.
    goes back to the worker (`jarvis send`) before review. Other workers'
    changes show up in the same list, so judge which ones belong to this task.
 2. Read the diff of the listed files: `git diff -- <files>`. If the diff is
-   big, have the `diff-reviewer` subagent summarise it. Run the checks from
-   `CLAUDE.md` yourself if the handoff's **Checks run** is thin.
+   big, have the `diff-reviewer` subagent summarise it. Run the targeted
+   checks from `CLAUDE.md` yourself if the handoff's **Checks run** is thin.
+   **The merge gate:** the heavy suites (Docker, e2e, the full suite) run once,
+   by you, for the integration candidate: after merging a wave, or before
+   merging a handoff that touches what they cover. Run them through the
+   repo's wrapped scripts or `handoffs/bin/jarvis lock <class> --reuse --
+   <command>`, never bare, and put the result in the merge message or
+   `OPEN.md`. `--reuse` means a pass on the identical tree isn't run twice.
 3. Do the **Notes for Jarvis** items that only you may do (apply the
    migration, cut the release, edit the lockfile).
 4. `handoffs/bin/jarvis merge handoffs/<file>.md -m "<commit message>"
    --outcome <clean|corrected|escalated|respawned>`. It commits exactly the
    listed files, the handoff moved into `handoffs/merged/`, the brief and
    `OPEN.md` in one commit, with a `Co-Authored-By` trailer for the worker.
-   Then it pushes, closes the worker's terminal and drops its `OPEN.md`
-   lines. It also stops what the worker left running: browsers, servers and
+   Then it pushes, closes every worker terminal of the brief, waits for each
+   agent to exit (stopping one that doesn't, when `JARVIS_REAP=1`), and drops
+   the `OPEN.md` lines. A failed close or a survivor is printed on the merge
+   line; deal with it, or run `jarvis doctor`. It also stops what the worker
+   left running: browsers, servers and
    jobs whose command line names that worker's scratch folder. Anything the
    handoff lists under **Processes left running** is kept. Tell the user
    when it stopped something. The security-guidance plugin reviews that
@@ -211,7 +232,12 @@ list is the contract.
 
 If the user wants something changed after review and the worker is still
 open (you merged with `--keep-open`), use `jarvis send` to give it the
-change. Otherwise write a follow-up brief.
+change, then `jarvis close <terminal>` when it's done: `--keep-open` leaves
+the run open, and nothing else will close it. Otherwise write a follow-up
+brief.
+
+To cancel a worker, use `jarvis close <terminal>`. It closes, checks the
+agent exited, and records the run as closed.
 
 ## Keeping your own context light
 

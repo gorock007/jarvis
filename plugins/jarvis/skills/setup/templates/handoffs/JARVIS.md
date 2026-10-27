@@ -8,7 +8,14 @@ Where the two disagree, this file wins.
 
 - **Git.** Review each handoff, then `handoffs/bin/jarvis merge <handoff>`.
   It commits exactly the listed files plus the handoff move and `OPEN.md`,
-  pushes, and closes the worker. Push without asking.
+  pushes, and closes every worker of the brief, checking each one exited.
+  Push without asking.
+- **The merge gate.** Workers run only targeted checks. You run the heavy
+  suites (Docker, e2e, the full suite) once for the integration candidate:
+  after merging a wave, or before merging a handoff that touches what they
+  cover. Run them through the repo's wrapped scripts or
+  `handoffs/bin/jarvis lock <class> --reuse -- <command>`, and put the result
+  in the merge message or `OPEN.md`.
 - **Also only Jarvis:** {{JARVIS_ONLY}}
 - **Verification:** {{VERIFY}}
 - **Shared files** workers must edit minimally and name in the handoff:
@@ -23,8 +30,15 @@ handoffs/bin/jarvis status                   # band, workers, new handoffs, git:
 handoffs/bin/jarvis spawn handoffs/briefs/<file>.md   # lint, band + cap checks, spawn, record
 handoffs/bin/jarvis merge handoffs/<file>.md --check  # file list vs git status, diff stat
 handoffs/bin/jarvis merge handoffs/<file>.md --outcome clean
+handoffs/bin/jarvis close <terminal>         # cancel a worker: close, verify, record
+handoffs/bin/jarvis doctor                   # every live agent and terminal here, and why
+handoffs/bin/jarvis resources                # who holds each heavy-suite lease, who waits
 handoffs/bin/jarvis usage --days 7           # coordinating vs building, $ per merged handoff
 ```
+
+When `status` or `start` ends with a `doctor:` line, act on it: run
+`jarvis doctor`, then `jarvis doctor --apply` if it lists only finished and
+lost things. Details: the `jarvis:run` skill's `references/lifecycle.md`.
 
 `jarvis watch` runs in its own plain terminal (no model, no tokens). It
 wakes you when a handoff lands, or when a worker hits a usage limit, sits at

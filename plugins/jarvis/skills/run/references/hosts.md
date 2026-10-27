@@ -12,7 +12,7 @@ handoffs/bin/jarvis spawn <brief.md> [--after <handoff>] [--attach <file>]...
 handoffs/bin/jarvis read  <terminal> [<lines>]       # bottom of a worker's screen (default 80 lines)
 handoffs/bin/jarvis send  <terminal> "<text>"        # types it and presses Enter
 handoffs/bin/jarvis send  <terminal> --keys enter    # or esc, tab, shift+tab, up, down, 1, y, ctrl+c, comma-separated
-handoffs/bin/jarvis close <terminal>                 # a worker you're giving up on; merge closes finished ones
+handoffs/bin/jarvis close <terminal>                 # cancel a worker: close, verify it exited, record; merge closes finished ones
 handoffs/bin/jarvis watch --start                    # the watcher, in a terminal of its own
 ```
 
@@ -97,12 +97,24 @@ The launch script for each worker is written to
 ## Adding a host
 
 A host is seven shell functions, `<name>_self`, `_spawn`, `_run`, `_list`,
-`_read`, `_send` and `_close`, in `handoffs/bin/hosts/<name>.sh`, plus an
-optional `_clear` if the host can restart an agent on a fresh context. Select it
-with `JARVIS_HOST=<name>` in `jarvis.conf`. The contract is spelled out in
+`_read`, `_send` and `_close`, in `handoffs/bin/hosts/<name>.sh`. Two more
+are optional:
+
+- `_clear`, if the host can restart an agent on a fresh context.
+- `_titles`, printing `<id><TAB><title>` per open terminal, so `jarvis
+  doctor` can name the terminals it doesn't know.
+
+Select it with `JARVIS_HOST=<name>` in `jarvis.conf`. The contract is spelled out in
 the "hosts" comment block of `handoffs/bin/jarvis`, and the superset and
 tmux functions next to it are working examples. Nothing else in the
 workflow changes.
+
+`_close` must end what runs in the terminal, not just hide it: closing the
+terminal is how merge and `jarvis close` stop a worker's agent. On a pty that
+happens by itself (the agent gets SIGHUP). After a close, merge waits for the
+terminal to leave `_list` and for the agent to exit, and it reports one that
+didn't. Print the reason on stderr when a close fails: it goes on the merge
+line. See `lifecycle.md`.
 
 ## Raw host commands, for what the script doesn't cover
 

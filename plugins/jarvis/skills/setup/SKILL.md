@@ -22,9 +22,12 @@ file:
   brief and handoff templates.
 - `handoffs/jarvis.conf`: the Claude cap, the band thresholds, the idle
   limit, and whether merge stops what a worker left running.
-- `handoffs/bin/jarvis`: `start`, `status`, `spawn`, `merge`, `leftovers`,
-  `watch`, `band`, `usage`, plus the prompt-guard hook and the statusline
-  tap. It needs `jq` and, for `usage`, `python3`.
+- `handoffs/bin/jarvis`: `start`, `status`, `spawn`, `merge`, `close`,
+  `doctor`, `leftovers`, `lock`, `resources`, `watch`, `band`, `usage`, plus
+  the prompt-guard hook and the statusline tap. It needs `jq` and, for
+  `usage`, `python3`.
+- `handoffs/bin/jarvis-lock.pl`: the lease behind `jarvis lock` and
+  `jarvis resources`. It needs `perl`, which macOS ships.
 - `handoffs/bin/cc_usage_audit.py`: the transcript analyser behind
   `jarvis usage`.
 - `handoffs/bin/jev.sh`: optional brief lint and terminal triage. It does
@@ -57,10 +60,11 @@ placeholders mean.
   manager). The host is detected each time `jarvis` runs, so a repo set up
   under one works under the others. See the `jarvis:run` skill's
   `references/hosts.md`.
-- `command -v jq python3`. `jq` is needed for `jarvis spawn`, the guard, the
+- `command -v jq python3 perl`. `jq` is needed for `jarvis spawn`, the guard, the
   band and the statusline tap. Without it those fail open, and the user
-  loses the enforcement. `python3` is only needed for `jarvis usage`. Say
-  what's missing.
+  loses the enforcement. `python3` is only needed for `jarvis usage`.
+  `perl` is needed for `jarvis lock`: without it a wrapped heavy script
+  refuses to run (exit 2), except on CI. Say what's missing.
 - Which agents exist: on Superset, `superset agents list --local`; on
   Ultron, `ultron agent list`; on tmux, `command -v claude codex opencode`. The routing table sends media
   and computer-use work to Codex, and small fenced work to OpenCode's free
@@ -121,6 +125,19 @@ so the user can just say "yes":
     text and the bottom of worker terminals to TypeSafe, with secret-shaped
     strings masked. It needs a `TYPESAFE_API_KEY` (docs.typesafe.ai).
     Install it anyway (it's inert without a key) unless the user says no.
+13. **Heavy suites.** Look through the project's scripts (`package.json`,
+    `Makefile`, `justfile`, CI config) for suites that are heavy: Docker,
+    compose, testcontainers, e2e, playwright, anything called "full". Several
+    workers running one at once can stall the machine. Propose wrapping each
+    where it's declared, so every caller (any agent, the user, CI) queues for
+    the same lease:
+    `"test:docker": "handoffs/bin/jarvis lock docker -- vitest run --project docker"`.
+    Built-in classes are `docker` (one on the machine) and `suite` (one per
+    checkout). A suite that writes shared artifacts in the checkout (build
+    output, a dev database) gets a class of its own as a `JARVIS_LOCK_<class>`
+    line in `jarvis.conf`. Show each change. Edit the project's scripts only
+    on the user's yes. A suite that writes logs into the checkout should
+    write them to an ignored folder, or `--reuse` never matches.
 
 Skip any question the repo answers unambiguously, and say what you assumed.
 
@@ -142,8 +159,10 @@ Replace the placeholders:
 Then:
 
 - Copy `templates/handoffs/` to `<repo>/handoffs/`, keeping the `.gitkeep`s,
-  and `chmod +x handoffs/bin/jarvis handoffs/bin/jev.sh`. Skip `jev.sh` if
-  the user said no to Jev.
+  and `chmod +x handoffs/bin/jarvis handoffs/bin/jarvis-lock.pl handoffs/bin/jev.sh`.
+  Skip `jev.sh` if the user said no to Jev.
+- Apply the heavy-suite wrappers the user said yes to in question 13, and
+  any `JARVIS_LOCK_<class>` lines to `jarvis.conf`.
 - Copy `templates/.claude/agents/` to `<repo>/.claude/agents/`. If the repo
   already has agents with those names, leave them alone and say so.
 - **`.claude/settings.json`**: merge the template into any existing file
@@ -166,7 +185,7 @@ Then:
 - `handoffs/bin/jarvis band` should print a band, or `unknown` until the
   first statusline refresh. `echo '{}' | handoffs/bin/jarvis hook prompt`
   must exit 0 and print nothing. `handoffs/bin/jarvis` with no arguments
-  prints its help.
+  prints its help. `handoffs/bin/jarvis lock suite -- true` must exit 0.
 - On Superset, confirm the model ids the host accepts:
   `superset agents create --workspace "$SUPERSET_WORKSPACE_ID" --agent claude --model __probe__ --prompt x`
   fails with an error that lists the accepted ids (the same works for
@@ -247,14 +266,34 @@ loaded too. Move it without losing anything project-specific:
 0.4 runs on tmux (and since 0.5, Ultron) as well as Superset, with any agent CLI
 as a worker.
 
-1. Copy the new `handoffs/bin/jarvis` and `handoffs/bin/jev.sh` over the
-   old ones.
+1. Copy the new `handoffs/bin/jarvis`, `handoffs/bin/jarvis-lock.pl` and
+   `handoffs/bin/jev.sh` over the old ones.
 2. Append the `JARVIS_HOST` and `JARVIS_AGENT_*` block from the template
    `jarvis.conf` (commented out, it changes nothing; the defaults are in
    the script).
 3. Nothing else changes on Superset. Tell the user: the watcher now starts
    with `handoffs/bin/jarvis watch --start` on any host, and
    `jarvis read | send | close` replace raw `superset terminals` calls.
+
+## 7. Upgrading a repo set up with jarvis 0.5
+
+This release adds the run registry, verified close, `jarvis doctor` and
+`jarvis lock`. See the `jarvis:run` skill's `references/lifecycle.md`.
+
+1. Copy the new `handoffs/bin/jarvis` **and `handoffs/bin/jarvis-lock.pl`**
+   (new; `chmod +x` it), plus `jev.sh`. Without the `.pl` file, `jarvis
+   lock` exits 2 and says to re-run jarvis:setup.
+2. Append the `JARVIS_STOP_GRACE` block and the `jarvis lock` comment block
+   from the template `jarvis.conf`. Both change nothing until edited.
+3. Add the "Run heavy suites only through their lock" rule to `AGENTS.md`,
+   the merge gate and the new loop lines to `handoffs/JARVIS.md`, and the
+   new **Checks** wording to `handoffs/briefs/TEMPLATE.md`. Keep the
+   project's own rules.
+4. Do the heavy-suite step (section 2, question 13): find the suites,
+   propose the wrappers, and edit only on the user's yes.
+5. Tell the user: merge now closes every worker of a brief and checks it
+   exited; `jarvis close` cancels a worker the same way; `status` ends with
+   a `doctor:` line when finished workers or terminals are still around.
 
 ## Notes
 

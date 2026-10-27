@@ -21,7 +21,9 @@ started: <YYYY-MM-DD HH:MM> · terminal: <filled in by jarvis spawn>
 is spawned with `jarvis spawn <brief> --after <this handoff>`>
 
 ## Checks
-<commands to run before handing off, output filtered: `pytest -q 2>&1 | tail -30`>
+<targeted checks for what this phase touches, output filtered: `pytest -q tests/x 2>&1 | tail -30`.
+A heavy suite (Docker, e2e, full) only through its wrapped script or
+`handoffs/bin/jarvis lock <class> --reuse -- <command>`, and only if this phase needs it>
 
 ## Questions first
 Put every question in one first handoff (`status: blocked`) and stop. After

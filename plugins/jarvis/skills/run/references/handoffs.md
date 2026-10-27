@@ -60,7 +60,9 @@ brief: handoffs/briefs/<file>.md
    Jarvis commits by the list.
 2. **Diff.** `git diff -- <listed files>`; big diffs go to a Sonnet subagent
    for a summary. Look for edits to shared files that weren't named.
-3. **Checks.** If **Checks run** is thin or says "not run", run them.
+3. **Checks.** If **Checks run** is thin or says "not run", run them: the
+   targeted ones here; heavy suites belong to the merge gate, under the lock
+   (`references/lifecycle.md`).
 4. **Notes for Jarvis.** Do the Jarvis-only items (migration, release,
    lockfile). Note anything deferred in `OPEN.md`.
 5. **Merge.** `jarvis merge <handoff> -m "<msg>" --outcome <o>` commits the

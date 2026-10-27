@@ -52,6 +52,17 @@ Several workers edit the same checkout at once, on separate terminals. So:
   - Something that must keep running goes under **Processes left running** in
     your handoff, with its PID and why. Everything else is stopped when your
     handoff is merged.
+- **Run heavy suites only through their lock.** Run targeted checks for what
+  you touched (unit tests, lint, typecheck of your modules) freely. Heavy
+  suites (Docker, e2e, the full suite) stall the machine when several
+  workers run them at once, and Jarvis runs them once before merging.
+  - Run one only through the repo's wrapped script, or `handoffs/bin/jarvis
+    lock <class> --reuse -- <command>`. Never bare.
+  - `--reuse` reports a pass on the identical tree instead of running it
+    again. Write logs outside the checkout or into an ignored folder: a new
+    file changes the tree, so nothing is ever reused.
+  - A lock wait is normal. Wait; don't work around it, and never kill the
+    holder.
 - **Verification:** {{VERIFY}}
 - **Checks:** run {{CHECKS}} before handing off and report the results. Say
   plainly what you didn't check.

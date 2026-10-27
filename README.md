@@ -35,6 +35,7 @@ you ──▶ Jarvis (Claude Code · opus 5.5 · high)
 - [Hosts and agents](#hosts-and-agents)
 - [Model routing](#model-routing)
 - [Usage-aware spending](#usage-aware-spending)
+- [Worker lifecycle and heavy checks](#worker-lifecycle-and-heavy-checks)
 - [Token efficiency](#token-efficiency)
 - [Optional: Jev](#optional-jev)
 - [Customizing](#customizing)
@@ -316,8 +317,9 @@ conversation would cost.
 list with `git status`. Jarvis then reads the diff and runs the checks if
 needed. `jarvis merge` commits **only those files** with a `Co-Authored-By`
 line naming the worker, moves the handoff to `handoffs/merged/`, pushes,
-closes the worker's terminal and updates `OPEN.md`, all in one call. Then it
-stops whatever the worker left running (see the FAQ on leftover browsers).
+closes every worker terminal of that brief, checks each agent exited, and
+updates `OPEN.md`, all in one call. Then it stops whatever the worker left
+running (see the FAQ on leftover browsers).
 
 Two rules keep the shared checkout safe:
 
@@ -333,7 +335,8 @@ Two rules keep the shared checkout safe:
 | `AGENTS.md` | The worker rules, read by Claude Code, Codex and OpenCode: git rules, shared-file rules, ask once, one brief then hand off, handoff format |
 | `handoffs/JARVIS.md` | Jarvis's rules for this project: what only Jarvis may do, how you verify work, shared files, budget rules. Only Jarvis reads it. |
 | `handoffs/jarvis.conf` | The Claude cap, band thresholds, idle limit, whether merge stops leftover processes |
-| `handoffs/bin/jarvis` | `start`, `status`, `spawn`, `merge`, `leftovers`, `watch`, `band`, `usage`, plus the idle guard hook and the statusline tap |
+| `handoffs/bin/jarvis` | `start`, `status`, `spawn`, `merge`, `close`, `doctor`, `leftovers`, `lock`, `resources`, `watch`, `band`, `usage`, plus the idle guard hook and the statusline tap |
+| `handoffs/bin/jarvis-lock.pl` | The lease behind `jarvis lock` (needs `perl`, which macOS ships) |
 | `handoffs/bin/cc_usage_audit.py` | Prices your local Claude Code transcripts for `jarvis usage` |
 | `handoffs/OPEN.md` | The one pending list: Jarvis's terminal, usage band, running workers, questions for you, to-do |
 | `handoffs/TEMPLATE.md` | Handoff format |
@@ -441,6 +444,45 @@ single task more expensive, but it squeezes a day's spend into one window.
 That's why the band watches the pace as well as the total. Jarvis doesn't
 change its own model mid-session. It sends work elsewhere, so the remaining
 budget goes to coordination.
+
+## Worker lifecycle and heavy checks
+
+**Workers end when they're done.** Every spawn leaves a run record in
+`handoffs/.jarvis/runs/`. `jarvis merge` closes every worker of the brief,
+then checks that the terminal is gone and the agent exited. A survivor is
+stopped, with its identity checked again first. Every failure is printed on
+the merge line. `jarvis close` cancels a worker the same way.
+
+**`jarvis doctor` explains what's still alive**: every agent process and
+terminal in this checkout, with the run and brief that own it. `--apply`
+ends only the finished and lost ones Jarvis recorded, and logs each action
+in `handoffs/.jarvis/audit.log`. Unknown terminals and other sessions are
+never touched. `jarvis status` ends with a `doctor:` line when there's
+something to act on.
+
+**Heavy suites take turns.** Workers run targeted checks (unit tests, lint,
+typecheck) freely. Suites your repo marks heavy (Docker, e2e, the full
+suite) run only under a lease shared by every process on the machine. Wrap
+them where they're declared, and every caller queues: any agent, you, CI.
+
+```json
+"test:docker": "handoffs/bin/jarvis lock docker -- vitest run --project docker"
+```
+
+Setup proposes these wrappers and edits your scripts only on your yes.
+`--reuse` reports a pass on the identical tree instead of running it again.
+Jarvis runs the heavy suites once per integration, before or after merging,
+and records the result.
+
+| Command | What it does |
+| --- | --- |
+| `jarvis close <terminal>` | Cancel a worker: close, verify it exited, record |
+| `jarvis doctor [--apply \| --quiet]` | What's alive in this checkout and why; `--apply` ends the finished and lost ones |
+| `jarvis lock <class> [--wait <sec>] [--reuse] -- <command…>` | Run a command only while holding its class's lease; waiters queue in order |
+| `jarvis resources [--json]` | Who holds each lease, who's waiting, stored passes |
+
+Details, settings and limits:
+[`lifecycle.md`](plugins/jarvis/skills/run/references/lifecycle.md).
 
 ## Token efficiency
 
@@ -649,7 +691,7 @@ plugins/jarvis/
   skills/
     setup/
       SKILL.md                       jarvis:setup: interview + install
-      templates/                     CLAUDE.md, AGENTS.md, handoffs/ (JARVIS.md, jarvis.conf, bin/jarvis, bin/jev.sh), .claude/
+      templates/                     CLAUDE.md, AGENTS.md, handoffs/ (JARVIS.md, jarvis.conf, bin/jarvis, bin/jarvis-lock.pl, bin/jev.sh), .claude/
     run/
       SKILL.md                       jarvis:run: the operating playbook
       references/
@@ -657,6 +699,7 @@ plugins/jarvis/
         model-routing.md             routing table and reasoning
         handoffs.md                  brief and handoff formats, review steps
         efficiency.md                where tokens go and how to spend fewer
+        lifecycle.md                 run registry, verified close, jarvis doctor, jarvis lock
         jev.md                       the optional Jev helper and the shadow-routing rule
 eval/                                labelled briefs and terminal tails; run.sh (live) tests jev.sh, selftest.sh (offline) tests jev.sh and bin/jarvis
 eval/jarvis-model/                   compares Jarvis on fable/high vs claude-opus-5-5/high vs /xhigh
