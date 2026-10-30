@@ -11,7 +11,7 @@ Local only: no network calls, nothing leaves your machine. Python 3.8+, no
 dependencies.
 
 Vendored into Jarvis from https://github.com/gorock007/cc-usage-audit (MIT), with
-one addition: the by_role_model aggregate that `jarvis usage` reads.
+Jarvis role, worker/brief, run-outcome and subscription-reading aggregates.
 """
 import argparse, collections, datetime as dt, glob, json, os, re, statistics, sys
 
@@ -37,6 +37,9 @@ LONG_CTX = 150_000      # the threshold /usage calls out
 RELOAD_TOKENS = 40_000  # a cache write this big mid-session means the context was rewritten
 CACHE_TTL_MIN = 60      # subscription prompt cache TTL (5 min on API keys / usage credits)
 WINDOW_H = 5
+DEFAULT_TEST_RE = r"test|pytest|vitest|jest|selftest|cargo test|go test"
+WORKER_PROMPT_RE = re.compile(r"^You are a Jarvis worker")
+BRIEF_RE = re.compile(r"handoffs/briefs/([^\s\"'`]+\.md)")
 
 BASH_CATEGORIES = [
     ("wait/sleep loop", r"\bsleep\b|\buntil\b|while .*;\s*do|fswatch|inotifywait"),
@@ -69,7 +72,9 @@ def first_prompt(rec):
 def load_file(path, since, prices):
     """Return (meta, requests) for one transcript. Requests are deduped by requestId (last record wins:
     streamed messages repeat the same usage block per content chunk)."""
-    reqs, meta = {}, {"path": path, "entrypoint": None, "prompt": "", "tool_text": []}
+    reqs = {}
+    meta = {"path": path, "entrypoint": None, "prompt": "", "tool_text": [], "cwd": "",
+            "tool_uses": {}, "tool_results": {}, "first_t": None, "last_t": None}
     try:
         fh = open(path, errors="ignore")
     except OSError:
@@ -81,9 +86,17 @@ def load_file(path, since, prices):
             except ValueError:
                 continue
             meta["entrypoint"] = meta["entrypoint"] or d.get("entrypoint")
+            meta["cwd"] = meta["cwd"] or d.get("cwd", "")
             t = d.get("type")
             if t == "user" and not meta["prompt"] and not d.get("isMeta"):
                 meta["prompt"] = first_prompt(d) or ""
+            if t == "user":
+                for c in (d.get("message") or {}).get("content") or []:
+                    if isinstance(c, dict) and c.get("type") == "tool_result" and c.get("tool_use_id"):
+                        result = c.get("content", "")
+                        meta["tool_results"][c["tool_use_id"]] = bool(c.get("is_error")) or bool(
+                            re.search(r"(?:exit(?:ed)?(?: with)?(?: code)?\s*[1-9]\d*|command failed)",
+                                      str(result), re.I))
             if t != "assistant":
                 continue
             m = d.get("message") or {}
@@ -95,7 +108,12 @@ def load_file(path, since, prices):
             for c in m.get("content") or []:
                 if isinstance(c, dict) and c.get("type") == "tool_use":
                     inp = c.get("input") or {}
-                    tools.append((c.get("name"), inp.get("command", "") if c.get("name") == "Bash" else ""))
+                    name = c.get("name")
+                    cmd = inp.get("command", "") if name == "Bash" else ""
+                    tools.append((name, cmd))
+                    if c.get("id"):
+                        meta["tool_uses"][c["id"]] = {"name": name, "command": cmd,
+                                                          "t": ts(d["timestamp"])}
                     meta["tool_text"].append(json.dumps(inp)[:2000])
             prev = reqs.get(rid)
             if prev:
@@ -118,6 +136,10 @@ def load_file(path, since, prices):
         r.update(model_key=key, priced=bool(p), ctx=inp + cr + w5 + w1, write_tokens=w5 + w1,
                  cost=cost, usd=sum(cost.values()))
         out.append(r)
+    if out:
+        meta["first_t"], meta["last_t"] = out[0]["t"], out[-1]["t"]
+    meta["bash_calls"] = [{**v, "failed": bool(meta["tool_results"].get(k))}
+                          for k, v in meta["tool_uses"].items() if v["name"] == "Bash"]
     # mark reloads before filtering by date so the gap before the first in-range request is known
     prev = None
     for i, r in enumerate(out):
@@ -132,6 +154,89 @@ def load_file(path, since, prices):
         prev = r["t"]
     out = [r for r in out if r["t"] >= since]
     return meta, out
+
+def brief_key(value):
+    """Canonical relative brief path used by prompts, runs and handoffs."""
+    value = (value or "").strip().replace("\\", "/")
+    m = re.search(r"(?:^|/)(handoffs/briefs/[^/\s]+\.md)$", value)
+    return m.group(1) if m else value
+
+def brief_from_prompt(prompt):
+    m = BRIEF_RE.search(prompt or "")
+    return brief_key("handoffs/briefs/" + m.group(1)) if m else ""
+
+def read_repo_state(root):
+    """Return merged/completed brief names and run records for a checkout, if available."""
+    merged, handoffs, runs = set(), set(), collections.defaultdict(list)
+    if not root:
+        return merged, handoffs, runs
+    paths = glob.glob(os.path.join(root, "handoffs", "merged", "*.md"))
+    paths += glob.glob(os.path.join(root, "handoffs", "*.md"))
+    for path in paths:
+        try:
+            for line in open(path, errors="ignore"):
+                if line.startswith("brief:"):
+                    key = brief_key(line.split(":", 1)[1])
+                    handoffs.add(key)
+                    if os.path.basename(os.path.dirname(path)) == "merged":
+                        merged.add(key)
+                    break
+        except OSError:
+            pass
+    for path in glob.glob(os.path.join(root, "handoffs", ".jarvis", "runs", "*")):
+        rec = {}
+        try:
+            for line in open(path, errors="ignore"):
+                if ":" in line:
+                    key, value = line.rstrip("\n").split(":", 1)
+                    rec[key] = value.strip()
+        except OSError:
+            continue
+        key = brief_key(rec.get("brief"))
+        if key:
+            rec["run"] = os.path.basename(path)
+            runs[key].append(rec)
+    for values in runs.values():
+        values.sort(key=lambda x: int(x.get("spawned", "0")) if x.get("spawned", "").isdigit() else 0)
+    return merged, handoffs, runs
+
+def checkout_root(cwd):
+    """Find the nearest parent with handoffs/ without invoking git."""
+    path = os.path.abspath(cwd) if cwd else ""
+    while path and path != os.path.dirname(path):
+        if os.path.isdir(os.path.join(path, "handoffs")):
+            return path
+        path = os.path.dirname(path)
+    return ""
+
+def percentile(values, proportion):
+    if not values:
+        return None
+    values = sorted(values)
+    return values[max(0, int((len(values) - 1) * proportion + 0.999999))]
+
+def subscription_reading(path, now):
+    try:
+        d = json.load(open(path))
+        stamp = float(d.get("ts"))
+    except (OSError, ValueError, TypeError):
+        return None
+    return {"five_hour_pct": (d.get("five_hour") or {}).get("used_percentage"),
+            "seven_day_pct": (d.get("seven_day") or {}).get("used_percentage"),
+            "age_seconds": max(0, int(now.timestamp() - stamp))}
+
+def open_session_ids(transcript_root):
+    """Session ids Claude Code currently advertises in its sibling sessions registry."""
+    out = set()
+    config_dir = os.path.dirname(os.path.abspath(transcript_root))
+    for path in glob.glob(os.path.join(config_dir, "sessions", "*.json")):
+        try:
+            rec = json.load(open(path))
+        except (OSError, ValueError):
+            continue
+        if rec.get("sessionId") and rec.get("status") not in ("closed", "exited"):
+            out.add(str(rec["sessionId"]))
+    return out
 
 def bash_category(cmd, extra):
     for name, rx in extra + BASH_CATEGORIES:
@@ -166,6 +271,13 @@ def fmt_usd(x):
 def pct(a, b):
     return f"{(a / b * 100 if b else 0):.0f}%"
 
+def fmt_age(seconds):
+    minutes = max(0, int(seconds // 60))
+    if minutes < 60:
+        return f"{minutes}m"
+    hours = minutes // 60
+    return f"{hours}h{minutes % 60:02d}m"
+
 def table(rows, headers, right=()):
     widths = [max(len(str(h)), *(len(str(r[i])) for r in rows)) if rows else len(str(h)) for i, h in enumerate(headers)]
     def line(vals):
@@ -182,6 +294,9 @@ def main():
     ap.add_argument("--since", help="ISO date/time to start from; overrides --days")
     ap.add_argument("--until", help="ISO date/time to stop at")
     ap.add_argument("--project", action="append", help="only projects whose folder name contains this (repeatable)")
+    ap.add_argument("--all-projects", action="store_true", help="include every project under the transcript root")
+    ap.add_argument("--repo-root", help="checkout containing handoffs/ (for run and merge outcomes)")
+    ap.add_argument("--usage-file", help="latest statusline rate-limit reading (kept separate from estimates)")
     ap.add_argument("--role", action="append", metavar="NAME=REGEX",
                     help="label sessions whose first prompt matches REGEX (repeatable, first match wins)")
     ap.add_argument("--role-tool", action="append", metavar="NAME=REGEX",
@@ -191,6 +306,8 @@ def main():
     ap.add_argument("--prices", help="JSON file of {model_prefix: [in, out, cache_read, write_5m, write_1h]} to merge in")
     ap.add_argument("--redact", action="store_true", help="hide project names and prompt text (for screenshots)")
     ap.add_argument("--top", type=int, default=10, help="rows in top-N tables (default 10)")
+    ap.add_argument("--test-regex", default=DEFAULT_TEST_RE,
+                    help="regex identifying test commands whose failed results are counted")
     ap.add_argument("--json", action="store_true", help="print the aggregates as JSON instead of text")
     a = ap.parse_args()
 
@@ -207,6 +324,10 @@ def main():
     roles = parse_kv(a.role, "--role")
     role_tools = parse_kv(a.role_tool, "--role-tool")
     bash_extra = parse_kv(a.bash_category, "--bash-category")
+    try:
+        test_re = re.compile(a.test_regex, re.I)
+    except re.error as e:
+        sys.exit(f"--test-regex is invalid: {e}")
 
     if not os.path.isdir(a.root):
         sys.exit(f"No transcripts at {a.root}")
@@ -216,7 +337,8 @@ def main():
     proj_alias = {}
     for proj in sorted(os.listdir(a.root)):
         pdir = os.path.join(a.root, proj)
-        if not os.path.isdir(pdir) or (a.project and not any(p.lower() in proj.lower() for p in a.project)):
+        if not os.path.isdir(pdir) or (a.project and not a.all_projects and
+                                      not any(p.lower() in proj.lower() for p in a.project)):
             continue
         pname = proj_alias.setdefault(proj, f"project-{len(proj_alias) + 1}") if a.redact else re.sub(r"^-Users-[^-]+-?", "", proj) or proj
         for f in glob.glob(os.path.join(pdir, "*.jsonl")):
@@ -236,6 +358,7 @@ def main():
                 for r in srs:
                     if r["t"] <= until:
                         r["agent_type"] = agent_type
+                        r["agent_id"] = os.path.basename(sf)[:-6]
                         subs.append(r)
             if not rs and not subs:
                 continue
@@ -255,11 +378,17 @@ def main():
                 role = "headless (sdk / -p / hooks)" if headless else "interactive"
             s = {"id": sid, "project": pname, "entrypoint": ep, "role": role,
                  "prompt": "" if a.redact else re.sub(r"\s+", " ", meta["prompt"])[:80],
-                 "raw_prompt": re.sub(r"\s+", " ", meta["prompt"])}
+                 "raw_prompt": re.sub(r"\s+", " ", meta["prompt"]), "cwd": meta["cwd"],
+                 "brief": brief_from_prompt(meta["prompt"]), "first_t": meta["first_t"],
+                 "last_t": meta["last_t"],
+                 "failed_tests": sum(1 for c in meta["bash_calls"]
+                                     if c["t"] >= since and c["t"] <= until and c["failed"] and
+                                     test_re.search(c["command"]))}
             for r in rs:
                 r["session"] = s
                 r["kind"] = "subagent" if r["sidechain"] else "main"
                 r["agent_type"] = "(inline)" if r["sidechain"] else None
+                r["agent_id"] = "(inline)" if r["sidechain"] else ""
             for r in subs:
                 r["session"] = s
                 r["kind"] = "subagent"
@@ -354,17 +483,105 @@ def main():
             best, best_span = run, (reqs[j]["t"], r["t"])
     buckets = collections.defaultdict(set)
     for r in reqs:
-        buckets[r["t"].replace(minute=r["t"].minute // 10 * 10, second=0, microsecond=0)].add(r["session"]["id"] + (r.get("agent_type") or ""))
+        buckets[r["t"].replace(minute=r["t"].minute // 10 * 10, second=0, microsecond=0)].add(
+            r["session"]["id"] + (r.get("agent_id") or ""))
     peak_conc = max(len(v) for v in buckets.values())
     R["peak_window_usd"] = best
     R["peak_window"] = [best_span[0].isoformat(), best_span[1].isoformat()] if best_span else None
     R["peak_concurrent_sessions_10min"] = peak_conc
+    if a.all_projects:
+        R["machine_peak_concurrent_sessions_10min"] = peak_conc
 
-    # 8. startup weight
+    # 8. Jarvis worker attempts joined to run records and merged handoffs.
+    state_cache = {}
+    worker_rows = []
+    redacted_briefs = {}
+    for s in sessions:
+        if not WORKER_PROMPT_RE.search(s["raw_prompt"]):
+            continue
+        main_reqs = sorted((r for r in s["reqs"] if r["kind"] == "main"), key=lambda r: r["t"])
+        if not main_reqs:
+            continue
+        root = checkout_root(s["cwd"]) if a.all_projects else (a.repo_root or checkout_root(s["cwd"]))
+        root = os.path.abspath(root) if root else ""
+        if root not in state_cache:
+            state_cache[root] = read_repo_state(root)
+        merged, handoffs, runs = state_cache[root]
+        brief = s["brief"]
+        records = runs.get(brief, [])
+        state = records[-1].get("state", "") if records else ""
+        outcome = "merged" if brief in merged else (state or "unmerged")
+        label = os.path.basename(brief)[:-3] if brief else "unknown-brief"
+        if a.redact:
+            key = (s["project"], brief)
+            label = redacted_briefs.setdefault(key, f"brief-{len(redacted_briefs) + 1}")
+        session_usd = sum(r["usd"] for r in s["reqs"])
+        first, last = min(r["t"] for r in s["reqs"]), max(r["t"] for r in s["reqs"])
+        worker_rows.append({"project": s["project"], "session": s["id"][:8], "brief": label,
+                            "brief_path": "" if a.redact else brief,
+                            "model": main_reqs[0]["model_key"], "turns": len(main_reqs),
+                            "usd": session_usd, "start_ctx": main_reqs[0]["ctx"],
+                            "peak_ctx": max(r["ctx"] for r in main_reqs),
+                            "turns_above_150k": sum(1 for r in main_reqs if r["ctx"] > LONG_CTX),
+                            "usd_above_150k": sum(r["usd"] for r in s["reqs"] if r["ctx"] > LONG_CTX),
+                            "wall_seconds": max(0, int((last - first).total_seconds())),
+                            "start": first.isoformat(), "end": last.isoformat(),
+                            "outcome": outcome, "run_state": state or None,
+                            "failed_test_runs": s["failed_tests"],
+                            "abandoned": brief not in merged and
+                                         (state in ("closed", "lost") or (not records and brief not in handoffs))})
+
+    grouped = collections.defaultdict(list)
+    for row in worker_rows:
+        grouped[(row["project"], row["brief"])].append(row)
+    brief_rows = []
+    repeated_extra = 0.0
+    for (project, brief), rows in grouped.items():
+        rows.sort(key=lambda x: x["start"])
+        repeated_extra += sum(x["usd"] for x in rows[1:])
+        outcomes = [x["outcome"] for x in rows]
+        outcome = "merged" if "merged" in outcomes else outcomes[-1]
+        brief_rows.append({"project": project, "brief": brief, "sessions": len(rows),
+                           "usd": sum(x["usd"] for x in rows), "outcome": outcome})
+    brief_rows.sort(key=lambda x: -x["usd"])
+    worker_total = sum(x["usd"] for x in worker_rows)
+    worker_long = sum(x["usd_above_150k"] for x in worker_rows)
+    peaks = [x["peak_ctx"] for x in worker_rows]
+    R["workers"] = sorted(worker_rows, key=lambda x: -x["usd"])
+    R["briefs"] = brief_rows
+    R["top_briefs"] = brief_rows[:a.top]
+    R["abandoned"] = {"sessions": sum(1 for x in worker_rows if x["abandoned"]),
+                       "usd": sum(x["usd"] for x in worker_rows if x["abandoned"])}
+    R["repeated_attempts"] = {"briefs": sum(1 for x in brief_rows if x["sessions"] > 1),
+                              "extra_sessions": sum(max(0, x["sessions"] - 1) for x in brief_rows),
+                              "extra_usd": repeated_extra}
+    R["failed_test_runs"] = [{"brief": x["brief"], "session": x["session"],
+                               "count": x["failed_test_runs"]}
+                              for x in worker_rows if x["failed_test_runs"] >= 3]
+    R["context_growth"] = {"worker_usd_above_150k_share": worker_long / worker_total if worker_total else 0,
+                           "peak_ctx_p50": percentile(peaks, .50), "peak_ctx_p90": percentile(peaks, .90)}
+
+    stale = []
+    open_ids = open_session_ids(a.root)
+    for s in sessions:
+        if s["id"] not in open_ids or not s["first_t"] or not s["last_t"]:
+            continue
+        age = (now - s["first_t"]).total_seconds()
+        idle = (now - s["last_t"]).total_seconds()
+        if age > 8 * 3600 and idle > 3600:
+            name = os.path.basename(s["brief"])[:-3] if s["brief"] else (s["prompt"] or s["id"][:8])
+            if a.redact:
+                name = f"session-{len(stale) + 1}"
+            stale.append({"name": name, "role": s["role"], "age_seconds": int(age),
+                          "idle_seconds": int(idle)})
+    R["stale_open_sessions"] = stale
+    R["subscription_usage"] = subscription_reading(a.usage_file, now) if a.usage_file else None
+
+    # 9. startup weight
     starts = [s["reqs"][0]["ctx"] for s in sessions if s["reqs"] and s["reqs"][0]["kind"] == "main" and s["entrypoint"] == "cli"]
     R["median_startup_ctx"] = statistics.median(starts) if starts else None
 
-    # 9. top sessions
+    # 10. top sessions
     top = sorted(sessions, key=lambda s: -sum(r["usd"] for r in s["reqs"]))[: a.top]
     R["top_sessions"] = [{"project": s["project"], "session": s["id"][:8], "role": s["role"],
                           "usd": sum(r["usd"] for r in s["reqs"]), "turns": len(s["reqs"]),
@@ -381,8 +598,15 @@ def report(R, reqs, sessions, a):
     total = R["total_usd"]
     loc = lambda s: ts(s).astimezone().strftime("%a %d %b %H:%M")
     print(f"\ncc-usage-audit  ·  {loc(R['period'][0])} → {loc(R['period'][1])}")
-    print(f"{len(sessions)} sessions, {len(reqs):,} requests, {fmt_usd(total)} at API prices "
-          f"(a proxy for plan usage, not a bill)\n")
+    print(f"API-equivalent estimate at list prices (not your subscription usage): "
+          f"{len(sessions)} sessions, {len(reqs):,} requests, {fmt_usd(total)}")
+    sub = R["subscription_usage"]
+    if sub:
+        five = "?" if sub["five_hour_pct"] is None else f"{sub['five_hour_pct']:g}%"
+        seven = "?" if sub["seven_day_pct"] is None else f"{sub['seven_day_pct']:g}%"
+        print(f"Subscription usage: 5h {five} · 7d {seven} · reading {fmt_age(sub['age_seconds'])} old\n")
+    else:
+        print("Subscription usage: no reading — check /usage\n")
 
     print("WHERE IT GOES")
     c = R["components"]
@@ -399,6 +623,37 @@ def report(R, reqs, sessions, a):
             f"{v['avg_ctx'] / 1000:.0f}k", f"{v['write_share']:.0%}", f"{v['read_share']:.0%}", f"{v['out_share']:.0%}")
            for k, v in rows],
           ("type", "sessions", "cost", "share", "$/turn", "avg ctx", "writes", "reads", "output"), right=tuple(range(1, 9)))
+
+    print("\nWORKERS / BRIEFS")
+    if R["workers"]:
+        table([(x["brief"], x["model"], x["turns"], fmt_usd(x["usd"]),
+                f"{x['start_ctx'] / 1000:.0f}k→{x['peak_ctx'] / 1000:.0f}k", fmt_age(x["wall_seconds"]), x["outcome"])
+               for x in R["workers"][:a.top]],
+              ("brief", "model", "turns", "cost", "context", "wall", "outcome"), right=(2, 3, 4, 5))
+        print("  most expensive briefs:")
+        table([(x["brief"], x["sessions"], fmt_usd(x["usd"]), x["outcome"]) for x in R["top_briefs"]],
+              ("brief", "attempts", "cost", "outcome"), right=(1, 2))
+    else:
+        print("  none")
+
+    abandoned, repeated, growth = R["abandoned"], R["repeated_attempts"], R["context_growth"]
+    print("\nWASTE SIGNALS")
+    print(f"  abandoned worker sessions: {abandoned['sessions']} · {fmt_usd(abandoned['usd'])}")
+    print(f"  repeated attempts: {repeated['briefs']} briefs · {repeated['extra_sessions']} extra sessions · "
+          f"{fmt_usd(repeated['extra_usd'])} extra")
+    if R["failed_test_runs"]:
+        print("  workers with 3+ failed test runs: " + ", ".join(
+            f"{x['brief']} ({x['count']})" for x in R["failed_test_runs"]))
+    else:
+        print("  workers with 3+ failed test runs: none")
+    p50 = growth["peak_ctx_p50"] or 0
+    p90 = growth["peak_ctx_p90"] or 0
+    print(f"  worker cost above {LONG_CTX // 1000}k context: {growth['worker_usd_above_150k_share']:.0%} · "
+          f"peak context p50 {p50 / 1000:.0f}k · p90 {p90 / 1000:.0f}k")
+    if R["stale_open_sessions"]:
+        print("  stale open sessions (>8h, idle >1h): " + ", ".join(x["name"] for x in R["stale_open_sessions"]))
+    else:
+        print("  stale open sessions (>8h, idle >1h): none")
 
     print("\nCACHE RELOADS  (a mid-session cache write of 40k+ tokens: the whole context written again)")
     if R["reloads"]:
@@ -439,6 +694,8 @@ def report(R, reqs, sessions, a):
     if R["peak_window"]:
         print(f"  worst {WINDOW_H}-hour window: {fmt_usd(R['peak_window_usd'])} ({loc(R['peak_window'][0])} → {loc(R['peak_window'][1])})")
     print(f"  most sessions active in one 10-minute slot: {R['peak_concurrent_sessions_10min']}")
+    if R.get("machine_peak_concurrent_sessions_10min") is not None:
+        print(f"  machine-wide peak across all projects: {R['machine_peak_concurrent_sessions_10min']}")
     if R["median_startup_ctx"]:
         print(f"  median context before the first reply (system prompt, tools, skills, CLAUDE.md): {R['median_startup_ctx'] / 1000:.0f}k tokens")
 
