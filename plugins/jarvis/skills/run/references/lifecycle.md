@@ -1,21 +1,28 @@
-# Lifecycle and locks — how workers end, and how heavy checks share the machine
+# Lifecycle and locks — how workers end, how long they run, and how heavy checks share the machine
 
-Two problems, one file. A worker that finished can stay alive: its agent CLI
+Three problems, one file. A worker that finished can stay alive: its agent CLI
 sits at a prompt in a terminal nobody closes, and it no longer counts toward
 the Claude cap. And workers can't see each other's heavy commands: three of
 them once ran the same Docker test suite at once, and the machine stalled.
+And a worker that has gone wrong keeps spending: 67% of worker spend once
+happened past 150k of context, and one brief was respawned again and again
+without anyone changing it.
 
 The fixes:
 
 - **Lifecycle.** Every spawn leaves a run record. Merge and close end the
   worker and check that it's gone. `jarvis doctor` explains everything still
   alive.
+- **Budgets.** Each worker has limits on working time, estimated cost,
+  context, failed tests and attempts. Past one, it is asked for a partial
+  handoff, and a brief that blew its budget isn't respawned unchanged.
 - **Locks.** A heavy command runs only while it holds a lease for its class.
   The lease is shared by every process on the machine.
 
 ```bash
 handoffs/bin/jarvis close <terminal>               # cancel a worker: close, verify, record
 handoffs/bin/jarvis doctor [--apply | --quiet]     # what's alive in this checkout, and why
+handoffs/bin/jarvis budget <terminal> [usd=N ...]  # a worker's budget use; with values, raise its limits
 handoffs/bin/jarvis lock <class> [--wait <sec>] [--reuse] -- <command…>
 handoffs/bin/jarvis resources [--json]             # who holds each lease, who's queued
 ```
@@ -73,7 +80,20 @@ Every close, signal and lost-marking is one line in
 2026-10-27T07:12:59Z lost run=t4 brief=handoffs/briefs/2026-10-27-0100-c.md terminal=t4 result=marked lost
 ```
 
-The actions are `close`, `signal`, `list` and `lost`.
+The actions are `close`, `signal`, `list` and `lost`. Three more record the
+times Jarvis was told to go past a limit, each with `result=`:
+
+```
+cap-force run=- brief=handoffs/briefs/… cap=global n=4 limit=4 band=green result=passed
+budget-force run=- brief=handoffs/briefs/… runs=3 attempts=2 budget=reached result=passed
+budget-raise run=t3 brief=handoffs/briefs/… limits=usd=30 result=set
+```
+
+`cap-force` is `jarvis spawn --force` past a Claude cap, `budget-force` is
+`--force` past the respawn gate, and `budget-raise` is `jarvis budget` with
+values. Fable has its own log, `~/.jarvis/fable/audit.log`: every `allow`,
+`deny`, `consume`, `revoke` and `backstop`, with the brief and the run. It
+lives outside the repo, since the authorization is the user's.
 
 ## Ending a worker
 
@@ -126,6 +146,71 @@ close FAILED for t2: Error: terminal t2 not found          # exit 1
 Merge doesn't ask the agent to exit first. An LLM is not a reliable
 acknowledgement, and asking costs a turn. The handoff is the agent's "done".
 Closing the terminal is the one way to end it that always works.
+
+## Worker budgets
+
+A worker that has gone wrong costs the most when nobody notices. Every
+running Claude worker has five limits, and `jarvis watch` checks them on its
+ticks. Codex and OpenCode workers have no transcript here, so only the first
+and last apply to them.
+
+| Limit | Default | Counts |
+| --- | --- | --- |
+| `min` | 90 | **Working minutes**: watcher ticks in which the worker's screen changed. A worker idle at its prompt, such as one waiting for answers, adds nothing. |
+| `usd` | 15 | An API-equivalent estimate of its transcripts, subagents included (list prices, not a bill) |
+| `ctx` | 300000 | The context of its last turn |
+| `tests` | 6 | Failed test runs, counted as `jarvis usage` counts them |
+| `attempts` | 2 | Runs of one brief, in any state: a per-brief limit, checked at spawn |
+
+A brief overrides the defaults with a line in its header, above the first
+`##`:
+
+```
+budget: min=120 usd=25 ctx=350k tests=8 attempts=3
+```
+
+**Step 1, the ask.** The first limit a running worker reaches (in the order
+min, usd, ctx, tests), with no done or partial handoff for its brief yet,
+makes the watcher type one message into its terminal: `[jarvis] Budget
+reached (usd: $16.2/$15). Stop the current approach now. Write your handoff
+with status: partial …`. It happens once. Jarvis is woken with `worker <id>
+hit its usd budget — asked for a partial handoff`.
+
+**Step 2, the pause.** `JARVIS_BUDGET_GRACE_MIN` (10) minutes after the ask,
+if no handoff has landed and the screen is still changing, the watcher sends
+Escape. That interrupts the agent and nothing more. Jarvis is woken with
+`worker <id> paused over budget, no handoff — read its terminal`. A host
+that takes no keys (an Ultron chat session) records `pause_failed` and wakes
+Jarvis to read the terminal instead.
+
+**A worker is never closed or signalled over budget.** Its edits are
+uncommitted in the shared checkout. Jarvis decides what happens next: wait for
+the partial handoff, send a nudge, or raise a limit with `jarvis budget
+<terminal> usd=30` when the work is on track. That merges the values into
+the run's limits, re-arms the ask and the pause, and writes a `budget-raise`
+line. `attempts=` isn't settable there, since it is per brief. With no values
+it prints the budget line. Workers already running when budgets arrive start
+counting minutes at zero, but their cost and context are read from the
+whole transcript, so one can be asked on the first tick.
+
+**The respawn gate.** `jarvis spawn` refuses a brief when any of its runs
+reached a budget, or when it already has `attempts` runs. The refusal names
+the run and the limit and points at the latest handoff: sharpen or split the
+brief, then respawn with `--after` that handoff. `--after` passes the gate
+only with a handoff whose `brief:` is this brief and that was written after
+the brief's latest run was spawned. `--force` passes it too, and writes
+`budget-force`. The gate runs before the cap claim and any Fable
+authorization is used, so a refusal costs neither.
+
+`jarvis status` shows each running worker's use on one line:
+
+```
+      budget: 42m/90m working (1h50m since spawn) · $6.1/$15 · ctx 180k/300k · tests 1/6
+```
+
+An item over its limit says `(over)`, followed by `asked for a partial
+handoff HH:MM` or `paused HH:MM`. `jarvis usage` counts these runs under
+"over budget".
 
 ## jarvis doctor
 
@@ -339,6 +424,13 @@ All in `handoffs/jarvis.conf`:
 
 | Setting | Default | What it does |
 | --- | --- | --- |
+| `JARVIS_BUDGET_MIN` | `90` | Working minutes before the ask |
+| `JARVIS_BUDGET_USD` | `15` | Estimated dollars (API-equivalent) |
+| `JARVIS_BUDGET_CTX` | `300000` | Context tokens of the last turn |
+| `JARVIS_BUDGET_TESTS` | `6` | Failed test runs |
+| `JARVIS_BUDGET_ATTEMPTS` | `2` | Runs per brief. A brief's `budget:` line overrides all five. |
+| `JARVIS_BUDGET_SEC` | `300` | How often the watcher reads a worker's transcript |
+| `JARVIS_BUDGET_GRACE_MIN` | `10` | Minutes between the ask and Escape |
 | `JARVIS_REAP` | `1` | Merge and close stop a closed worker's surviving agent and its leftovers. `0`: they only name them. |
 | `JARVIS_STOP_GRACE` | `10` | Seconds merge and close wait for a closed terminal and its agent to go |
 | `JARVIS_LOCK_<class>` | `docker="host 1"`, `suite="checkout 1"` | A lock class: `"<host\|checkout> <capacity>"` |

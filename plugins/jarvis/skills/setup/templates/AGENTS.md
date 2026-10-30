@@ -52,6 +52,11 @@ Several workers edit the same checkout at once, on separate terminals. So:
   - Something that must keep running goes under **Processes left running** in
     your handoff, with its PID and why. Everything else is stopped when your
     handoff is merged.
+- **When a `[jarvis] Budget reached` message arrives, stop.** Drop the
+  current approach, write your handoff with `status: partial` (what's done,
+  what's left, the exact file list), and stop. Jarvis then sharpens or splits
+  the brief for a fresh worker. If you keep working with no handoff, you are
+  interrupted with Escape.
 - **Run heavy suites only through their lock.** Run targeted checks for what
   you touched (unit tests, lint, typecheck of your modules) freely. Heavy
   suites (Docker, e2e, the full suite) stall the machine when several

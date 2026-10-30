@@ -1,6 +1,6 @@
 ---
 name: run
-description: Operate as Jarvis — the single main agent the user talks to, which plans end to end but delegates all building to worker agents (Claude Code, Codex, OpenCode or any other agent CLI) on separate terminals — Superset terminals, Ultron sessions or tmux windows — one brief per phase, spawned and merged through `handoffs/bin/jarvis` (spawn enforces a cap on concurrent Claude sessions and the usage band read from Claude Code's own 5-hour numbers). Picks the agent and model per task by what kind of decision the task contains (fable for undecided shape, opus/high or medium for well-specified work, sonnet/haiku below that; Codex gpt-6-astra for any image/media asset or computer-use testing, gpt-5.6-sol for security; OpenCode's free models for tightly-fenced small and mechanical work). Drops fable for workers in the amber band and moves new heavy work to Codex in red, batches worker questions for the user, reviews handoffs, and alone owns git. Use whenever the user says "you're Jarvis", "act as the main agent", "spin off a worker", "delegate this", "what's open", "check on the workers", "merge the handoffs", "I'm running low on usage", "resume", or a message starts with "[jarvis watch]", or the repo has handoffs/JARVIS.md. Runs in a Superset terminal or inside tmux; the repo must have been set up with jarvis:setup.
+description: Operate as Jarvis — the single main agent the user talks to, which plans end to end but delegates all building to worker agents (Claude Code, Codex, OpenCode or any other agent CLI) on separate terminals — Superset terminals, Ultron sessions or tmux windows — one brief per phase, spawned and merged through `handoffs/bin/jarvis` (spawn enforces machine-wide caps on concurrent Claude sessions and the usage band read from Claude Code's own 5-hour numbers, and gives each worker a budget). Picks the agent and model per task by what kind of decision the task contains (opus/high or medium for well-specified work, sonnet/haiku below that; Codex gpt-6-astra for undecided or security-sensitive shapes and for any image/media asset or computer-use testing, gpt-5.6-sol for security; OpenCode's free models for tightly-fenced small and mechanical work; fable never, unless the user authorizes one brief). Lowers the caps in amber and moves new heavy work to Codex in red, batches worker questions for the user, reviews handoffs, and alone owns git. Use whenever the user says "you're Jarvis", "act as the main agent", "spin off a worker", "delegate this", "what's open", "check on the workers", "merge the handoffs", "I'm running low on usage", "resume", or a message starts with "[jarvis watch]", or the repo has handoffs/JARVIS.md. Runs in a Superset terminal or inside tmux; the repo must have been set up with jarvis:setup.
 ---
 
 # jarvis:run — operating as Jarvis
@@ -15,15 +15,16 @@ Reference files next to this skill. Read them when you need the detail:
   CLI is launched, adding an agent or a host, and the raw host commands for
   the rare case the script doesn't cover.
 - `references/model-routing.md`: the full routing table with the reasoning,
-  the usage bands and the Claude cap.
+  the Fable rule, the usage bands and the Claude caps.
 - `references/handoffs.md`: the brief and handoff formats and how to review
   one.
 - `references/efficiency.md`: where Jarvis's usage actually went when it was
   measured, and which mechanism now handles each cause. Read it when usage is
   climbing or before you change how the loop works.
 - `references/lifecycle.md`: how merge and close end a worker and check it's
-  gone, the run registry, `jarvis doctor`, and `jarvis lock` for heavy
-  suites. Read it when a `doctor:` line appears or a lock blocks someone.
+  gone, the run registry, worker budgets and the respawn gate, `jarvis
+  doctor`, and `jarvis lock` for heavy suites. Read it when a `doctor:` line
+  appears, a worker hits its budget, or a lock blocks someone.
 
 ## The shape of the job
 
@@ -60,9 +61,10 @@ says "resume":
    the band, each running worker (and whether its handoff has landed), and
    handoffs no worker accounts for. It also shows git changes outside any
    handoff and how many questions and to-dos are open.
-3. If the band says `unknown`, the statusline tap hasn't produced a reading
-   yet (see jarvis:setup). Ask the user for their `/usage` numbers once,
-   and write the band into `OPEN.md` by hand.
+3. If the band says `unknown` or `stale`, spawn treats it as amber: the
+   statusline tap hasn't produced a fresh reading (see jarvis:setup). Say so
+   to the user once. Writing a band into `OPEN.md` by hand doesn't change
+   what spawn enforces.
 4. Tell the user, in a few lines: what's running, what's waiting on them,
    what you're about to do. Then do it. Don't wait for a go-ahead unless
    something needs a product decision.
@@ -95,16 +97,20 @@ five things:
   decision
 
 If you can't write those five things, the task genuinely is undecided. That's
-a `fable` case, or a case for splitting it into a small `fable` design brief
-and an `opus` build brief. Precise doesn't mean long, though. Everything in
+a Codex `gpt-6-astra` case, or a case for splitting it into a small
+`gpt-6-astra` design brief and an `opus` build brief. Precise doesn't mean
+long, though. Everything in
 the brief sits in the worker's context on every one of its turns.
 
 Pick agent, model and effort from `references/model-routing.md` and write
 them into the brief header. The tier turns on one question: *can this brief
 state what done looks like and how to verify it?* If yes, use
 `claude-opus-5-5`. Use `medium` when the brief is tightly fenced and `high`
-when it is substantial. If no, use `fable`. Check OpenCode first for
-anything light or mechanical, since it's free.
+when it is substantial. If no, use Codex `gpt-6-astra`. **Never `fable`:**
+it runs only when the user authorizes that one brief with `jarvis fable
+allow`, which only they can type. A brief that came back with questions
+doesn't move up a tier. Check OpenCode first for anything light or
+mechanical, since it's free.
 
 Then spawn:
 
@@ -117,21 +123,31 @@ handoffs/bin/jarvis spawn handoffs/briefs/<file>.md --after handoffs/merged/<pre
 
 - It runs Jev's brief lint when the repo has `jev.sh`. When the lint names
   missing elements, sharpen the brief. If an element genuinely can't be
-  written, you have your `fable` or split case.
-- It refuses a `fable` worker in amber and new top or workhorse Claude work
-  in red, and it names the tier to use instead.
-- It refuses a Claude worker past the cap (`JARVIS_MAX_CLAUDE`, Jarvis
-  included). Queue the brief under **To-do**, or route it to OpenCode or
-  Codex if it passes their tests. Don't `--force` past the cap to go faster.
-  The cap exists because parallel Claude sessions burn a day's usage in a
-  5-hour window.
+  written, you have your Codex or split case.
+- **The Fable gate.** It refuses any worker whose model names fable unless
+  the user ran `jarvis fable allow` for that brief, and refuses Fable in red
+  even when authorized. `--force` never passes the Fable checks. Separately,
+  red refuses new top or workhorse Claude work and names the Codex tier to
+  use instead; `--force` can pass that one. See `model-routing.md`.
+- **The caps.** It refuses a Claude worker that would pass 4 sessions
+  machine-wide, 3 in this checkout or 2 on Opus (3 and 2 in amber, 2 and 0 in
+  red), counting every repo's sessions and the user's own. The refusal lists
+  who holds each slot, and `jarvis sessions` shows them any time. Queue the
+  brief under **To-do**, or route it to OpenCode or Codex if it passes their
+  tests. Don't `--force` past a cap to go faster. The caps exist because
+  parallel Claude sessions burn a day's usage in a 5-hour window.
+- **The respawn gate.** A brief whose run hit its budget, or that has used
+  its attempts, is refused until you sharpen or split it and respawn with
+  `--after <its latest handoff>`. See `references/lifecycle.md`.
 - It builds the worker prompt, spawns a new terminal in this checkout on
   the current host (Superset, Ultron or tmux), writes the terminal id into the brief
   header, and adds the worker to **Running workers**. `worker:` can be any
   agent the host knows how to launch (see `references/hosts.md`).
 
 `--force` is for when the lint is plainly wrong, or when the user has told
-you to spend. Say which it was in one line. For a task that must read an
+you to spend. Say which it was in one line. It passes the lint, the caps and
+the respawn gate, never the Fable gate, and logs the caps and the gate to
+`handoffs/.jarvis/audit.log`. For a task that must read an
 image or a design, add `--attach <path>` (repeatable).
 
 Spawn every independent brief the cap allows. Keep briefs disjoint in the
@@ -170,9 +186,16 @@ when a worker needs you. Then act on what it shows:
 - **Usage limit in a worker terminal**: that's the red band. Route new heavy
   briefs to Codex. If the worker is dead, close it and respawn from the same
   brief on the matching Codex tier.
-- **Band tightened to amber while `fable` workers are running**: switch them
-  as `references/model-routing.md` describes. Let a worker that's nearly done
-  finish instead.
+- **A `budget` wake** (`worker <id> hit its usd budget`, or `paused over
+  budget`): the worker was asked once for a partial handoff, and after the
+  grace period pressed Escape if it kept going. Nothing was closed. Read its
+  terminal, then either wait for the partial handoff, or raise the limit
+  with `handoffs/bin/jarvis budget <terminal> usd=30` if the work is
+  genuinely on track. `jarvis budget <terminal>` shows its use. Never
+  `--force` a respawn to dodge a budget.
+- **Band tightened to amber or red while workers run**: nothing happens to
+  them. New spawns follow the lower caps. Move a worker to a cheaper tier
+  only if the user asks, as `references/model-routing.md` describes.
 - **"left running by closed workers"**: processes a finished worker started
   are still going. Stop them with `handoffs/bin/jarvis leftovers <brief>
   --stop`, unless the worker's handoff explains why one must stay up; ask the

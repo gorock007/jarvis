@@ -14,7 +14,7 @@ workers. You talk to Jarvis, and Jarvis manages them.
 
 ```
 you ──▶ Jarvis (Claude Code · opus 5.5 · high)
-            │  brief ──▶ worker A  claude / fable        ──▶ handoff ─┐
+            │  brief ──▶ worker A  claude / opus 5.5     ──▶ handoff ─┐
             │  brief ──▶ worker B  claude / sonnet       ──▶ handoff ─┤─▶ Jarvis reviews, commits, pushes
             │  brief ──▶ worker C  codex  / gpt-6-astra  ──▶ handoff ─┘   (image asset)
             └─ handoffs/OPEN.md — the one list of what's pending
@@ -80,9 +80,10 @@ It's probably not for you if:
 | --- | --- |
 | 🧠 **One lead agent** | You talk only to Jarvis. It plans, decides, and briefs, and it does no editing in its own terminal. |
 | 🛠️ **Parallel workers** | Each task runs in its own terminal (a Superset terminal, an Ultron session or a tmux window) on the same checkout. Jarvis starts independent tasks at the same time. |
-| 🎯 **Model routing** | Each task goes to the cheapest agent and model that can do it well: Claude Code (`fable` / `claude-opus-5-5` / `sonnet` / `haiku`), Codex, or OpenCode's free models. |
-| 📉 **Usage bands** | Jarvis reads Claude Code's own 5-hour usage numbers and the burn rate. Past 50%, or on pace to run out before the window resets, workers stop getting `fable`. Past 75%, new heavy work goes to Codex. `jarvis spawn` enforces both. |
-| 🚦 **A cap on Claude sessions** | At most 3 Claude sessions run at once by default, Jarvis included. Codex and OpenCode don't count. Extra briefs wait in a queue or go to the free tier, so parallel work doesn't use up your 5-hour window in two hours. |
+| 🎯 **Model routing** | Each task goes to the cheapest agent and model that can do it well: Claude Code (`claude-opus-5-5` / `sonnet` / `haiku`), Codex, or OpenCode's free models. `fable` is off unless you authorize one brief yourself. |
+| 📉 **Usage bands** | Jarvis reads Claude Code's own 5-hour usage numbers and the burn rate. Past 50%, on pace to run out, or with no fresh reading, the session caps drop. Past 75%, new heavy work goes to Codex. `jarvis spawn` enforces both. |
+| 🚦 **Caps on Claude sessions** | At most 4 Claude sessions run at once on the machine (every repo, your own sessions included), 3 per project and 2 on Opus. Codex and OpenCode don't count. Extra briefs wait in a queue or go to the free tier, so parallel work doesn't use up your 5-hour window in two hours. |
+| ⏱️ **Worker budgets** | Each worker has limits on working time, estimated cost, context, failed tests and attempts. Past one it is asked for a partial handoff, then interrupted. Nothing is closed. |
 | ❓ **Grouped questions** | Workers never wait for you. They write their questions into a handoff file, and Jarvis collects them into one numbered message for you. |
 | ✅ **Review and commit** | Jarvis checks each handoff against `git status`, reads the diff, and runs your checks. Then it commits only the listed files, one commit per task. |
 | 📒 **Memory in your repo** | `handoffs/OPEN.md` lists what's running, what's blocked, and what's next, so `/clear` and new sessions don't lose anything. |
@@ -104,7 +105,7 @@ The plugin has two skills:
 | A git repository | Jarvis commits each handoff |
 | *Optional:* Codex | Images and other media, computer-use testing, and extra work when your Claude usage is high |
 | *Optional:* OpenCode | Free models for small, tightly scoped tasks |
-| `jq` (and `python3` for `jarvis usage`) | `handoffs/bin/jarvis` reads JSON from the host and Claude Code. Without `jq` the cap, band and idle guard fail open. |
+| `jq` (and `python3` for `jarvis usage`) | `handoffs/bin/jarvis` reads JSON from the host and Claude Code. Without `jq`, `jarvis spawn` refuses and the band reads amber. |
 | *Optional:* a [TypeSafe](https://docs.typesafe.ai) API key in `TYPESAFE_API_KEY` | Brief lint and one-line worker polling through Jev. See [Optional: Jev](#optional-jev). |
 
 Without Codex or OpenCode, Jarvis still works. Those tasks go to Claude
@@ -334,8 +335,8 @@ Two rules keep the shared checkout safe:
 | `CLAUDE.md` | A few lines every session loads: who is Jarvis and who is a worker, and your checks. Kept short because workers load it too. |
 | `AGENTS.md` | The worker rules, read by Claude Code, Codex and OpenCode: git rules, shared-file rules, ask once, one brief then hand off, handoff format |
 | `handoffs/JARVIS.md` | Jarvis's rules for this project: what only Jarvis may do, how you verify work, shared files, budget rules. Only Jarvis reads it. |
-| `handoffs/jarvis.conf` | The Claude cap, band thresholds, idle limit, whether merge stops leftover processes |
-| `handoffs/bin/jarvis` | `start`, `status`, `spawn`, `merge`, `close`, `doctor`, `leftovers`, `lock`, `resources`, `watch`, `band`, `usage`, plus the idle guard hook and the statusline tap |
+| `handoffs/jarvis.conf` | The Claude caps, band thresholds, worker budgets, idle limit, whether merge stops leftover processes |
+| `handoffs/bin/jarvis` | `start`, `status`, `spawn`, `merge`, `close`, `doctor`, `leftovers`, `lock`, `resources`, `watch`, `band`, `usage`, `sessions`, `budget`, `fable`, plus the idle guard and Fable guard hooks and the statusline tap |
 | `handoffs/bin/jarvis-lock.pl` | The lease behind `jarvis lock` (needs `perl`, which macOS ships) |
 | `handoffs/bin/cc_usage_audit.py` | Prices your local Claude Code transcripts for `jarvis usage` |
 | `handoffs/OPEN.md` | The one pending list: Jarvis's terminal, usage band, running workers, questions for you, to-do |
@@ -343,7 +344,7 @@ Two rules keep the shared checkout safe:
 | `handoffs/briefs/` | Briefs Jarvis writes, plus `TEMPLATE.md` |
 | `handoffs/merged/` | Reviewed handoffs, committed together with the work they describe |
 | `handoffs/bin/jev.sh` | Optional Jev helper. Does nothing without a `TYPESAFE_API_KEY`. Its log, `handoffs/.jev/`, is git-ignored. |
-| `.claude/settings.json` | Subagents on `sonnet`; security-guidance reviews once per commit instead of after every stop; the idle guard and the statusline tap; plugins this repo doesn't use switched off. Merged into any settings you already have. |
+| `.claude/settings.json` | Subagents on `sonnet`; security-guidance reviews once per commit instead of after every stop; the idle guard, the Fable guard and the statusline tap; plugins this repo doesn't use switched off. Merged into any settings you already have. |
 | `.claude/agents/scout.md` | Read-only explorer subagent pinned to `sonnet`. Answers in under 300 words. |
 | `.claude/agents/diff-reviewer.md` | Read-only diff reviewer subagent pinned to `sonnet` |
 
@@ -381,12 +382,12 @@ Details: [`hosts.md`](plugins/jarvis/skills/run/references/hosts.md).
 The tier depends on one question: **can the brief say what "done" looks like
 and how to verify it?** If yes, Claude Opus 5.5 at `high` can handle it, and that covers
 most work. If no (the approach isn't decided, the spec is unclear, the cause
-is unknown, or a wrong call would be expensive), it goes to `fable`. How
-*undecided* a task is matters more than how big it is.
+is unknown, or a wrong call would be expensive), it goes to Codex
+`gpt-6-astra`. How *undecided* a task is matters more than how big it is.
 
 | Tier | Claude Code | Codex | OpenCode (free) |
 | --- | --- | --- | --- |
-| Top: worker must decide the approach | `fable` · high | `gpt-6-astra` · high | never |
+| Top: worker must decide the approach | `fable` · high, **only if you authorize that brief** | `gpt-6-astra` · high | never |
 | Workhorse: substantial but specified | `claude-opus-5-5` · high | `gpt-5.6-sol` · high | never |
 | Light: scoped tweaks, docs, audits | `sonnet` · medium | `gpt-5.6-terra` · medium | if tightly scoped |
 | Trivial: renames, formatting | `haiku` · low | `gpt-5.6-luna` · low | **first choice** |
@@ -407,8 +408,18 @@ Its thinking is always on, so Jarvis always passes `--effort`.
 and 8 handoff reviews with planted defects, three times each. All three
 picked the right tier for 95% of briefs and caught every planted defect.
 Fable cost 2.8× as much per call, and `xhigh` added only a false alarm.
-Fable is still the top tier for workers whose task has an undecided shape.
 `jarvis usage` shows Jarvis's real cost per turn by model.
+
+**Fable is never used unless you authorize one brief, at your own terminal.**
+Jarvis doesn't pick it, a band change doesn't escalate to it, and a brief
+that came back with questions doesn't move up to it. Work that would have
+gone there goes to `gpt-6-astra`. To use it for one task, see
+the FAQ entry [How do I use Fable for one task?](#faq-and-troubleshooting). Two
+guards back this up: `jarvis spawn` checks every spelling of the model name
+(`--force` doesn't pass it), and an `availableModels` list in your
+`~/.claude/settings.json` makes Claude Code itself substitute Opus for Fable,
+including for subagents. Setup asks before writing that list, because it
+applies in every repo and also stops your own `/model fable`.
 
 **OpenCode is the free tier.** Jarvis considers it before `sonnet` or `haiku`,
 because every small task it handles saves your Claude and Codex quota. Jarvis
@@ -417,9 +428,12 @@ never gives it top- or workhorse-tier work. Free models are run by third
 parties, so it never sees real credentials or user data. If OpenCode gets a
 task wrong, Jarvis gives it one correction, then moves the task to `sonnet`.
 
-At most 3 Claude sessions run at once, Jarvis included (configurable). Past
-that, `jarvis spawn` refuses. The brief then waits under To-do in `OPEN.md`,
-or goes to OpenCode or Codex if it fits them.
+Three caps apply to Claude sessions: **4 machine-wide** (every repo and your
+own sessions included), **3 in this project** (Jarvis included) and **2 on
+Opus**. Past any of them, `jarvis spawn` refuses and names who holds each
+slot (`jarvis sessions` shows them any time). The brief then waits under
+To-do in `OPEN.md`, or goes to OpenCode or Codex if it fits them. Idle
+sessions don't count, and Jarvis never stops a session it didn't start.
 
 > Model IDs change over time. `jarvis:setup` checks which IDs your Superset
 > host accepts and updates the table. The full reasoning is in
@@ -427,23 +441,39 @@ or goes to OpenCode or Codex if it fits them.
 
 ## Usage-aware spending
 
-Jarvis and every Claude worker draw from the same usage limit, so Jarvis
-tracks a **band** and records it in `OPEN.md`:
+Jarvis and every Claude session draw from the same usage limit, so Jarvis
+tracks a **band** and records it in `OPEN.md`. The band sets how many Claude
+sessions may run:
 
-| Band | Trigger | What changes |
-| --- | --- | --- |
-| 🟢 Green | under 50%, and not on pace to run out | The routing table as written |
-| 🟡 Amber | 50%+, or on pace to use the whole 5-hour window before it resets (40% in the first hour counts) | Workers don't get `fable`. Those briefs start on Opus 5.5 (`claude-opus-5-5`) at `high` instead. Running `fable` workers finish their current phase, hand off `status: partial`, and restart on Opus 5.5. Jarvis never stops them mid-edit. |
-| 🔴 Red | 75%+, a usage-limit message, or a failed start | New top- and workhorse-tier briefs go to Codex. Claude is kept for Jarvis and workers already running. |
+| Band | Trigger | Caps (machine-wide · Opus) | What changes |
+| --- | --- | --- | --- |
+| 🟢 Green | under 50%, and not on pace to run out | 4 · 2 | The routing table as written |
+| 🟡 Amber | 50%+, burning fast (on pace to use the whole 5-hour window before it resets, or 15+ points in 20 minutes), a 7-day reading at 80%+, or no reading or a stale one | 3 · 2 | New Claude work waits sooner. Running workers are untouched. |
+| 🔴 Red | 75%+, about to hit 100% within 30 minutes, a 7-day reading at 95%+, a usage-limit message, or a failed start | 2 · 0 | New top- and workhorse-tier briefs go to Codex. Claude is kept for Jarvis and workers already running. |
 
 The numbers come from Claude Code itself. The repo's statusline is a small
-tap that saves the 5-hour and 7-day readings and then runs your own
-statusline unchanged. `jarvis status` turns the reading into a band, and
-`jarvis spawn` enforces it. Running agents in parallel doesn't make any
-single task more expensive, but it squeezes a day's spend into one window.
-That's why the band watches the pace as well as the total. Jarvis doesn't
-change its own model mid-session. It sends work elsewhere, so the remaining
-budget goes to coordination.
+tap that saves the 5-hour and 7-day readings machine-wide, in
+`~/.jarvis/usage.json`, and then runs your own statusline unchanged. One
+reading serves every repo, because the limit belongs to the account. **The
+band fails closed**: with no reading, or one older than 30 minutes whose
+window hasn't reset, it reads amber, so a repo with no statusline tap, or a
+machine nobody has used for a day, gets the lower caps instead of free
+rein. `jarvis status` turns the reading into a band, and `jarvis spawn`
+enforces it. Running agents in parallel doesn't make any single task more
+expensive, but it squeezes a day's spend into one window. That's why the
+band watches the burn rate as well as the total. Jarvis doesn't change its
+own model mid-session. It sends work elsewhere, so the remaining budget goes
+to coordination.
+
+**`jarvis usage` says what it cost, with labels.** It prices your local
+transcripts at API list prices and says so: an **API-equivalent estimate, not
+your subscription usage**. The real subscription numbers (5-hour and 7-day)
+are printed on their own line, with the age of the reading. It shows the top
+workers and briefs by cost, with attempts, context growth and outcome, and
+waste signals: abandoned runs, briefs run more than once, workers with many
+failed test runs, sessions left open for hours, and the share of worker cost
+spent above 150k of context. `--all-projects` covers every repo on the
+machine.
 
 ## Worker lifecycle and heavy checks
 
@@ -459,6 +489,21 @@ ends only the finished and lost ones Jarvis recorded, and logs each action
 in `handoffs/.jarvis/audit.log`. Unknown terminals and other sessions are
 never touched. `jarvis status` ends with a `doctor:` line when there's
 something to act on.
+
+**Workers have budgets.** Each running Claude worker gets 90 working
+minutes (time its screen changed), about $15 of estimated cost, 300k of
+context, 6 failed test runs and 2 attempts per brief. Codex and OpenCode
+workers get minutes and attempts. Past one, `jarvis watch` types a single
+message into the worker's terminal asking for a partial handoff. If it keeps
+working with none after 10 minutes, the watcher presses Escape and wakes
+Jarvis. **Nothing is ever closed or signalled**: a worker's edits are
+uncommitted in the shared checkout. A brief can set its own limits with a
+`budget: min=120 usd=25 ctx=350k tests=8 attempts=3` header line, and
+`jarvis budget <terminal> usd=30` raises one running worker's limit. A brief
+that hit its budget, or has used its attempts, is refused on respawn until
+Jarvis sharpens or splits it and spawns with `--after` its handoff
+(`--force` passes this and is logged). `jarvis status` shows each worker's
+use on one line.
 
 **Heavy suites take turns.** Workers run targeted checks (unit tests, lint,
 typecheck) freely. Suites your repo marks heavy (Docker, e2e, the full
@@ -478,6 +523,8 @@ and records the result.
 | --- | --- |
 | `jarvis close <terminal>` | Cancel a worker: close, verify it exited, record |
 | `jarvis doctor [--apply \| --quiet]` | What's alive in this checkout and why; `--apply` ends the finished and lost ones |
+| `jarvis budget <terminal> [usd=N …]` | A worker's budget use; with values, raise its limits (logged) |
+| `jarvis sessions` | The Claude sessions counting toward the caps, machine-wide |
 | `jarvis lock <class> [--wait <sec>] [--reuse] -- <command…>` | Run a command only while holding its class's lease; waiters queue in order |
 | `jarvis resources [--json]` | Who holds each lease, who's waiting, stored passes |
 
@@ -553,8 +600,10 @@ and the pass/fail gates used to test the questions are in [`eval/`](eval/).
 After setup, **your repo's `handoffs/JARVIS.md` takes priority over the
 skill**. Edit it to change what only Jarvis may do, how you verify work,
 shared files, and any routing rule. Edit `handoffs/jarvis.conf` to change
-the Claude cap, the band thresholds, the idle limit, and whether merges
-push. Your checks live in `CLAUDE.md`.
+the Claude caps, the band thresholds, the worker budgets, the idle limit,
+and whether merges push (`JARVIS_PUSH`). Two more keys tune the watcher and
+the idle guard: `JARVIS_WATCH_SEC` (how often it looks) and
+`JARVIS_GUARD_TOKENS` (how much context the guard ignores). Your checks live in `CLAUDE.md`.
 
 Workers follow `AGENTS.md`. Add project-specific rules there, such as
 "never edit `src/theme/tokens.ts`" or "use pnpm, not npm".
@@ -601,16 +650,57 @@ would have paid to write its whole context again. Type `/clear` and then
 "resume" for a cheap fresh session that reloads from `OPEN.md`. Or send the
 same message again to go ahead anyway.
 
-**`jarvis spawn` refused: "Claude cap reached"**
-That's working as intended. The brief waits under To-do and is spawned when
-a worker is merged. If the task is small and fenced, OpenCode or Codex can
-take it now. Raise `JARVIS_MAX_CLAUDE` in `handoffs/jarvis.conf` if you want
-more parallel Claude sessions and accept the faster burn.
+**`jarvis spawn` refused at a Claude cap**
+That's working as intended. The refusal names the cap (machine-wide, this
+project or Opus), its count, and every session holding a slot, yours
+included. The brief waits under To-do and is spawned when a slot frees. If
+the task is small and fenced, OpenCode or Codex can take it now, and
+`model: sonnet` avoids the Opus cap. `jarvis sessions` lists what counts, and
+the idle ones it lists are yours to close. Raise `JARVIS_MAX_CLAUDE_GLOBAL`,
+`JARVIS_MAX_CLAUDE` or `JARVIS_MAX_OPUS` in `handoffs/jarvis.conf` if you want
+more parallel Claude sessions and accept the faster burn. `--force` passes a
+cap and writes a `cap-force` line in `handoffs/.jarvis/audit.log`.
 
-**`band: unknown`**
-The statusline tap hasn't produced a reading yet. It needs `jq`, and the
-repo's `.claude/settings.json` must set the statusline. Until it has a
-reading, Jarvis asks you for your `/usage` numbers.
+**`band: amber unknown band, treated as amber`** (or "stale reading")
+The statusline tap hasn't produced a fresh reading. It needs `jq`, and the
+`.claude/settings.json` of at least one repo you use Claude Code in must set
+the statusline to `jarvis statusline`: the reading is machine-wide, so any
+Jarvis repo feeds it. Until then every spawn runs under the amber caps.
+Writing a band into `OPEN.md` doesn't change what spawn enforces.
+
+**A worker was asked for a handoff and then interrupted**
+It hit a budget (minutes, cost, context, failed tests). Jarvis reads its
+terminal, waits for the partial handoff, and respawns the brief sharper or
+smaller. If the work was on track, `jarvis budget <terminal> usd=30` raises
+the limit and re-arms the ask. The worker's terminal is never closed.
+
+**`jarvis spawn` refused a brief that hit its budget**
+The brief needs sharpening or splitting first. Respawn it with `--after` its
+latest handoff.
+
+**How do I use Fable for one task?**
+
+Fable is off by default, for Jarvis's own choices and for every worker. To
+run one brief on it, you authorize that brief yourself, in your own terminal
+(not through Jarvis, and not inside an agent session):
+
+```bash
+handoffs/bin/jarvis fable allow handoffs/briefs/<file>.md
+```
+
+It shows the brief's title and checkout and asks you to type its slug. Then
+set `model: fable` in the brief and ask Jarvis to spawn it. The authorization
+is single-use, tied to that brief's text, and expires after
+`JARVIS_FABLE_TTL_MIN` minutes (120). It also can't pass the red band. On
+Superset you first need an agent config that allows Fable, named in
+`JARVIS_FABLE_SUPERSET_AGENT` (the steps are in `jarvis.conf`). `jarvis fable
+list` shows what's pending and what was used, and `jarvis fable revoke
+<brief>` cancels one. Every use is logged in `~/.jarvis/fable/audit.log`.
+
+`jarvis fable backstop` checks whether your user-level `availableModels`
+keeps Fable out of every other session. `--apply` writes it and keeps a
+backup. This stops your own `/model fable` too, so lift it by restoring the
+backup or editing the list.
 
 **A worker is stuck on a permission prompt**
 `jarvis watch` checks each worker's screen every minute. It wakes Jarvis

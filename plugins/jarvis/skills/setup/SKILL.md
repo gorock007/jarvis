@@ -1,6 +1,6 @@
 ---
 name: setup
-description: Install or upgrade the Jarvis workflow in the current repo — a main agent ("Jarvis") the user talks to, which delegates building to worker agents (Claude Code, Codex, OpenCode or any agent CLI) on separate terminals — in Superset, Ultron or tmux — with usage-aware model routing (Claude Code fable/opus/sonnet/haiku, Codex astra/sol/terra/luna, OpenCode free models), a cap on concurrent Claude sessions, a shared-checkout worker contract, a handoff/OPEN.md system, and handoffs/bin/jarvis (spawn, status, merge, a model-free watcher, an idle-reload guard, usage reporting). Writes CLAUDE.md, AGENTS.md, handoffs/ and .claude/. Use whenever the user says "set up Jarvis", "add the Jarvis workflow", "update Jarvis in this repo", "make this repo use workers", "orchestrate with Superset terminals", "run workers in tmux", or wants one coordinating agent plus parallel workers. Needs a host for the workers: Superset, Ultron, or tmux anywhere else.
+description: Install or upgrade the Jarvis workflow in the current repo — a main agent ("Jarvis") the user talks to, which delegates building to worker agents (Claude Code, Codex, OpenCode or any agent CLI) on separate terminals — in Superset, Ultron or tmux — with usage-aware model routing (Claude Code opus/sonnet/haiku, Codex astra/sol/terra/luna, OpenCode free models; Fable only when the user authorizes one brief), machine-wide caps on concurrent Claude sessions, worker budgets, a shared-checkout worker contract, a handoff/OPEN.md system, and handoffs/bin/jarvis (spawn, status, merge, a model-free watcher, an idle-reload guard, usage reporting). Writes CLAUDE.md, AGENTS.md, handoffs/ and .claude/. Use whenever the user says "set up Jarvis", "add the Jarvis workflow", "update Jarvis in this repo", "make this repo use workers", "orchestrate with Superset terminals", "run workers in tmux", or wants one coordinating agent plus parallel workers. Needs a host for the workers: Superset, Ultron, or tmux anywhere else.
 ---
 
 # jarvis:setup — install the Jarvis workflow into a repo
@@ -20,24 +20,29 @@ file:
   it.
 - `handoffs/OPEN.md` (Jarvis's pending list), `briefs/`, `merged/`, and the
   brief and handoff templates.
-- `handoffs/jarvis.conf`: the Claude cap, the band thresholds, the idle
-  limit, and whether merge stops what a worker left running.
+- `handoffs/jarvis.conf`: the Claude caps (per checkout, machine-wide, Opus),
+  the band thresholds and burn-rate limits, worker budgets, the Fable
+  authorization lifetime, the idle limit, and whether merge stops what a
+  worker left running. Most keys are commented defaults.
 - `handoffs/bin/jarvis`: `start`, `status`, `spawn`, `merge`, `close`,
-  `doctor`, `leftovers`, `lock`, `resources`, `watch`, `band`, `usage`, plus
-  the prompt-guard hook and the statusline tap. It needs `jq` and, for
-  `usage`, `python3`.
+  `doctor`, `leftovers`, `lock`, `resources`, `watch`, `band`, `usage`,
+  `sessions`, `budget`, `fable`, plus the prompt-guard and PreToolUse hooks
+  and the statusline tap. It needs `jq` and, for `usage`, `python3`.
 - `handoffs/bin/jarvis-lock.pl`: the lease behind `jarvis lock` and
   `jarvis resources`. It needs `perl`, which macOS ships.
 - `handoffs/bin/cc_usage_audit.py`: the transcript analyser behind
   `jarvis usage`.
 - `handoffs/bin/jev.sh`: optional brief lint and terminal triage. It does
   nothing without a `TYPESAFE_API_KEY`.
-- `.claude/settings.json`, which does four things:
+- `.claude/settings.json`, which does five things:
   - puts subagents on Sonnet (`CLAUDE_CODE_SUBAGENT_MODEL`)
   - turns off the security-guidance per-stop review, while keeping its
     per-commit review, on Sonnet
   - installs the idle-reload guard (`UserPromptSubmit`), which also records
     which Claude session runs in each terminal, and the statusline tap
+  - installs the Fable guard (`PreToolUse` on `Agent|Task|Edit|Write|MultiEdit`,
+    `jarvis hook pretool`), which denies a Fable subagent and any edit that
+    lets Fable into a settings allowlist
   - switches off plugins this repo doesn't use
 - `.claude/agents/scout.md` and `diff-reviewer.md`: read-only subagents
   pinned to Sonnet.
@@ -60,9 +65,11 @@ placeholders mean.
   manager). The host is detected each time `jarvis` runs, so a repo set up
   under one works under the others. See the `jarvis:run` skill's
   `references/hosts.md`.
-- `command -v jq python3 perl`. `jq` is needed for `jarvis spawn`, the guard, the
-  band and the statusline tap. Without it those fail open, and the user
-  loses the enforcement. `python3` is only needed for `jarvis usage`.
+- `command -v jq python3 perl`. `jq` is needed for `jarvis spawn`, the hooks, the
+  band and the statusline tap. Without it spawn refuses, the band reads amber
+  and the Fable checks refuse, while the hooks and the guard let everything
+  through. `python3` is needed for `jarvis usage` and the worker budgets'
+  cost and context readings.
   `perl` is needed for `jarvis lock`: without it a wrapped heavy script
   refuses to run (exit 2), except on CI. Say what's missing.
 - Which agents exist: on Superset, `superset agents list --local`; on
@@ -101,9 +108,12 @@ so the user can just say "yes":
    commands from the handoff, or tests only.
 6. **Shared files** workers must edit minimally: root layout, design
    tokens, `package.json`/`pyproject.toml`, global config.
-7. **Claude cap**: how many Claude sessions may run at once, **Jarvis
-   included**. The default is 3 (Jarvis plus two workers). When the 5-hour
-   window ran out, 11 were running at once. Codex and OpenCode don't count.
+7. **Claude caps**: how many Claude sessions may run in this checkout at
+   once, **Jarvis included**. The default is 3 (Jarvis plus two workers).
+   Spawn also enforces 4 machine-wide, counting every repo and the user's
+   own sessions, and 2 on Opus. When the 5-hour window ran out, 11 were
+   running at once. Codex and OpenCode don't count. Only the per-checkout
+   number is asked here; the others are defaults in `jarvis.conf`.
 8. **Free tier**: is the user happy sending mechanical work to OpenCode's
    free models? What must never go there? In most repos that's real
    credentials, production data and proprietary logic. Free models are
@@ -117,9 +127,12 @@ so the user can just say "yes":
     session's skill listing, and workers pay for it on every turn. Keep
     `jarvis` and `security-guidance` on.
 11. **Statusline tap**: the repo's statusline becomes `jarvis statusline`.
-    It saves Claude Code's 5-hour reading so the band is computed, not
-    guessed, then runs the user's own statusline unchanged. The default is
-    yes. Without it, Jarvis asks for `/usage` numbers.
+    It saves Claude Code's 5-hour reading, machine-wide, so the band is
+    computed, not guessed, then runs the user's own statusline unchanged.
+    **It is required for the band:** with no tap in any Jarvis repo, nothing
+    writes a reading, the band reads amber on every spawn, and the caps stay
+    lowered (3 machine-wide, 2 Opus). The default is yes. Ask once more if the
+    user says no, and say that.
 12. **Jev (optional)**: `handoffs/bin/jev.sh` lints briefs before a spawn
     and makes `jarvis status` show one line per quiet worker. It sends brief
     text and the bottom of worker terminals to TypeSafe, with secret-shaped
@@ -156,6 +169,14 @@ Replace the placeholders:
 | `{{FREE_TIER_NEVER}}` | JARVIS.md | what must never go to OpenCode |
 | `{{MAX_CLAUDE}}`, `{{AMBER}}`, `{{RED}}` | jarvis.conf | numbers (defaults 3, 50, 75) |
 
+The other `jarvis.conf` keys stay as the template has them, commented at
+their defaults: `JARVIS_MAX_CLAUDE_GLOBAL`, `JARVIS_MAX_OPUS`,
+`JARVIS_AMBER_GLOBAL`/`_OPUS`, `JARVIS_RED_GLOBAL`/`_OPUS`,
+`JARVIS_ACTIVE_MIN`, `JARVIS_PENDING_SEC`, `JARVIS_STALE_MIN`,
+`JARVIS_BURN_MIN`, `JARVIS_BURN_AMBER`, the `JARVIS_BUDGET_*` limits,
+`JARVIS_FABLE_TTL_MIN` and `JARVIS_FABLE_SUPERSET_AGENT`. When upgrading an
+existing `jarvis.conf`, append the ones it lacks.
+
 Then:
 
 - Copy `templates/handoffs/` to `<repo>/handoffs/`, keeping the `.gitkeep`s,
@@ -167,7 +188,8 @@ Then:
   already has agents with those names, leave them alone and say so.
 - **`.claude/settings.json`**: merge the template into any existing file
   with `jq`, never overwrite it. Keep the user's keys. Append to existing
-  hook arrays. Add `"<plugin>@<marketplace>": false` to `enabledPlugins` for
+  hook arrays, including the `PreToolUse` Fable guard. Add
+  `"<plugin>@<marketplace>": false` to `enabledPlugins` for
   each plugin from question 10. If the project already sets a `statusLine`,
   put its command in `handoffs/jarvis.conf` as `JARVIS_STATUSLINE_CMD='…'`
   so the tap still runs it. The tap reads the user-level statusline by
@@ -194,6 +216,18 @@ Then:
   and the agent CLIs reject a bad model when the worker starts.
 - If Jev was installed: `handoffs/bin/jev.sh --dry-run brief
   handoffs/briefs/TEMPLATE.md` should print a JSON request.
+- **Fable backstop (user-level: ask first).** Run `handoffs/bin/jarvis fable
+  backstop`. If it says the backstop is off, ask the user before `--apply`,
+  and say what it does: it writes `availableModels: ["opus","sonnet","haiku"]`
+  into their `~/.claude/settings.json` (and Superset's default account, when
+  there is one), which is **user-level**, so it applies in every repo and also
+  stops their own `/model fable`. It leaves a `settings.json.bak-jarvis-<ts>`
+  beside the file, keeps any narrower list they have, and is undone by
+  restoring that backup or editing the list. Without it Jarvis still never
+  routes to Fable, and spawn still refuses it, but a Claude session could
+  pick it up through an Agent-tool model override. On Superset, also offer
+  `JARVIS_FABLE_SUPERSET_AGENT` (see the comments in `jarvis.conf`) only if
+  the user wants to be able to authorize Fable workers there.
 - Tell the user how to start Jarvis. On Superset, with their project id
   from `superset projects list` filled in:
 
@@ -229,9 +263,10 @@ ultron agent spawn --role jarvis --agent claude --model claude-opus-5-5 --effort
   (`handoffs/bin/jarvis watch --start`) when `jarvis status` says it isn't
   running.
 
-  Jarvis runs on `claude-opus-5-5` at `high`, not `fable`: in
-  `eval/jarvis-model/` it routed and reviewed as well as Fable at about a
-  third of the cost. Mention it if the user asks about cost.
+  Jarvis runs on `claude-opus-5-5` at `high`: in `eval/jarvis-model/` it
+  routed and reviewed as well as Fable at about a third of the cost. Workers
+  never run on Fable unless the user authorizes one brief with `jarvis fable
+  allow`. Mention it if the user asks about cost.
 
 - Offer to commit: `chore: add Jarvis workflow`. Commit only if the user
   says yes. In a Jarvis repo, git belongs to Jarvis.
@@ -294,6 +329,30 @@ This release adds the run registry, verified close, `jarvis doctor` and
 5. Tell the user: merge now closes every worker of a brief and checks it
    exited; `jarvis close` cancels a worker the same way; `status` ends with
    a `doctor:` line when finished workers or terminals are still around.
+
+## 8. Upgrading a repo set up with jarvis 0.6
+
+This release makes Fable opt-in, counts Claude sessions machine-wide, makes
+the band fail closed, adds worker budgets and extends `jarvis usage`.
+
+1. Copy the new `handoffs/bin/jarvis`, `handoffs/bin/cc_usage_audit.py` and
+   `handoffs/bin/jev.sh`.
+2. Append the cap, band, budget and Fable blocks from the template
+   `jarvis.conf` (commented, so nothing changes until edited). An existing
+   `JARVIS_MAX_CLAUDE` stays as it is.
+3. Merge the template `.claude/settings.json`: it adds the `PreToolUse`
+   Fable guard. Check the statusline tap is there too: **without it the band
+   reads amber** (section 2, question 11).
+4. Update `AGENTS.md` (the budget rule), `handoffs/JARVIS.md` (the budget
+   rules section) and `handoffs/briefs/TEMPLATE.md` (the model list and the
+   `budget:` line). Keep the project's own rules.
+5. Ask the user before `handoffs/bin/jarvis fable backstop --apply` (section
+   4), saying it is user-level.
+6. Tell the user: Jarvis no longer routes to Fable and sends top-tier work to
+   Codex `gpt-6-astra`; to use Fable for one brief they type `jarvis fable
+   allow <brief>` themselves; spawns are refused past 4 Claude sessions on the
+   machine, 3 here or 2 on Opus; workers are asked for a partial handoff past
+   a budget; and `jarvis usage` now shows per-worker cost.
 
 ## Notes
 

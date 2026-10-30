@@ -1,7 +1,7 @@
 # <one-line task title>
 worker: claude | codex | opencode
-model: <fable | claude-opus-5-5 | sonnet | haiku | gpt-6-astra | gpt-5.6-sol | gpt-5.6-terra | gpt-5.6-luna>
-  # note the reason when the usage band changed the choice, e.g. `claude-opus-5-5 (amber band; fable-tier task)`
+model: <claude-opus-5-5 | sonnet | haiku | gpt-6-astra | gpt-5.6-sol | gpt-5.6-terra | gpt-5.6-luna | fable (only after the user ran `jarvis fable allow` for this brief)>
+  # note the reason when a cap or the band changed the choice, e.g. `claude-opus-5-5 (Opus cap full; was sonnet)`
 effort: <low | medium | high | xhigh>
 budget: <optional, overrides jarvis.conf: min=120 usd=25 ctx=350k tests=8 attempts=3>
 started: <YYYY-MM-DD HH:MM> · terminal: <filled in by jarvis spawn>

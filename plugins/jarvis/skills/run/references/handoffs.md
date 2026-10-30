@@ -8,10 +8,13 @@ the same commit as the feature.
 
 `handoffs/briefs/YYYY-MM-DD-HHMM-<slug>.md`, from `handoffs/briefs/TEMPLATE.md`.
 
-Header: `worker`, `model`, `effort`, `started`, `terminal` (`jarvis spawn`
-fills the last two). When the usage band changed the model choice, say so in the header
-(`model: claude-opus-5-5 (amber band; fable-tier task)`) — a later re-spawn then knows
-whether to go back up to `fable`. Body: **Goal** (verifiable), **Context** (decisions already made,
+Header: `worker`, `model`, `effort`, an optional `budget:` line, `started`,
+`terminal` (`jarvis spawn` fills the last two). When a cap or the band changed the model
+choice, say so in the header (`model: claude-opus-5-5 (Opus cap full; was sonnet)`), so a
+later re-spawn knows why. A re-spawn never goes up to `fable` by itself: that
+takes the user's `jarvis fable allow <brief>`. `budget:` overrides the worker
+budget for this brief (`budget: min=120 usd=25 ctx=350k tests=8 attempts=3`,
+see `references/lifecycle.md`). Body: **Goal** (verifiable), **Context** (decisions already made,
 files to read, prior handoffs), **Scope** (may / must-not / shared files),
 **Phase**, **Checks**, and the ask-once instruction.
 
@@ -47,7 +50,10 @@ brief: handoffs/briefs/<file>.md
   Jarvis batches them; the worker keeps its terminal open and waits for
   `jarvis send`.
 - `partial` means: some phases done, something stopped it. The **Files** list
-  is still exact for what was touched.
+  is still exact for what was touched. It is also the checkpoint a worker
+  writes when it gets a `[jarvis] Budget reached` message. The next worker
+  starts from it with `--after`, and the brief needs sharpening or splitting
+  first (the respawn gate asks for that).
 - A worker that gets more instructions for the same task updates the same
   handoff file — Jarvis never has two handoffs for one brief.
 
