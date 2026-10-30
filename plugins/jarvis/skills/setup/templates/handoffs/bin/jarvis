@@ -57,8 +57,8 @@
 # "hosts" below). The agent in each terminal is any CLI: claude, codex, opencode, or
 # one added as JARVIS_AGENT_<name> in jarvis.conf.
 # Settings live in handoffs/jarvis.conf. Works on the stock macOS bash (3.2).
-# jq is needed for spawn, the hooks and the band; everything fails open without it,
-# except the Fable checks, which fail closed, and the band, which reads amber.
+# jq is needed for spawn, the hooks and the band. Without it spawn refuses and the band
+# reads amber (the Fable checks fail closed too); only the hooks and the guard let things through.
 set -u
 
 # PreToolUse runs this on every Agent, Task, Edit and Write call: leave before anything
@@ -2708,7 +2708,7 @@ hook_prompt() {
 # covers it. Not covered (documented limits; the backstop is what holds there): a Bash
 # command writing the file, or an agent definition's model: fable.
 hook_pretool() {
-  local in tool m f lf d why="" cwd p parent base resolved guarded gd gdl
+  local in tool m f lf d why="" cwd p parent base resolved guarded gd gdl target hops leaf_unresolved
   in=${JARVIS_HOOK_IN:-}
   have jq || exit 0
   tool=$(printf '%s' "$in" | jq -r '.tool_name // empty' 2>/dev/null) || exit 0
@@ -2725,7 +2725,9 @@ hook_pretool() {
       case "$f" in /*) p=$f ;; *) p=$cwd/$f ;; esac
       # First collapse repeated slashes and dot segments lexically. Then, when the
       # parent exists, resolve it physically so a symlinked directory cannot hide a
-      # guarded settings file. The leaf need not exist yet (Write commonly creates it).
+      # guarded settings file. Resolve an existing symlink leaf too; its own name may
+      # be harmless while its target is settings.json. The leaf need not exist yet
+      # (Write commonly creates it).
       p=$(printf '%s\n' "$p" | awk -F/ '{
         n = 0
         for (i = 1; i <= NF; i++) {
@@ -2741,13 +2743,43 @@ hook_pretool() {
       if [ -d "$parent" ]; then
         p=$(cd "$parent" 2>/dev/null && printf '%s/%s\n' "$(pwd -P)" "$base") && resolved=1
       fi
+      leaf_unresolved=0
+      if [ -L "$p" ]; then
+        hops=0
+        while [ -L "$p" ] && [ "$hops" -lt 10 ]; do
+          target=$(readlink "$p" 2>/dev/null) || { leaf_unresolved=1; break; }
+          case "$target" in /*) p=$target ;; *) p=$(dirname "$p")/$target ;; esac
+          p=$(printf '%s\n' "$p" | awk -F/ '{
+            n = 0
+            for (i = 1; i <= NF; i++) {
+              if ($i == "" || $i == ".") continue
+              if ($i == "..") { if (n > 0) n--; continue }
+              a[++n] = $i
+            }
+            out = "/"
+            for (i = 1; i <= n; i++) out = out (i > 1 ? "/" : "") a[i]
+            print out
+          }')
+          parent=$(dirname "$p"); base=$(basename "$p")
+          if [ -d "$parent" ]; then
+            p=$(cd "$parent" 2>/dev/null && printf '%s/%s\n' "$(pwd -P)" "$base") || { leaf_unresolved=1; break; }
+          else
+            leaf_unresolved=1; break
+          fi
+          hops=$((hops + 1))
+        done
+        [ $leaf_unresolved = 1 ] || { [ ! -L "$p" ] && [ -e "$p" ]; } || leaf_unresolved=1
+        [ $leaf_unresolved = 0 ] || resolved=0
+      fi
       lf=$(printf '%s' "$p" | tr '[:upper:]' '[:lower:]')
       base=$(printf '%s' "$base" | tr '[:upper:]' '[:lower:]')
-      case "$base" in settings*.json) ;; *) exit 0 ;; esac
+      case "$base" in settings*.json) ;; *) [ $leaf_unresolved = 1 ] || exit 0 ;; esac
 
       # Compare canonical directories case-blind (macOS paths are case-insensitive).
-      # These are the checkout's project settings and every user-level settings dir.
+      # These are any .claude directory, plus the checkout and user-level settings
+      # dirs explicitly (the latter need not themselves be named .claude).
       guarded=0; d=$(dirname "$lf")
+      [ "$(basename "$d")" = .claude ] && guarded=1
       while IFS= read -r gd; do
         [ -n "$gd" ] || continue
         if [ -d "$gd" ]; then gd=$(cd "$gd" 2>/dev/null && pwd -P) || continue

@@ -361,6 +361,23 @@ js=$(jq -nc --arg cwd "$sb" --arg f 'settings-link/settings.json' --arg c '{"ava
   '{cwd: $cwd, tool_name: "Write", tool_input: {file_path: $f, content: $c}}')
 hk "$js" | grep -q deny; check "a symlinked directory to the guarded .claude dir is denied" $?
 rm "$sb/settings-link"
+mkdir -p "$sb/other-repo/.claude"
+for f in "$sb/other-repo/.claude/settings.json" 'other-repo/.claude/settings.local.json'; do
+  js=$(jq -nc --arg cwd "$sb" --arg f "$f" --arg c '{"availableModels":["fable"]}' \
+    '{cwd: $cwd, tool_name: "Write", tool_input: {file_path: $f, content: $c}}')
+  hk "$js" | grep -q deny; check "a settings file in another .claude directory is denied ($f)" $?
+done
+echo '{"availableModels":["opus"]}' > "$sb/.claude/settings.json"
+ln -s '.claude/settings.json' "$sb/notes.json"
+js=$(jq -nc --arg f "$sb/notes.json" --arg c '{"availableModels":["fable"]}' \
+  '{tool_name: "Write", tool_input: {file_path: $f, content: $c}}')
+hk "$js" | grep -q deny; check "a misleading symlink leaf resolving to guarded settings is denied" $?
+rm "$sb/notes.json"
+ln -s 'loop.json' "$sb/loop.json"
+js=$(jq -nc --arg f "$sb/loop.json" --arg c '{"availableModels":["fable"]}' \
+  '{tool_name: "Write", tool_input: {file_path: $f, content: $c}}')
+hk "$js" | grep -q deny; check "an unresolvable symlink leaf gets the full content check" $?
+rm "$sb/loop.json"
 js=$(jq -nc --arg cwd "$sb" --arg f 'missing/deeper/settings.json' --arg c '{"availableModels":["fable"]}' \
   '{cwd: $cwd, tool_name: "Write", tool_input: {file_path: $f, content: $c}}')
 hk "$js" | grep -q deny; check "an unresolved settings*.json path still gets the full check" $?
