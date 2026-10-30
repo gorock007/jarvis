@@ -513,6 +513,7 @@ fi
 echo "jarvis lock (eval/locktest.sh)"; "$BASH" "$here/locktest.sh" 2>&1 | tee "$tmp/lock.out"; grep -q '^locktest: all passed' "$tmp/lock.out" || { n=$(grep -c '^  FAIL' "$tmp/lock.out"); fails=$((fails + (n > 0 ? n : 1))); }
 echo "fable gate (eval/fabletest.sh)"; "$BASH" "$here/fabletest.sh" 2>&1 | tee "$tmp/fable.out"; grep -q '^fabletest: all passed' "$tmp/fable.out" || { n=$(grep -c '^  FAIL' "$tmp/fable.out"); fails=$((fails + (n > 0 ? n : 1))); }
 echo "claude caps and band (eval/captest.sh)"; "$BASH" "$here/captest.sh" 2>&1 | tee "$tmp/cap.out"; grep -q '^captest: all passed' "$tmp/cap.out" || { n=$(grep -c '^  FAIL' "$tmp/cap.out"); fails=$((fails + (n > 0 ? n : 1))); }
+echo "worker budgets (eval/budgettest.sh)"; "$BASH" "$here/budgettest.sh" 2>&1 | tee "$tmp/budget.out"; grep -q '^budgettest: all passed' "$tmp/budget.out" || { n=$(grep -c '^  FAIL' "$tmp/budget.out"); fails=$((fails + (n > 0 ? n : 1))); }
 echo "jarvis usage (eval/usagetest.sh)"; "$BASH" "$here/usagetest.sh" 2>&1 | tee "$tmp/usage.out"; grep -q '^usagetest: all passed' "$tmp/usage.out" || { n=$(grep -c '^  FAIL' "$tmp/usage.out"); fails=$((fails + (n > 0 ? n : 1))); }
 rm -rf "$tmp"
 echo; [ "$fails" = 0 ] && echo "selftest: all passed" || { echo "selftest: $fails failed"; exit 1; }

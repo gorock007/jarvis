@@ -7,13 +7,17 @@
 #   jarvis spawn <brief.md> [--after <partial-handoff>] [--attach <file>]... [--force]
 #                                      lint, enforce the band and the Claude caps (machine-wide,
 #                                      this checkout, Opus; --force passes them, never Fable),
-#                                      spawn, record
+#                                      a respawn gate (a brief that blew its budget or used its
+#                                      attempts needs --after its handoff), spawn, record
 #   jarvis sessions                    the Claude sessions counting toward the caps, machine-wide,
 #                                      and the ones idle for hours you may want to close
 #   jarvis read <terminal> [<lines>]   the bottom of a worker's screen
 #   jarvis send <terminal> <text>      type into a worker's terminal and press Enter
 #   jarvis send <terminal> --keys <k,k> press keys: enter, esc, tab, shift+tab, up, 1, y, ctrl+c…
 #   jarvis close <terminal>            close a worker's terminal and drop it from OPEN.md
+#   jarvis budget <terminal> [min=N] [usd=N] [ctx=N[k]] [tests=N]
+#                                      a worker's budget use; with values, set that run's limits
+#                                      and re-arm its ask and pause (logged)
 #   jarvis merge <handoff.md> --check  file list vs git status, diff stat; changes nothing
 #   jarvis merge <handoff.md> [-m <msg>] [--outcome <o>] [--no-push] [--keep-open] [--force]
 #                                      commit exactly the listed files + the handoff move,
@@ -25,8 +29,10 @@
 #   jarvis leftovers --mine [--stop]   (a worker) what this session started that's still running
 #   jarvis watch [--once | --start]   run in its own terminal (no model): wakes Jarvis when a
 #                                      handoff lands or a worker is limited, waiting at a prompt
-#                                      or frozen; /clears it first after a long idle. --start
-#                                      opens that terminal, unless a watcher is already running
+#                                      or frozen; asks a worker past its budget for a partial
+#                                      handoff, then presses Escape if it keeps going; /clears
+#                                      Jarvis first after a long idle. --start opens that
+#                                      terminal, unless a watcher is already running
 #   jarvis band                        the usage band from the machine-wide statusline reading
 #                                      and its burn rate; no reading or a stale one is amber
 #   jarvis usage [--days N | --since DATE] [--all-projects]
@@ -79,7 +85,7 @@ JARVIS_MAX_CLAUDE=3      # Claude sessions at once in this checkout, Jarvis incl
 JARVIS_MAX_CLAUDE_GLOBAL=4  # active Claude sessions on the whole machine, any repo, the user's own included
 JARVIS_MAX_OPUS=2        # of those, on Opus (or Fable, or a model that can't be told)
 JARVIS_AMBER_GLOBAL=3    # the machine-wide cap in the amber band
-JARVIS_AMBER_OPUS=1      # the Opus cap in amber
+JARVIS_AMBER_OPUS=2      # the Opus cap in amber (Jarvis itself counts)
 JARVIS_RED_GLOBAL=2      # the machine-wide cap in red
 JARVIS_RED_OPUS=0        # the Opus cap in red: no new Opus work
 JARVIS_ACTIVE_MIN=10     # a session busy, or updated this many minutes ago, is active; idle ones don't count
@@ -93,6 +99,13 @@ JARVIS_IDLE_MIN=55       # minutes idle after which a big context is cheaper to 
 JARVIS_GUARD_TOKENS=100000
 JARVIS_WATCH_SEC=60
 JARVIS_STALL_MIN=15      # a worker screen unchanged this long, with no handoff, wakes Jarvis
+JARVIS_BUDGET_MIN=90     # a worker's working minutes (watcher ticks its screen changed in)
+JARVIS_BUDGET_USD=15     # its API-equivalent estimate, subagents included
+JARVIS_BUDGET_CTX=300000 # its last turn's context
+JARVIS_BUDGET_TESTS=6    # its failed test runs
+JARVIS_BUDGET_ATTEMPTS=2 # runs per brief before a respawn needs --after
+JARVIS_BUDGET_SEC=300    # the watcher reads a worker's transcript at most this often
+JARVIS_BUDGET_GRACE_MIN=10  # after the ask, minutes without a handoff before Escape
 JARVIS_PUSH=1
 JARVIS_REAP=1            # merge stops what the closed worker left running (0 = only list it)
 JARVIS_STOP_GRACE=10     # seconds merge/close wait for a closed worker's terminal and agent to go
@@ -808,6 +821,7 @@ cmd_status() {
     [ -n "$brief" ] && ho=$(grep -l "^brief:[[:space:]]*$brief" "$H"/*.md 2>/dev/null | head -n 1)
     printf '  %s %s %s' "$(short "$id")" "$(printf '%s' "$line" | awk -F' · ' '{print $2}')" "$(basename "${brief:-?}" .md)"
     if [ -n "$ho" ]; then printf '  → %s (%s)\n' "$ho" "$(field status "$ho")"; else echo; fi
+    run_ok "$id" && [ -f "$RUNS/$id" ] && printf '      budget: %s\n' "$(budget_line "$id")"
     [ -n "$id" ] && [ -z "$ho" ] && ids="$ids $id"
   done <<EOF
 $(running_lines)
@@ -893,7 +907,7 @@ cmd_spawn() {
   # a Claude model that can't be named is refused (it might resolve to Fable), and any
   # worker whose model names fable goes through every Fable check
   canon=$(model_canon "$worker" "$model") || fable_refuse "$brief" - "spawn: model '$model' can't be resolved" "$(model_refusal "$model")"
-  { [ "$worker" = claude ] || [ "$canon" = fable ]; } && fable_preflight "$brief" -
+  fable_preflight "$brief" -
   case "$canon" in fable) tier=top ;; opus) tier=workhorse ;; *) tier=other ;; esac
 
   b=$(band | cut -f1)
@@ -912,6 +926,9 @@ cmd_spawn() {
   if [ "$worker" = claude ] && [ $force = 0 ]; then
     [ "$b" = red ] && [ "$tier" != other ] && die "band is red: new $tier-tier work goes to Codex (gpt-6-astra / gpt-5.6-sol). Edit the header, or --force"
   fi
+
+  # a brief that blew its budget or used its attempts waits until Jarvis has read why
+  budget_gate "$brief" "$after" "$force"
 
   [ "$worker" = codex ] && codex_trust
 
@@ -1903,6 +1920,277 @@ cmd_doctor() {
   done
 }
 
+# ---------------------------------------------------------------- budgets
+
+# Each worker gets a budget: working minutes (the watcher's ticks in which its screen
+# changed, so time spent waiting for the user's answers costs nothing), and for a
+# Claude worker its transcripts' API-equivalent estimate (subagents included), its
+# last turn's context and its failed test runs; a brief gets JARVIS_BUDGET_ATTEMPTS
+# runs. Past one, the watcher asks the worker once for a partial handoff. Still working
+# with no handoff JARVIS_BUDGET_GRACE_MIN later, it presses Escape, which interrupts
+# the turn (nothing is closed or signalled), and wakes Jarvis. A brief whose run blew
+# its budget, or that has used its attempts, needs `spawn --after <handoff>`, or
+# --force (logged). A brief's "budget: min=120 usd=25 ctx=350k tests=8 attempts=3"
+# header line overrides the defaults; `jarvis budget <run> usd=30` overrides those for
+# one run and re-arms its ask and pause.
+# $STATE/budget/<run> holds what the watcher counted (key: value lines, as a run);
+# <run>.json the transcripts' byte offsets and running totals, kept by
+# cc_usage_audit.py --budget, so each read takes only what was appended.
+BUD="$STATE/budget"
+
+bud_get() { RUNS=$BUD run_get "$@"; } # $1 run, $2 key
+bud_set() { RUNS=$BUD run_set "$@"; } # $1 run, then <key> <value> pairs
+
+budget_kv() { # $1 = key=value → BK, BV (ctx may end in k); fails on anything else
+  case "$1" in *=*) ;; *) return 1 ;; esac
+  BK=${1%%=*}; BV=${1#*=}
+  case "$BK$BV" in ctx*[kK]) BV="${BV%?}000" ;; esac
+  case "$BK" in
+    usd) printf '%s' "$BV" | grep -Eq '^[0-9]+(\.[0-9]+)?$' ;;
+    min|ctx|tests|attempts) case "$BV" in ""|*[!0-9]*) return 1 ;; esac ;;
+    *) return 1 ;;
+  esac
+}
+
+# shellcheck disable=SC2034 # BL_* and U_* are read through eval, in budget_hit and budget_fmt
+budget_limits() { # $1 = brief, $2 = run (optional): sets BL_min BL_usd BL_ctx BL_tests BL_attempts
+  local kv
+  BL_min=$JARVIS_BUDGET_MIN BL_usd=$JARVIS_BUDGET_USD BL_ctx=$JARVIS_BUDGET_CTX
+  BL_tests=$JARVIS_BUDGET_TESTS BL_attempts=$JARVIS_BUDGET_ATTEMPTS
+  set -f
+  for kv in $(awk '/^## /{exit} /^budget:/ {sub(/^budget:[[:space:]]*/, ""); if (!/^</) print; exit}' "$1" 2>/dev/null) \
+            $(run_get "${2:-}" limits); do
+    budget_kv "$kv" && eval "BL_$BK=\$BV"
+  done
+  set +f
+}
+
+budget_find() { # $1 = run: its session when the prompt hook recorded none, from Claude Code's session records
+  local sp brief d st sid cwd
+  sp=$(run_get "$1" spawned); brief=$(run_get "$1" brief)
+  case "$sp" in ""|*[!0-9]*) return 0 ;; esac
+  have jq || return 0
+  for d in "$CLAUDE_DIR/sessions" "$HOME/.claude/sessions"; do
+    set -- "$d"/*.json
+    [ -f "$1" ] || continue
+    jq -r --argjson t $(( (sp - 5) * 1000 )) \
+      'select(type == "object" and (.startedAt // 0) >= $t and .sessionId != null) | "\(.startedAt) \(.sessionId) \(.cwd // "")"' "$@" 2>/dev/null
+  done | sort -n | while read -r st sid cwd; do
+    [ "$(cd "$cwd" 2>/dev/null && proj_root "$(pwd -P)")" = "$ROOTP" ] || continue
+    [ "$(brief_of_session "$sid")" = "$brief" ] && { echo "$sid"; break; }
+  done
+}
+
+budget_files() { # $1 = run: its transcripts, each session's subagents' included, one per line
+  local r=$1 sids sid d f
+  sids=$(cat "$STATE/sessions/$r" 2>/dev/null)
+  [ -n "$sids" ] || sids=$(bud_get "$r" sid)
+  if [ -z "$sids" ]; then sids=$(budget_find "$r"); [ -n "$sids" ] && bud_set "$r" sid "$sids"; fi
+  for sid in $sids; do
+    for d in "$CLAUDE_DIR/projects/$PROJ" "$HOME/.claude/projects/$PROJ"; do
+      [ -f "$d/$sid.jsonl" ] || continue
+      printf '%s\n' "$d/$sid.jsonl"
+      for f in "$d/$sid"/subagents/*.jsonl; do [ -f "$f" ] && printf '%s\n' "$f"; done
+      break
+    done
+  done
+}
+
+budget_measure() { # $1 = run, $2 = now: read its transcripts now, else at most every JARVIS_BUDGET_SEC
+  local r=$1 last f d out
+  [ "$(run_get "$r" agent)" = claude ] && have python3 || return 0
+  last=$(bud_get "$r" measured)
+  case "$last" in ""|*[!0-9]*) last=0 ;; esac
+  [ "${2:-}" = now ] || [ $(( $(now) - last )) -ge "$JARVIS_BUDGET_SEC" ] || return 0
+  d=$(dirname "$0")
+  case "$d" in /*) ;; *) d="$JARVIS_CALLER_PWD/$d" ;; esac
+  set --
+  while IFS= read -r f; do [ -n "$f" ] && set -- "$@" "$f"; done <<EOF
+$(budget_files "$r")
+EOF
+  if [ $# = 0 ]; then bud_set "$r" measured "$(now)"; return 0; fi
+  mkdir -p "$BUD" && out=$(python3 "$d/cc_usage_audit.py" --budget "$BUD/$r.json" "$@" 2>/dev/null) || return 0
+  set -- $out
+  [ $# = 3 ] && bud_set "$r" measured "$(now)" usd "$1" ctx "$2" tests "$3"
+}
+
+budget_screen() { # $1 = run, $2 = its screen's checksum: a tick in which the screen changed is working time
+  local r=$1 t seen work
+  t=$(now); seen=$(bud_get "$r" seen); work=$(bud_get "$r" work)
+  case "$seen" in ""|*[!0-9]*) seen="" ;; esac
+  case "$work" in ""|*[!0-9]*) work=0 ;; esac
+  if [ "$(bud_get "$r" screen)" != "$2" ]; then
+    # at most two ticks' worth: a watcher that was stopped didn't see it working
+    [ -n "$seen" ] && work=$(( work + (t - seen < 2 * JARVIS_WATCH_SEC ? t - seen : 2 * JARVIS_WATCH_SEC) ))
+    bud_set "$r" screen "$2" seen "$t" work "$work" changed "$t"
+  else
+    bud_set "$r" seen "$t"
+  fi
+}
+
+# shellcheck disable=SC2034
+budget_use() { # $1 = run: U_min U_usd U_ctx U_tests (U_usd empty: no transcript read yet) and its limits
+  local r=$1 w
+  budget_limits "$(run_get "$r" brief)" "$r"
+  w=$(bud_get "$r" work)
+  case "$w" in ""|*[!0-9]*) w=0 ;; esac
+  U_min=$((w / 60)) U_usd="" U_ctx="" U_tests=""
+  [ "$(run_get "$r" agent)" = claude ] || return 0
+  U_usd=$(bud_get "$r" usd) U_ctx=$(bud_get "$r" ctx) U_tests=$(bud_get "$r" tests)
+}
+
+budget_hit() { # $1 = min | usd | ctx | tests, after budget_use: reached?
+  local u l
+  eval "u=\${U_$1:-}; l=\$BL_$1"
+  [ -n "$u" ] && awk -v u="$u" -v l="$l" 'BEGIN { exit !(u + 0 >= l + 0) }'
+}
+
+budget_fmt() { # $1 = key, after budget_use: "<used>/<limit>" as shown
+  local u l
+  eval "u=\${U_$1:-0}; l=\$BL_$1"
+  case "$1" in
+    min) printf '%sm/%sm' "$u" "$l" ;;
+    usd) awk -v u="$u" -v l="$l" 'BEGIN { printf "$%.1f/$%s", u, l }' ;;
+    ctx) awk -v u="$u" -v l="$l" 'BEGIN { printf "%dk/%dk", u / 1000 + 0.5, l / 1000 + 0.5 }' ;;
+    *) printf '%s/%s' "$u" "$l" ;;
+  esac
+}
+
+budget_reached() { # after budget_use: "<which>: <used>/<limit>" for the first budget reached
+  local k
+  for k in min usd ctx tests; do budget_hit $k && { printf '%s: %s' $k "$(budget_fmt $k)"; return 0; }; done
+  return 1
+}
+
+hm() { date -r "$1" +%H:%M 2>/dev/null || date -d "@$1" +%H:%M; } # $1 = epoch
+
+budget_line() { # $1 = run: "42m/90m working (1h50m since spawn) · $6.1/$15 · ctx 180k/300k · tests 1/6"
+  local r=$1 sp k s x
+  budget_measure "$r" now
+  budget_use "$r"
+  sp=$(run_get "$r" spawned)
+  case "$sp" in ""|*[!0-9]*) sp=$(now) ;; esac
+  s="$(budget_fmt min) working ($(dur $(( $(now) - sp ))) since spawn)"
+  budget_hit min && s="$s (over)"
+  if [ "$(run_get "$r" agent)" = claude ]; then
+    if [ -n "$U_usd" ]; then
+      for k in usd ctx tests; do
+        case $k in ctx) x="ctx $(budget_fmt ctx)" ;; tests) x="tests $(budget_fmt tests)" ;; *) x=$(budget_fmt usd) ;; esac
+        budget_hit $k && x="$x (over)"
+        s="$s · $x"
+      done
+    else
+      s="$s · no transcript found yet"
+    fi
+  fi
+  x=$(run_get "$r" budget_asked); [ -n "$x" ] && s="$s · asked for a partial handoff $(hm "$x")"
+  x=$(run_get "$r" paused); [ -n "$x" ] && s="$s · paused $(hm "$x")"
+  printf '%s\n' "$s"
+}
+
+budget_handoff() { # $1 = brief, $2 = epoch, $3 = 0: skip blocked ones: a handoff for the brief written since $2
+  local ho
+  for ho in $(grep -l "^brief:[[:space:]]*$1" "$H"/*.md "$H"/merged/*.md 2>/dev/null); do
+    [ "$(mtime "$ho")" -ge "$2" ] || continue
+    [ "${3:-1}" = 0 ] && [ "$(field status "$ho")" = blocked ] && continue
+    echo "$ho"; return 0
+  done
+  return 1
+}
+
+# The watcher, each tick, per running worker: $1 = run, $2 = the bottom of its screen.
+# Counts working time, then asks once, then pauses once. Prints events for Jarvis.
+budget_tick() {
+  local r=$1 brief asked over t ch sp
+  run_ok "$r" && [ -f "$RUNS/$r" ] && [ "$(run_get "$r" state)" = running ] || return 0
+  [ -n "$2" ] && budget_screen "$r" "$(printf '%s' "$2" | cksum | cut -d' ' -f1)"
+  t=$(now); brief=$(run_get "$r" brief)
+  sp=$(run_get "$r" spawned); case "$sp" in ""|*[!0-9]*) sp=0 ;; esac
+  asked=$(run_get "$r" budget_asked)
+  if [ -z "$asked" ]; then
+    # one that has handed off (done or partial) since it was spawned is finished
+    budget_handoff "$brief" "$sp" 0 >/dev/null && return 0
+    budget_measure "$r"
+    budget_use "$r"
+    over=$(budget_reached) || return 0
+    run_set "$r" budget "${over%%:*} ${over#*: } $t" budget_asked "$t"
+    if host send "$r" "[jarvis] Budget reached ($over). Stop the current approach now. Write your handoff with status: partial — what's done, what's left, what you tried that failed and why — then stop." >/dev/null 2>&1; then
+      printf ' worker %s hit its %s budget — asked for a partial handoff;' "$(short "$r")" "${over%%:*}"
+    else
+      printf " worker %s hit its %s budget, and the ask couldn't be typed into its terminal — read it;" "$(short "$r")" "${over%%:*}"
+    fi
+    return 0
+  fi
+  [ -z "$(run_get "$r" paused)$(run_get "$r" pause_failed)" ] || return 0
+  [ $(( t - asked )) -ge $(( JARVIS_BUDGET_GRACE_MIN * 60 )) ] || return 0
+  budget_handoff "$brief" "$asked" >/dev/null && return 0
+  # still working: its screen changed within the last two ticks
+  ch=$(bud_get "$r" changed); case "$ch" in ""|*[!0-9]*) ch=0 ;; esac
+  [ $(( t - ch )) -le $(( 2 * JARVIS_WATCH_SEC )) ] || return 0
+  if host send "$r" --keys esc >/dev/null 2>&1; then
+    run_set "$r" paused "$t"
+    printf ' worker %s paused over budget, no handoff — read its terminal;' "$(short "$r")"
+  else
+    run_set "$r" pause_failed "$t"
+    printf " worker %s is over budget with no handoff, and its terminal took no Escape — read it;" "$(short "$r")"
+  fi
+}
+
+# spawn: a brief whose run blew its budget, or that has used its attempts, is respawned
+# only --after a handoff for it written since its latest run started, or with --force
+budget_gate() { # $1 = brief, $2 = --after's handoff or empty, $3 = force (0|1)
+  local brief=$1 after=$2 runs r n=0 blown="" last=0 sp why ho
+  runs=$(runs_of "$brief")
+  for r in $runs; do
+    n=$((n + 1))
+    [ -n "$(run_get "$r" budget)" ] && blown="$blown${blown:+, }$r ($(run_get "$r" budget | awk '{print $1 " " $2}'))"
+    sp=$(run_get "$r" spawned)
+    case "$sp" in ""|*[!0-9]*) ;; *) [ "$sp" -gt "$last" ] && last=$sp ;; esac
+  done
+  budget_limits "$brief"
+  if [ -n "$blown" ]; then why="a run of it reached its budget: $blown"
+  elif [ "$n" -ge "$BL_attempts" ]; then why="it has used its $BL_attempts attempts ($(echo $runs | sed 's/ /, /g'))"
+  else return 0; fi
+  if [ -n "$after" ]; then
+    [ "$(field brief "$after" | sed 's#^\./##')" = "${brief#./}" ] \
+      || die "$brief can't be respawned yet: $why. --after $after isn't a handoff for it (its brief: is '$(field brief "$after")')"
+    [ "$(mtime "$after")" -ge "$last" ] \
+      || die "$brief can't be respawned yet: $why. --after $after was written before its latest run started: ask that worker for its handoff, or --force"
+    return 0
+  fi
+  if [ "$3" = 1 ]; then
+    audit budget-force - "$brief" "runs=$n attempts=$BL_attempts budget=$([ -n "$blown" ] && echo reached || echo -)" passed
+    echo "jarvis: --force: past the respawn gate ($why); logged in $STATE/audit.log" >&2
+    return 0
+  fi
+  ho=$(handoff_of "$brief")
+  die "$brief can't be respawned yet: $why. Read its partial handoff${ho:+ ($ho)}, sharpen or split the brief, then respawn with --after <that handoff>. --force passes this (logged)."
+}
+
+cmd_budget() { # jarvis budget <run> [min=N] [usd=N] [ctx=N[k]] [tests=N]
+  local r=${1:-} kv old="" set="" limits b
+  [ -n "$r" ] || die "usage: jarvis budget <terminal> [min=N] [usd=N] [ctx=N[k]] [tests=N]"
+  run_ok "$r" && [ -f "$RUNS/$r" ] || die "no run $r in $RUNS"
+  shift
+  [ $# -gt 0 ] || { budget_line "$r"; return 0; }
+  for kv; do
+    budget_kv "$kv" && [ "$BK" != attempts ] \
+      || die "$kv: give min=, usd=, ctx= or tests= a number (attempts is per brief: its budget: line)"
+    set="$set $BK=$BV"
+  done
+  # the new values replace the run's earlier ones, key by key
+  for kv in $(run_get "$r" limits); do
+    case " $set " in *" ${kv%%=*}="*) ;; *) old="$old $kv" ;; esac
+  done
+  limits=$(echo $old $set)
+  b=$(run_get "$r" budget)
+  [ -n "$b" ] && run_set "$r" budget_was "$b"
+  run_set "$r" limits "$limits" budget "" budget_asked "" paused "" pause_failed ""
+  audit budget-raise "$r" "$(run_get "$r" brief)" "limits=$(printf '%s' "$limits" | tr ' ' ,)" set
+  echo "run $(short "$r"): limits $limits; its ask and pause are re-armed"
+  budget_line "$r"
+}
+
 # ---------------------------------------------------------------- watch
 
 jarvis_idle_min() { # minutes since the Jarvis transcript last changed; empty if unknown
@@ -1938,6 +2226,7 @@ watch_tick() {
     id=$(printf '%s' "$line" | sed -n 's/.*term \([^ ]*\).*/\1/p')
     [ -n "$id" ] || continue
     tail_=$(host read "$id" 15 2>/dev/null | sed -e 's/[[:space:]]*$//')
+    events="$events$(budget_tick "$id" "$tail_" </dev/null)"
     [ -n "$tail_" ] || continue
     sum=$(printf '%s' "$tail_" | cksum | cut -d' ' -f1)
     if printf '%s' "$tail_" | grep -Eiq "$LIMIT_RE"; then
@@ -2124,14 +2413,15 @@ fable_consume() { # $1 brief, $2 run: use the authorization up, or refuse
     || die "$(fable_needs "$1") [can't write the audit log $FABLE_DIR/audit.log]"
 }
 
-# Refuse a Claude launch while an alias variable, in this environment or a settings
-# file's env, points at Fable, or while this checkout's own settings let Fable in.
+# Refuse any launch while an alias variable, in this environment or a settings file's
+# env, points at Fable, or while this checkout's own settings let Fable in. An agent
+# other than `claude` may itself wrap Claude, so the environment is what matters here.
 fable_preflight() { # $1 brief, $2 run
   local v val f
   for v in $FABLE_REMAP_VARS; do
     eval "val=\${$v:-}"
     case "$(printf '%s' "$val" | tr '[:upper:]' '[:lower:]')" in
-      *fable*) fable_refuse "$1" "$2" "preflight: $v names fable" "$v=$val points a model alias at Fable: unset it before spawning a Claude worker" ;;
+      *fable*) fable_refuse "$1" "$2" "preflight: $v names fable" "$v=$val points a model alias at Fable: unset it before spawning a worker" ;;
     esac
   done
   have jq || fable_refuse "$1" "$2" "preflight: no jq" "jq is needed to check the settings files for Fable"
@@ -2177,7 +2467,6 @@ fable_final() {
   local canon f u="" c root
   FABLE_LIFT=0
   canon=$(model_canon "$1" "$2") || fable_refuse - "$5" "final check: model '$2' can't be resolved" "$(model_refusal "$2")"
-  [ "$1" = claude ] || [ "$canon" = fable ] || return 0
   fable_preflight - "$5"
   [ "$canon" = fable ] || return 0
   root=$(cd "$ROOT" && pwd -P)
@@ -2417,9 +2706,9 @@ hook_prompt() {
 # past. The top of this script has already left unless the input names fable or a
 # settings*.json file. No jq, or input that doesn't parse: allow, and the backstop
 # covers it. Not covered (documented limits; the backstop is what holds there): a Bash
-# command writing the file, a symlink to it, an agent definition's model: fable.
+# command writing the file, or an agent definition's model: fable.
 hook_pretool() {
-  local in tool m f lf d why=""
+  local in tool m f lf d why="" cwd p parent base resolved guarded gd gdl
   in=${JARVIS_HOOK_IN:-}
   have jq || exit 0
   tool=$(printf '%s' "$in" | jq -r '.tool_name // empty' 2>/dev/null) || exit 0
@@ -2431,20 +2720,61 @@ hook_pretool() {
       esac ;;
     Edit|Write|MultiEdit)
       f=$(printf '%s' "$in" | jq -r '.tool_input.file_path // empty' 2>/dev/null)
-      # case-blind, as macOS paths are: .claude/Settings.json is the same file
-      lf=$(printf '%s' "$f" | tr '[:upper:]' '[:lower:]')
-      case "$lf" in
-        */.claude/settings*.json|.claude/settings*.json) ;;
-        *) while IFS= read -r d; do
-             d=$(dirname "$d" | tr '[:upper:]' '[:lower:]')
-             case "$lf" in "$d"/settings*.json) d=hit; break ;; esac
-           done <<EOF
-$(backstop_files)
+      cwd=$(printf '%s' "$in" | jq -r '.cwd // empty' 2>/dev/null)
+      [ -n "$cwd" ] || cwd=$JARVIS_CALLER_PWD
+      case "$f" in /*) p=$f ;; *) p=$cwd/$f ;; esac
+      # First collapse repeated slashes and dot segments lexically. Then, when the
+      # parent exists, resolve it physically so a symlinked directory cannot hide a
+      # guarded settings file. The leaf need not exist yet (Write commonly creates it).
+      p=$(printf '%s\n' "$p" | awk -F/ '{
+        n = 0
+        for (i = 1; i <= NF; i++) {
+          if ($i == "" || $i == ".") continue
+          if ($i == "..") { if (n > 0) n--; continue }
+          a[++n] = $i
+        }
+        out = "/"
+        for (i = 1; i <= n; i++) out = out (i > 1 ? "/" : "") a[i]
+        print out
+      }')
+      parent=$(dirname "$p"); base=$(basename "$p"); resolved=0
+      if [ -d "$parent" ]; then
+        p=$(cd "$parent" 2>/dev/null && printf '%s/%s\n' "$(pwd -P)" "$base") && resolved=1
+      fi
+      lf=$(printf '%s' "$p" | tr '[:upper:]' '[:lower:]')
+      base=$(printf '%s' "$base" | tr '[:upper:]' '[:lower:]')
+      case "$base" in settings*.json) ;; *) exit 0 ;; esac
+
+      # Compare canonical directories case-blind (macOS paths are case-insensitive).
+      # These are the checkout's project settings and every user-level settings dir.
+      guarded=0; d=$(dirname "$lf")
+      while IFS= read -r gd; do
+        [ -n "$gd" ] || continue
+        if [ -d "$gd" ]; then gd=$(cd "$gd" 2>/dev/null && pwd -P) || continue
+        else
+          gd=$(printf '%s\n' "$gd" | awk -F/ '{
+            n = 0
+            for (i = 1; i <= NF; i++) {
+              if ($i == "" || $i == ".") continue
+              if ($i == "..") { if (n > 0) n--; continue }
+              a[++n] = $i
+            }
+            out = "/"
+            for (i = 1; i <= n; i++) out = out (i > 1 ? "/" : "") a[i]
+            print out
+          }')
+        fi
+        gdl=$(printf '%s' "$gd" | tr '[:upper:]' '[:lower:]')
+        [ "$d" = "$gdl" ] && { guarded=1; break; }
+      done <<EOF
+$ROOTP/.claude
+$(backstop_files | while IFS= read -r gd; do dirname "$gd"; done)
 EOF
-           [ "$d" = hit ] || exit 0 ;;
-      esac
+      # If the parent cannot be resolved, a settings*.json basename still gets the
+      # full content check. Failing open here would recreate the path differential.
+      [ $guarded = 1 ] || [ $resolved = 0 ] || exit 0
       # the file as it would be after the edit; text that isn't JSON counts if it names fable
-      m=$(printf '%s' "$in" | jq -r --arg cur "$(cat "$f" 2>/dev/null)" --arg vars " $FABLE_REMAP_VARS " '
+      m=$(printf '%s' "$in" | jq -r --arg cur "$(cat "$p" 2>/dev/null)" --arg vars " $FABLE_REMAP_VARS " '
         def rep($s; $o; $n; $all): ($s | split($o)) as $p
           | if ($p | length) < 2 then $s elif $all then $p | join($n) else $p[0] + $n + ($p[1:] | join($o)) end;
         .tool_input as $t
@@ -2510,7 +2840,7 @@ usage_hist() { # $1 = the reading
 # ---------------------------------------------------------------- usage
 
 cmd_usage() {
-  local audit since_arg json merged
+  local audit since_arg json merged over r
   have python3 || die "python3 is needed for jarvis usage"
   have jq || die "jq is needed for jarvis usage"
   audit="$(cd "$(dirname "$0")" && pwd)/cc_usage_audit.py"
@@ -2523,7 +2853,12 @@ cmd_usage() {
   json=$(python3 "$audit" "$@" --json) || exit 1
   since_arg=$(printf '%s' "$json" | jq -r '.period[0]')
   merged=$(git log --since="$since_arg" --diff-filter=A --name-only --format= -- "$H/merged/*.md" 2>/dev/null | grep -c '\.md$')
-  printf '%s' "$json" | jq -r --argjson merged "$merged" '
+  # this checkout's runs that reached a budget (spawn epoch, paused or not), from the run registry
+  over=$(for r in "$RUNS"/*; do
+    [ -f "$r" ] && r=${r##*/} && [ -n "$(run_get "$r" budget)$(run_get "$r" budget_was)" ] || continue
+    printf '{"t":%s,"p":%s}\n' "$(run_get "$r" spawned | grep -Ex '[0-9]+' || echo 0)" "$([ -n "$(run_get "$r" paused)" ] && echo true || echo false)"
+  done | jq -s -c . 2>/dev/null)
+  printf '%s' "$json" | jq -r --argjson merged "$merged" --argjson over "${over:-[]}" '
     def usd: "$" + ((. * 100 | round) / 100 | tostring);
     def age:
       if . < 3600 then ((. / 60 | floor | tostring) + "m")
@@ -2554,6 +2889,8 @@ cmd_usage() {
       "  Waste signals:",
       "    abandoned: \(.abandoned.sessions) sessions · \(.abandoned.usd | usd)",
       "    repeated attempts: \(.repeated_attempts.briefs) briefs · \(.repeated_attempts.extra_sessions) extra sessions · \(.repeated_attempts.extra_usd | usd) extra",
+      ((.period[0] | sub("\\.[0-9]+"; "") | sub("\\+00:00$"; "Z") | fromdateiso8601? // 0) as $t0 | [$over[] | select(.t >= $t0)]
+        | "    over budget (this repo): \(length) run\(if length == 1 then "" else "s" end) asked for a partial handoff · \([.[] | select(.p)] | length) paused"),
       "    failed test runs (workers with 3+): \(if (.failed_test_runs | length) == 0 then "none" else [.failed_test_runs[] | "\(.brief) \(.count)"] | join(", ") end)",
       "    stale open >8h and idle >1h: \(if (.stale_open_sessions | length) == 0 then "none" else [.stale_open_sessions[].name] | join(", ") end)",
       "    worker cost above 150k context: \((.context_growth.worker_usd_above_150k_share * 100) | round)% · peak p50 \(((.context_growth.peak_ctx_p50 // 0) / 1000) | round)k · p90 \(((.context_growth.peak_ctx_p90 // 0) / 1000) | round)k",
@@ -2660,6 +2997,7 @@ case "$cmd" in
   read) cmd_read "$@" ;;
   send) cmd_send "$@" ;;
   close) cmd_close "$@" ;;
+  budget) cmd_budget "$@" ;;
   merge) cmd_merge "$@" ;;
   leftovers) cmd_leftovers "$@" ;;
   lock) cmd_lock "$@" ;;

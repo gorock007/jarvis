@@ -92,7 +92,7 @@ cd "$sb" || exit 1
 git init -q
 cp -R "$tpl/handoffs" . && sed -e 's/{{MAX_CLAUDE}}/50/' -e 's/{{AMBER}}/50/' -e 's/{{RED}}/75/' "$tpl/handoffs/jarvis.conf" > handoffs/jarvis.conf
 echo 'JARVIS_FABLE_SUPERSET_AGENT=fable-cfg' >> handoffs/jarvis.conf
-echo 'JARVIS_MAX_CLAUDE_GLOBAL=50 JARVIS_MAX_OPUS=50 JARVIS_AMBER_GLOBAL=50 JARVIS_AMBER_OPUS=50' >> handoffs/jarvis.conf
+echo 'JARVIS_MAX_CLAUDE_GLOBAL=50 JARVIS_MAX_OPUS=50 JARVIS_AMBER_GLOBAL=50 JARVIS_AMBER_OPUS=50 JARVIS_BUDGET_ATTEMPTS=100' >> handoffs/jarvis.conf
 echo a > app.txt && git add -A && git -c user.name=t -c user.email=t@t commit -qm init
 J=handoffs/bin/jarvis
 $J start >/dev/null
@@ -240,6 +240,7 @@ fake_spawn() {
     other) host spawn claude fable "" p other-run >/dev/null || return 1 ;;
     best) host spawn claude best "" p "$5" >/dev/null || return 1 ;;
     cc) host spawn cc 'claude-fable-5-1[1m]' "" p cc-run >/dev/null || return 1 ;;
+    remap) ANTHROPIC_DEFAULT_OPUS_MODEL=claude-fable-5-1 host spawn cc m1 "" p remap-run >/dev/null || return 1 ;;
   esac
   echo "fake-$5"
 }
@@ -255,6 +256,9 @@ out=$(FAKE_AGAIN=best $J spawn "$b" 2>&1)
 printf '%s' "$out" | grep -q "can't resolve" && ! grep -q 'fake_spawn claude best' "$FAKE_LOG"; check "…nor an alias the final check can't resolve" $?
 out=$(FAKE_AGAIN=cc $J spawn "$b" 2>&1)
 printf '%s' "$out" | grep -q "no authorization was used up for run 'cc-run'" && ! grep -q 'fake_spawn cc' "$FAKE_LOG"; check "…nor another agent on Fable" $?
+out=$(FAKE_AGAIN=remap $J spawn "$b" 2>&1)
+printf '%s' "$out" | grep -q 'ANTHROPIC_DEFAULT_OPUS_MODEL=claude-fable-5-1 points a model alias at Fable' \
+  && ! grep -q 'fake_spawn cc m1 remap-run' "$FAKE_LOG"; check "the final check scans a wrapper agent's launch environment too" $?
 grep -q ' deny .*reason=final check' "$FD/audit.log"; check "audit: the final check's deny lines" $?
 cp "$tmp/conf" handoffs/jarvis.conf
 
@@ -283,6 +287,8 @@ echo "JARVIS_AGENT_cc='claude \${JARVIS_MODEL:+--model \"\$JARVIS_MODEL\"} \"\$J
 b=$(mk tcc "m1'x" cc); TMUX_PANE=%1 $J spawn "$b" >/dev/null 2>&1; l=handoffs/.jarvis/launch/tcc.sh
 out=$(JARVIS_AGENT=cc JARVIS_MODEL="m1'x" JARVIS_PROMPT=p PATH="$tmp/fake2:$PATH" sh "$l" 2>&1)
 printf '%s' "$out" | grep -q "claude-ran --model m1'x p"; check "another agent's launch script pins its model too (a quote in it is quoted)" $?
+out=$(JARVIS_AGENT=cc JARVIS_MODEL="m1'x" JARVIS_PROMPT=p ANTHROPIC_DEFAULT_OPUS_MODEL=claude-fable-5-1 PATH="$tmp/fake2:$PATH" sh "$l" 2>&1)
+printf '%s' "$out" | grep -q 'claude-ran' && printf '%s' "$out" | grep -q 'remap=unset'; check "…and unsets a Fable remap for a wrapper agent" $?
 out=$(JARVIS_AGENT=cc JARVIS_MODEL=claude-fable-5-1 JARVIS_PROMPT=p PATH="$tmp/fake2:$PATH" sh "$l" 2>&1)
 printf '%s' "$out" | grep -q refused && ! printf '%s' "$out" | grep -q claude-ran; check "…so a hand-edited fable JARVIS_MODEL doesn't launch it" $?
 authorize "$cb"; TMUX_PANE=%1 $J spawn "$cb" >/dev/null 2>&1; l=handoffs/.jarvis/launch/ccw.sh
@@ -325,6 +331,15 @@ echo '{"env":{"ANTHROPIC_DEFAULT_SONNET_MODEL":"claude-fable-5-1"}}' > .claude/s
 $J spawn "$b" 2>&1 | grep -q 'sets ANTHROPIC_DEFAULT_SONNET_MODEL to Fable'; check "a settings env remapping an alias to Fable refuses" $?
 rm .claude/settings.json
 ANTHROPIC_DEFAULT_OPUS_MODEL=claude-fable-5-1 $J spawn "$b" 2>&1 | grep -q 'ANTHROPIC_DEFAULT_OPUS_MODEL=claude-fable-5-1 points a model alias at Fable'; check "an environment variable remapping an alias to Fable refuses" $?
+b=$(mk wrapcc m1 cc)
+ANTHROPIC_DEFAULT_OPUS_MODEL=claude-fable-5-1 $J spawn "$b" 2>&1 | grep -q 'ANTHROPIC_DEFAULT_OPUS_MODEL=claude-fable-5-1 points a model alias at Fable'; check "the same environment remap refuses a non-Fable wrapper agent" $?
+echo '{"env":{"ANTHROPIC_DEFAULT_OPUS_MODEL":"claude-fable-5-1"}}' > .claude/settings.json
+$J spawn "$b" 2>&1 | grep -q 'sets ANTHROPIC_DEFAULT_OPUS_MODEL to Fable'; check "a settings remap refuses a non-Fable wrapper agent" $?
+echo '{"modelOverrides":{"opus":"fable"}}' > .claude/settings.json
+$J spawn "$b" 2>&1 | grep -q 'modelOverrides entry naming Fable'; check "modelOverrides refuses a non-Fable wrapper agent" $?
+echo '{"availableModels":["opus","fable"]}' > .claude/settings.json
+$J spawn "$b" 2>&1 | grep -q '.claude/settings.json lists fable'; check "a project allowlist refuses a non-Fable wrapper agent" $?
+rm .claude/settings.json
 
 echo "PreToolUse hook"
 hk() { printf '%s' "$1" | $J hook pretool; }
@@ -336,6 +351,23 @@ hk '{"tool_name":"Task","tool_input":{"model":"Fable"}}' | grep -q deny; check "
 [ -z "$(hk '{"tool_name":"Agent","tool_input":{"model":"sonnet"}}')" ]; check "allows sonnet" $?
 [ -z "$(hk 'not json, but fable')" ]; check "input that doesn't parse: allowed (the backstop covers it)" $?
 hk "{\"tool_name\":\"Write\",\"tool_input\":{\"file_path\":\"$sb/.claude/settings.json\",\"content\":\"{\\\"availableModels\\\":[\\\"opus\\\",\\\"fable\\\"]}\"}}" | grep -q deny; check "denies a Write putting fable into availableModels" $?
+for f in '.claude/./settings.json' '.claude//settings.local.json' 'x/../.claude/settings.json'; do
+  js=$(jq -nc --arg cwd "$sb" --arg f "$f" --arg c '{"availableModels":["fable"]}' \
+    '{cwd: $cwd, tool_name: "Write", tool_input: {file_path: $f, content: $c}}')
+  hk "$js" | grep -q deny; check "canonical path differential $f is denied" $?
+done
+ln -s "$sb/.claude" "$sb/settings-link"
+js=$(jq -nc --arg cwd "$sb" --arg f 'settings-link/settings.json' --arg c '{"availableModels":["fable"]}' \
+  '{cwd: $cwd, tool_name: "Write", tool_input: {file_path: $f, content: $c}}')
+hk "$js" | grep -q deny; check "a symlinked directory to the guarded .claude dir is denied" $?
+rm "$sb/settings-link"
+js=$(jq -nc --arg cwd "$sb" --arg f 'missing/deeper/settings.json' --arg c '{"availableModels":["fable"]}' \
+  '{cwd: $cwd, tool_name: "Write", tool_input: {file_path: $f, content: $c}}')
+hk "$js" | grep -q deny; check "an unresolved settings*.json path still gets the full check" $?
+mkdir -p "$sb/other"
+js=$(jq -nc --arg cwd "$sb" --arg f 'other/settings.json' --arg c '{"availableModels":["fable"]}' \
+  '{cwd: $cwd, tool_name: "Write", tool_input: {file_path: $f, content: $c}}')
+[ -z "$(hk "$js")" ]; check "a resolved settings file outside the guarded dirs is left alone" $?
 echo '{"availableModels":["opus"]}' > .claude/settings.local.json
 hk "{\"tool_name\":\"Edit\",\"tool_input\":{\"file_path\":\"$sb/.claude/settings.local.json\",\"old_string\":\"\\\"opus\\\"\",\"new_string\":\"\\\"opus\\\",\\\"claude-fable-5-1\\\"\"}}" | grep -q deny; check "denies an Edit adding fable" $?
 hk "{\"tool_name\":\"MultiEdit\",\"tool_input\":{\"file_path\":\"$sb/.claude/settings.local.json\",\"edits\":[{\"old_string\":\"opus\",\"new_string\":\"fable\"}]}}" | grep -q deny; check "denies a MultiEdit adding fable" $?

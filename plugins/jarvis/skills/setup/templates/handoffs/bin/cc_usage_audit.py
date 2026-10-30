@@ -287,6 +287,99 @@ def table(rows, headers, right=()):
     for r in rows:
         print("  " + line(r))
 
+FAIL_RE = re.compile(r"(?:exit(?:ed)?(?: with)?(?: code)?\s*[1-9]\d*|command failed)", re.I)
+BUDGET_KEEP_RIDS = 64   # a streamed request's records are adjacent; this many recent ones are plenty
+
+def budget_read(path, st, prices, test_re):
+    """Add what was appended to one transcript since st["off"] to its running totals. Only
+    whole lines are taken; a request seen again replaces its earlier price (last record
+    wins, as in load_file), and a test call whose result hasn't arrived yet is kept."""
+    try:
+        size = os.path.getsize(path)
+    except OSError:
+        return st
+    if size < st.get("off", 0):   # rewritten: start that file over
+        st = {}
+    st.setdefault("off", 0); st.setdefault("usd", 0.0); st.setdefault("fails", 0)
+    st.setdefault("rids", []); st.setdefault("tests", [])
+    with open(path, "rb") as fh:
+        fh.seek(st["off"])
+        data = fh.read(size - st["off"])
+    end = data.rfind(b"\n") + 1
+    st["off"] += end
+    rids = collections.OrderedDict((r, u) for r, u in st["rids"])
+    tests = set(st["tests"])
+    main_thread = os.sep + "subagents" + os.sep not in path
+    for line in data[:end].decode("utf-8", "ignore").splitlines():
+        try:
+            d = json.loads(line)
+        except ValueError:
+            continue
+        t = d.get("type")
+        if t == "user" and main_thread:
+            for c in (d.get("message") or {}).get("content") or []:
+                if isinstance(c, dict) and c.get("type") == "tool_result" and c.get("tool_use_id") in tests:
+                    tests.discard(c["tool_use_id"])
+                    if c.get("is_error") or FAIL_RE.search(str(c.get("content", ""))):
+                        st["fails"] += 1
+        if t != "assistant":
+            continue
+        m = d.get("message") or {}
+        u = m.get("usage")
+        if not u or m.get("model") in (None, "<synthetic>") or not d.get("timestamp"):
+            continue
+        for c in m.get("content") or []:
+            if (main_thread and isinstance(c, dict) and c.get("type") == "tool_use" and c.get("name") == "Bash"
+                    and c.get("id") and test_re.search((c.get("input") or {}).get("command", ""))):
+                tests.add(c["id"])
+        cc = u.get("cache_creation") or {}
+        w5, w1 = cc.get("ephemeral_5m_input_tokens", 0), cc.get("ephemeral_1h_input_tokens", 0)
+        if not cc:
+            w1 = u.get("cache_creation_input_tokens", 0) or 0
+        inp, outp, cr = u.get("input_tokens", 0) or 0, u.get("output_tokens", 0) or 0, u.get("cache_read_input_tokens", 0) or 0
+        _, p = model_price(m.get("model"), prices)
+        usd = (inp * p[0] + outp * p[1] + cr * p[2] + w5 * p[3] + w1 * p[4]) / 1e6 if p else 0.0
+        rid = d.get("requestId") or m.get("id")
+        st["usd"] += usd - rids.pop(rid, 0.0)
+        rids[rid] = usd
+        while len(rids) > BUDGET_KEEP_RIDS:
+            rids.popitem(last=False)
+        if main_thread and not d.get("isSidechain"):
+            st["ctx"], st["ctx_t"] = inp + cr + w5 + w1, d["timestamp"]
+    st["rids"], st["tests"] = list(rids.items()), sorted(tests)
+    return st
+
+def budget_main(argv):
+    """jarvis's budget meter: cc_usage_audit.py --budget STATE TRANSCRIPT... prints
+    "<usd> <context of the newest main-thread turn> <failed test runs>" over the given
+    transcripts (a worker's sessions and their subagents), reading only what each gained
+    since the last call. STATE (JSON) keeps each file's byte offset and running totals."""
+    ap = argparse.ArgumentParser(prog="cc_usage_audit.py --budget", description=budget_main.__doc__)
+    ap.add_argument("state")
+    ap.add_argument("files", nargs="*")
+    ap.add_argument("--prices", help="JSON file of {model_prefix: [in, out, cache_read, write_5m, write_1h]} to merge in")
+    ap.add_argument("--test-regex", default=DEFAULT_TEST_RE)
+    a = ap.parse_args(argv)
+    prices = dict(PRICES)
+    if a.prices:
+        prices.update({k: tuple(v) for k, v in json.load(open(a.prices)).items()})
+    test_re = re.compile(a.test_regex, re.I)
+    try:
+        state = json.load(open(a.state))
+    except (OSError, ValueError):
+        state = {}
+    files = state.get("files", {})
+    for f in a.files:
+        files[f] = budget_read(f, files.get(f, {}), prices, test_re)
+    usd = sum(s.get("usd", 0) for s in files.values())
+    fails = sum(s.get("fails", 0) for s in files.values())
+    newest = max((s for s in files.values() if s.get("ctx_t")), key=lambda s: s["ctx_t"], default={})
+    tmp = a.state + ".tmp.%d" % os.getpid()
+    with open(tmp, "w") as fh:
+        json.dump({"files": files}, fh)
+    os.replace(tmp, a.state)
+    print(f"{usd:.4f} {newest.get('ctx', 0)} {fails}")
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--root", default=os.path.expanduser("~/.claude/projects"), help="transcript root (default ~/.claude/projects)")
@@ -709,4 +802,7 @@ def report(R, reqs, sessions, a):
     print()
 
 if __name__ == "__main__":
-    main()
+    if sys.argv[1:2] == ["--budget"]:
+        budget_main(sys.argv[2:])
+    else:
+        main()

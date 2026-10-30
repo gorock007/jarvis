@@ -46,6 +46,7 @@ mkrepo() { # $1 = name: a checkout with the template's handoffs/ and Jarvis star
   mkdir -p "$tmp/$1" && (
     cd "$tmp/$1" && git init -q && cp -R "$tpl/handoffs" . \
       && sed -e 's/{{MAX_CLAUDE}}/3/' -e 's/{{AMBER}}/50/' -e 's/{{RED}}/75/' "$tpl/handoffs/jarvis.conf" > handoffs/jarvis.conf \
+      && echo 'JARVIS_BUDGET_ATTEMPTS=100' >> handoffs/jarvis.conf \
       && git add -A && git commit -qm init && handoffs/bin/jarvis start >/dev/null 2>&1
   )
 }
@@ -225,9 +226,13 @@ echo "band-lowered caps and --force"
 rm -f "$JARVIS_HOME/usage.hist"; reset; reading 55 7200 0
 for i in 1 2; do sess "$tmp/o$i" busy 5 claude-sonnet-5-5 >/dev/null; done
 out=$(spawn A son 2>&1); [ $? = 1 ] && printf '%s' "$out" | grep -q 'machine-wide, 3 of 3 (band amber: caps lowered)'; check "amber: machine-wide cap 3" $?
-J A status | grep -q '^claude sessions: 3 of 3 machine-wide (1 of 3 here · opus 0 of 1) — band amber caps$'; check "status shows the effective caps" $?
+J A status | grep -q '^claude sessions: 3 of 3 machine-wide (1 of 3 here · opus 0 of 2) — band amber caps$'; check "status shows the effective caps" $?
 reset; sess "$tmp/o1" busy 5 claude-opus-5-5 >/dev/null
-out=$(spawn A opus 2>&1); [ $? = 1 ] && printf '%s' "$out" | grep -q 'Opus, 1 of 1'; check "amber: Opus cap 1" $?
+spawn A opus >/dev/null 2>&1; check "amber: one existing Opus plus a new Opus reaches the cap of 2" $?
+reset; sess "$tmp/o1" busy 5 claude-opus-5-5 >/dev/null; sess "$tmp/o2" busy 5 claude-opus-5-5 >/dev/null
+echo 'JARVIS_AMBER_GLOBAL=50' >> "$tmp/A/handoffs/jarvis.conf"  # isolate the Opus cap from amber's lower global cap
+out=$(spawn A opus 2>&1); [ $? = 1 ] && printf '%s' "$out" | grep -q 'Opus, 2 of 2'; check "amber: Opus cap 2 refuses the next one" $?
+sed -i.bak '$d' "$tmp/A/handoffs/jarvis.conf" && rm -f "$tmp/A/handoffs/jarvis.conf.bak"
 reset; reading 80 7200 0; sess "$tmp/o1" busy 5 claude-sonnet-5-5 >/dev/null
 out=$(spawn A son 2>&1); [ $? = 1 ] && printf '%s' "$out" | grep -q 'machine-wide, 2 of 2 (band red'; check "red: machine-wide cap 2" $?
 out=$(spawn A opus 2>&1); [ $? = 1 ] && printf '%s' "$out" | grep -q 'band is red'; check "red: no new Opus work" $?
