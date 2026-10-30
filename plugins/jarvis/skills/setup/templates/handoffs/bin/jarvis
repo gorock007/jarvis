@@ -5,7 +5,11 @@
 #   jarvis start                       claim this terminal as Jarvis in OPEN.md, then status
 #   jarvis status                      band, workers, new handoffs, git — one short screen
 #   jarvis spawn <brief.md> [--after <partial-handoff>] [--attach <file>]... [--force]
-#                                      lint, enforce the band and the Claude cap, spawn, record
+#                                      lint, enforce the band and the Claude caps (machine-wide,
+#                                      this checkout, Opus; --force passes them, never Fable),
+#                                      spawn, record
+#   jarvis sessions                    the Claude sessions counting toward the caps, machine-wide,
+#                                      and the ones idle for hours you may want to close
 #   jarvis read <terminal> [<lines>]   the bottom of a worker's screen
 #   jarvis send <terminal> <text>      type into a worker's terminal and press Enter
 #   jarvis send <terminal> --keys <k,k> press keys: enter, esc, tab, shift+tab, up, 1, y, ctrl+c…
@@ -23,7 +27,8 @@
 #                                      handoff lands or a worker is limited, waiting at a prompt
 #                                      or frozen; /clears it first after a long idle. --start
 #                                      opens that terminal, unless a watcher is already running
-#   jarvis band                        the usage band from the latest statusline reading
+#   jarvis band                        the usage band from the machine-wide statusline reading
+#                                      and its burn rate; no reading or a stale one is amber
 #   jarvis usage [--days N | --since DATE] [--all-projects]
 #                                      coordinating vs building, from local transcripts
 #   jarvis hook prompt                 UserPromptSubmit guard (from .claude/settings.json)
@@ -32,7 +37,8 @@
 #   jarvis fable list | revoke <brief.md>
 #                                      authorizations pending, used and expired, and the log tail
 #   jarvis fable backstop [--apply]    whether the user-level availableModels keeps Fable out; --apply writes it
-#   jarvis statusline                 statusline tap: saves the 5-hour reading, then runs yours
+#   jarvis statusline                 statusline tap: saves the 5-hour reading machine-wide (and
+#                                      its history), then runs yours
 #   jarvis lock <class> [--wait <sec>] [--reuse] -- <command…>
 #                                      run a heavy command only while holding its class's lease,
 #                                      machine-wide or per checkout; waiters queue in order
@@ -46,7 +52,7 @@
 # one added as JARVIS_AGENT_<name> in jarvis.conf.
 # Settings live in handoffs/jarvis.conf. Works on the stock macOS bash (3.2).
 # jq is needed for spawn, the hooks and the band; everything fails open without it,
-# except the Fable checks, which fail closed.
+# except the Fable checks, which fail closed, and the band, which reads amber.
 set -u
 
 # PreToolUse runs this on every Agent, Task, Edit and Write call: leave before anything
@@ -69,9 +75,20 @@ OPEN="$H/OPEN.md"
 STATE="$H/.jarvis"
 BIN="$H/bin"
 
-JARVIS_MAX_CLAUDE=3      # Claude sessions at once, Jarvis included; Codex/OpenCode don't count
+JARVIS_MAX_CLAUDE=3      # Claude sessions at once in this checkout, Jarvis included; Codex/OpenCode don't count
+JARVIS_MAX_CLAUDE_GLOBAL=4  # active Claude sessions on the whole machine, any repo, the user's own included
+JARVIS_MAX_OPUS=2        # of those, on Opus (or Fable, or a model that can't be told)
+JARVIS_AMBER_GLOBAL=3    # the machine-wide cap in the amber band
+JARVIS_AMBER_OPUS=1      # the Opus cap in amber
+JARVIS_RED_GLOBAL=2      # the machine-wide cap in red
+JARVIS_RED_OPUS=0        # the Opus cap in red: no new Opus work
+JARVIS_ACTIVE_MIN=10     # a session busy, or updated this many minutes ago, is active; idle ones don't count
+JARVIS_PENDING_SEC=180   # a spawn counts this long, or until its session record appears
 JARVIS_AMBER=50          # 5-hour % that turns the band amber
 JARVIS_RED=75            # 5-hour % that turns it red
+JARVIS_STALE_MIN=30      # a reading older than this, its window not reset, is treated as amber
+JARVIS_BURN_MIN=20       # the burn rate is the 5-hour % used over this many minutes
+JARVIS_BURN_AMBER=15     # points per JARVIS_BURN_MIN that turn the band amber whatever the projection
 JARVIS_IDLE_MIN=55       # minutes idle after which a big context is cheaper to clear than reload
 JARVIS_GUARD_TOKENS=100000
 JARVIS_WATCH_SEC=60
@@ -97,6 +114,9 @@ JARVIS_AGENT_opencode='opencode ${JARVIS_MODEL:+-m "$JARVIS_MODEL"} --prompt "$J
 WS="${SUPERSET_WORKSPACE_ID:-}"
 PROJ=$(printf '%s' "$ROOT" | sed 's#[^A-Za-z0-9]#-#g')   # Claude Code's name for this checkout
 CLAUDE_DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
+JHOME="${JARVIS_HOME:-$HOME/.jarvis}"   # machine-wide: the usage reading and its history, the spawn lease, pending spawns
+ROOTP=$(pwd -P)                         # this checkout as session records name it
+TAB=$(printf '\t')
 
 LIMIT_RE="(usage|rate|session|weekly|daily|hourly|5-hour) limit (was |has been )?(reached|exceeded|hit)|(hit|reached|exceeded) (your|the) [a-z0-9 -]*limit|limit reached|quota (was |has been )?(exceeded|exhausted)|out of credits|too many requests"
 # A worker sitting at a trust or approval prompt does nothing until someone answers it.
@@ -415,34 +435,338 @@ field() { # $1 = key, $2 = file: "key: value" from a brief header or handoff
 
 # ---------------------------------------------------------------- band
 
-# Prints "<band>\t<one-line explanation>". The reading comes from `jarvis statusline`,
-# which Claude Code feeds its own 5-hour and 7-day rate-limit numbers.
+# Prints "<band>\t<one-line explanation>", band green | amber | red. The reading comes
+# from `jarvis statusline`, which Claude Code feeds its own 5-hour and 7-day numbers;
+# rate limits are per account, so one machine-wide reading serves every repo (the
+# repo's own copy only when there is none yet). It fails closed: no reading, no jq or
+# an unreadable one is amber, and so is a reading older than JARVIS_STALE_MIN whose
+# window hasn't reset. A window that has reset since is green only while the reading
+# is under 5 h old. Besides the window average (pace) it watches the burn rate from
+# the history: amber when that rate would use up the window before it resets, or is
+# JARVIS_BURN_AMBER or more; red when it reaches 100% within 30 minutes.
 band() {
-  local f="$STATE/usage.json"
-  have jq || { printf 'unknown\tjq not installed\n'; return; }
-  [ -s "$f" ] || { printf 'unknown\tno statusline reading yet — check `/usage` and write the band by hand\n'; return; }
-  jq -r --argjson now "$(now)" --argjson amber "$JARVIS_AMBER" --argjson red "$JARVIS_RED" '
+  local f burn
+  have jq || { printf 'amber\tunknown band, treated as amber: jq not installed\n'; return; }
+  f="$JHOME/usage.json"
+  [ -s "$f" ] || f="$STATE/usage.json"
+  [ -s "$f" ] || { printf 'amber\tunknown band, treated as amber: no statusline reading yet — check `/usage`\n'; return; }
+  burn=$(usage_burn "$f")
+  jq -r --argjson now "$(now)" --argjson amber "$JARVIS_AMBER" --argjson red "$JARVIS_RED" \
+    --argjson stale "$JARVIS_STALE_MIN" --argjson bmin "$JARVIS_BURN_MIN" --argjson bamber "$JARVIS_BURN_AMBER" \
+    --argjson burn "${burn:-null}" '
     def hm: (. / 60 | floor) as $m | "\($m / 60 | floor)h\($m % 60 | tostring | if length < 2 then "0" + . else . end)m";
+    def worse($a; $b): if $a == "red" or $b == "red" then "red" elif $a == "amber" or $b == "amber" then "amber" else "green" end;
     (.five_hour.used_percentage // null) as $u
     | (.five_hour.resets_at // null) as $r
-    | (.seven_day.used_percentage // null) as $w
-    | (($now - .ts) / 60 | floor) as $age
-    | if $u == null or $r == null then "unknown\tthe reading has no 5-hour window"
-      elif $now >= $r then "green\tthe 5-hour window has reset since the last reading (\($age) min ago)"
+    | (if (.seven_day.used_percentage | type) == "number" and $now < (.seven_day.resets_at // $now + 1)
+       then .seven_day.used_percentage else null end) as $w
+    | (if (.ts | type) == "number" then (($now - .ts) / 60 | floor) else null end) as $age
+    | (if $w == null then "green" elif $w >= 95 then "red" elif $w >= 80 then "amber" else "green" end) as $wb
+    | (if $w then " · 7d \($w | round)%" else "" end) as $wt
+    | if ($u | type) != "number" or ($r | type) != "number" or $age == null then
+        "amber\tunknown band, treated as amber: the reading has no 5-hour window"
+      elif $now >= $r then
+        if $age < 300 then "\($wb)\tthe 5-hour window has reset since the last reading (\($age) min ago)\($wt)"
+        else "amber\tunknown band, treated as amber: the last reading is \($age * 60 | hm) old and its window has reset since" end
       else
         (18000 - ($r - $now)) as $el
+        | (($r - $now) / 60) as $left
         | (if $el >= 1800 then ($u * 18000 / $el) else null end) as $pace
-        | (if $u >= $red or ($w // 0) >= 95 then "red"
-           elif $u >= $amber or ($pace // 0) >= 100 or ($w // 0) >= 80 then "amber"
-           else "green" end) as $b
-        | "\($b)\t5h \($u | round)% used, \($el | hm) into the window"
+        | (if $burn != null and $burn > 0 then $u + $burn * $left / $bmin else null end) as $proj
+        | (if $burn != null and $burn > 0 then $u + $burn * ([30, $left] | min) / $bmin else null end) as $soon
+        | (if $u >= $red or ($soon // 0) >= 100 then "red"
+           elif $u >= $amber or ($pace // 0) >= 100 or ($proj // 0) >= 100 or ($burn // 0) >= $bamber then "amber"
+           else "green" end) as $b5
+        | ($age > $stale) as $old
+        | worse(worse($b5; $wb); if $old then "amber" else "green" end) as $b
+        | "\($b)\t" + (if $old then "stale reading (\($age) min old), treated as amber: " else "" end)
+          + "5h \($u | round)% used, \($el | hm) into the window"
           + (if $pace then ", on pace for \($pace | round)%" else "" end)
-          + (if $w then " · 7d \($w | round)%" else "" end)
-          + (if $age > 20 then " · reading \($age) min old" else "" end)
-      end' "$f" 2>/dev/null || printf 'unknown\tunreadable %s\n' "$f"
+          + (if $burn != null then ", burning \($burn | round) pts/\($bmin) min"
+               + (if ($proj // 0) >= 100 then " (100% in \((100 - $u) * $bmin / $burn | floor) min)" else "" end)
+             else "" end)
+          + $wt
+          + (if $age > 20 and ($old | not) then " · reading \($age) min old" else "" end)
+      end' "$f" 2>/dev/null || printf 'amber\tunknown band, treated as amber: unreadable %s\n' "$f"
+}
+
+# $1 = the reading: 5-hour points used per JARVIS_BURN_MIN minutes, from the history
+# lines of the same window; empty when the history spans under 5 minutes of it. The
+# baseline is the last line at least JARVIS_BURN_MIN before the reading, else (or when
+# that one is far older, after a gap) the first line since.
+usage_burn() {
+  local h="$JHOME/usage.hist" cur
+  [ -s "$h" ] || return 0
+  cur=$(jq -r '"\(.ts) \(.five_hour.used_percentage) \(.five_hour.resets_at)"' "$1" 2>/dev/null) || return 0
+  tail -n 500 "$h" | awk -v cur="$cur" -v w=$((JARVIS_BURN_MIN * 60)) '
+    BEGIN { split(cur, c, " "); ts = c[1] + 0; u = c[2] + 0; r = c[3] + 0 }
+    NF >= 4 && $1 + 0 <= ts && $4 - r < 600 && r - $4 < 600 {
+      if ($1 + 0 <= ts - w) { bt = $1; bu = $2; hb = 1 } else if (!fo) { ft = $1; fu = $2; fo = 1 }
+    }
+    END {
+      if (hb && (!fo || ts - bt <= 2 * w || ts - ft < 300)) { t = bt; v = bu }
+      else if (fo) { t = ft; v = fu }
+      else exit
+      if (ts - t < 300) exit
+      d = u - v; if (d < 0) d = 0
+      printf "%.1f\n", d * w / (ts - t)
+    }'
 }
 
 cmd_band() { band | tr '\t' ' '; }
+
+# ---------------------------------------------------------------- claude sessions, machine-wide
+
+# The caps count every Claude session on this machine, Jarvis's or not, from Claude
+# Code's session records ($CLAUDE_DIR/sessions/<pid>.json, and ~/.claude's when they
+# differ). Each is verified against ps as claude_here does: a dead PID, or one reused
+# since (procStart differs), doesn't count, so a stale record needs no cleaning and
+# nothing is ever deleted. Hooks and headless runs (entrypoint sdk-*) don't count.
+# Read only: nothing here signals a session.
+
+proj_root() { # $1 = a physical path: the nearest directory above it (or it) with a .git, else itself
+  local d=$1
+  while [ -n "$d" ] && [ "$d" != / ]; do
+    [ -e "$d/.git" ] && { printf '%s\n' "$d"; return; }
+    d=${d%/*}
+  done
+  printf '%s\n' "$1"
+}
+
+sess_model() { # $1 = cwd, $2 = session id: the last assistant model in its transcript (tail only)
+  local p t
+  p=$(printf '%s' "$1" | sed 's#[^A-Za-z0-9]#-#g')
+  for t in "$CLAUDE_DIR/projects/$p/$2.jsonl" "$HOME/.claude/projects/$p/$2.jsonl"; do
+    [ -f "$t" ] || continue
+    tail -n 200 "$t" | grep '"type":"assistant"' \
+      | jq -r '.message.model // empty | select(. != "<synthetic>")' 2>/dev/null | tail -n 1
+    return
+  done
+}
+
+# "<pid>\t<session>\t<project root or cwd>\t<model>\t<why>\t<started ms>\t<updated ms>",
+# one line per session that counts toward the caps. why: busy (its status), recent
+# (updated in the last JARVIS_ACTIVE_MIN minutes), jarvis (this checkout's Jarvis or
+# one of its running workers, whatever its status), pending (a spawn whose session
+# record hasn't appeared yet: pid -, its entry's name as the session). Idle sessions
+# burn nothing and don't count; $1 = --all lists them too, why idle. model is
+# fable | opus | sonnet | haiku | unknown: a worker of this checkout's from the run
+# registry, else its transcript's; unknown counts as Opus.
+claude_active() {
+  local all=${1:-} a b d f r recs="" q jar="" regm="" sid pid cwd why st up proj m used="" ep pr pm pn tmp
+  have jq || return 0
+  q='select(type == "object" and .pid != null and .sessionId != null)
+     | [(.pid | tostring), .sessionId, (.cwd // ""), (.procStart // ""), (.status // ""),
+        ([.updatedAt, .statusUpdatedAt, 0] | map(numbers) | max | floor | tostring),
+        ([.startedAt, 0] | map(numbers) | max | floor | tostring), (.entrypoint // "")] | @tsv'
+  a=$(cd "$CLAUDE_DIR/sessions" 2>/dev/null && pwd -P)
+  b=$(cd "$HOME/.claude/sessions" 2>/dev/null && pwd -P)
+  [ "$a" = "$b" ] && b=""
+  for d in "$a" "$b"; do
+    [ -n "$d" ] || continue
+    set -- "$d"/*.json
+    [ -f "$1" ] || continue
+    recs="$recs$(jq -r "$q" "$@" 2>/dev/null || for f; do jq -r "$q" "$f" 2>/dev/null; done)
+"
+  done
+  # Jarvis's sessions and its running workers', with the model each worker was spawned on
+  jar=$(cat "$STATE/sessions/$(jarvis_terminal)" 2>/dev/null; jq -r '.session_id // empty' "$STATE/session.json" 2>/dev/null)
+  for f in "$RUNS"/*; do
+    [ -f "$f" ] && grep -qx 'state: running' "$f" || continue
+    r=${f##*/}
+    m=$(run_get "$r" model)
+    for sid in $(cat "$STATE/sessions/$r" 2>/dev/null); do jar="$jar
+$sid"; regm="$regm$sid $m
+"; done
+  done
+  tmp=$(mktemp "${TMPDIR:-/tmp}/jarvis-active.XXXXXX") || return 0
+  [ -n "$recs" ] && TZ=UTC LC_ALL=C ps -axww -o pid=,uid=,stat=,lstart=,command= 2>/dev/null \
+    | J_RECS="$recs" J_UID=$(id -u) J_JAR="$jar" J_NOW="$(now)000" J_WIN=$((JARVIS_ACTIVE_MIN * 60000)) J_ALL="$all" awk '
+      BEGIN {
+        n = split(ENVIRON["J_JAR"], j, "\n"); for (i = 1; i <= n; i++) if (j[i] != "") jar[j[i]] = 1
+        n = split(ENVIRON["J_RECS"], r, "\n")
+        for (i = 1; i <= n; i++) {
+          if (split(r[i], f, "\t") < 7 || f[8] ~ /^sdk-/) continue
+          ps = f[4]; gsub(/[ \t]+/, " ", ps); sub(/^ /, "", ps); sub(/ $/, "", ps)
+          sid[f[1]] = f[2]; cwd[f[1]] = f[3]; start[f[1]] = ps; st[f[1]] = f[5]; up[f[1]] = f[6] + 0; born[f[1]] = f[7] + 0
+        }
+      }
+      $2 == ENVIRON["J_UID"] && ($1 in sid) && $3 !~ /^Z/ {
+        p = $1; ls = $4 " " $5 " " $6 " " $7 " " $8
+        if (start[p] != "") { if (start[p] != ls) next }
+        else { c = $0; for (k = 0; k < 8; k++) sub(/^[ \t]*[^ \t]+[ \t]+/, "", c); if (c !~ /(^|\/)claude( |$)/) next }
+        why = st[p] == "busy" ? "busy" : up[p] >= ENVIRON["J_NOW"] - ENVIRON["J_WIN"] ? "recent" : (sid[p] in jar) ? "jarvis" : "idle"
+        if (why == "idle" && ENVIRON["J_ALL"] == "") next
+        print p "\t" sid[p] "\t" cwd[p] "\t" why "\t" born[p] "\t" up[p]
+      }' > "$tmp"
+  # per session: its project and model
+  while IFS=$TAB read -r pid sid cwd why st up; do
+    [ -n "$pid" ] || continue
+    proj=$(cd "$cwd" 2>/dev/null && proj_root "$(pwd -P)")
+    [ -n "$proj" ] || proj=$cwd
+    m=-
+    if [ "$why" != idle ]; then
+      m=$(printf '%s' "$regm" | awk -v s="$sid" '$1 == s {print $2; exit}')
+      [ -n "$m" ] || m=$(sess_model "$cwd" "$sid")
+      if [ -z "$m" ]; then m=unknown; else m=$(model_canon claude "$m") || m=unknown; fi
+    fi
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$pid" "$sid" "$proj" "$m" "$why" "$st" "$up"
+  done < "$tmp" > "$tmp.l"
+  cat "$tmp.l"
+  # a spawn counts until a session that started after it shows up in its project, its
+  # run has ended, or JARVIS_PENDING_SEC has passed
+  for f in "$JHOME"/spawning/*; do
+    [ -f "$f" ] || continue
+    ep=$(rec_get "$f" epoch); pr=$(rec_get "$f" project); pm=$(rec_get "$f" model); pn=$(rec_get "$f" run)
+    case "$ep" in ""|*[!0-9]*) continue ;; esac
+    [ $(( $(now) - ep )) -lt "$JARVIS_PENDING_SEC" ] || continue
+    if [ -n "$pn" ] && run_ok "$pn" && [ -f "$pr/$STATE/runs/$pn" ] && ! grep -qx 'state: running' "$pr/$STATE/runs/$pn"; then continue; fi
+    sid=$(awk -F'\t' -v p="$pr" -v t=$(( (ep - 5) * 1000 )) -v used="$used" '
+      $5 != "idle" && $3 == p && $6 + 0 >= t && index(used, " " $2 " ") == 0 {print $2; exit}' "$tmp.l")
+    if [ -n "$sid" ]; then used="$used $sid "; continue; fi
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' - "${f##*/}" "$pr" "${pm:-unknown}" pending "${ep}000" "${ep}000"
+  done
+  rm -f "$tmp" "$tmp.l"
+}
+
+heavy() { case "$1" in opus|fable|unknown) return 0 ;; esac; return 1; } # counts toward the Opus cap
+
+# Sets CAP_BAND, the effective caps CAP_G (machine) CAP_P (this checkout) CAP_O (Opus),
+# the counts N_ALL N_HERE N_OPUS, N_OPEN (OPEN.md's, Jarvis included), CAP_LINES (the
+# sessions that count) and CAP_IDLE (the idle ones). This checkout counts as whichever
+# is higher: OPEN.md's Jarvis + running Claude workers, or its active sessions; so
+# Jarvis and its workers always count, whatever their status, and none counts twice.
+cap_counts() {
+  local all pid sid proj m why rest here=0 hh=0 oth=0 oh=0 open_h=0
+  CAP_BAND=$(band | cut -f1)
+  case "$CAP_BAND" in
+    red) CAP_G=$JARVIS_RED_GLOBAL; CAP_O=$JARVIS_RED_OPUS ;;
+    amber) CAP_G=$JARVIS_AMBER_GLOBAL; CAP_O=$JARVIS_AMBER_OPUS ;;
+    *) CAP_G=$JARVIS_MAX_CLAUDE_GLOBAL; CAP_O=$JARVIS_MAX_OPUS ;;
+  esac
+  # a band never raises a cap set lower for green
+  [ "$CAP_G" -gt "$JARVIS_MAX_CLAUDE_GLOBAL" ] && CAP_G=$JARVIS_MAX_CLAUDE_GLOBAL
+  [ "$CAP_O" -gt "$JARVIS_MAX_OPUS" ] && CAP_O=$JARVIS_MAX_OPUS
+  CAP_P=$JARVIS_MAX_CLAUDE
+  all=$(claude_active --all)
+  CAP_LINES=$(printf '%s\n' "$all" | awk -F'\t' 'NF >= 5 && $5 != "idle"')
+  CAP_IDLE=$(printf '%s\n' "$all" | awk -F'\t' 'NF >= 5 && $5 == "idle"')
+  while IFS=$TAB read -r pid sid proj m why rest; do
+    [ -n "$pid" ] || continue
+    if [ "$proj" = "$ROOTP" ]; then here=$((here + 1)); heavy "$m" && hh=$((hh + 1))
+    else oth=$((oth + 1)); heavy "$m" && oh=$((oh + 1)); fi
+  done <<LINES
+$CAP_LINES
+LINES
+  N_OPEN=$(claude_sessions)
+  for m in $(running_lines | sed -n 's/.*· claude\/\([^ ]*\).*/\1/p'); do
+    heavy "$(model_canon claude "$m" || echo unknown)" && open_h=$((open_h + 1))
+  done
+  N_HERE=$here; [ "$N_OPEN" -gt "$N_HERE" ] && N_HERE=$N_OPEN
+  [ "$open_h" -gt "$hh" ] && hh=$open_h
+  N_ALL=$((oth + N_HERE))
+  N_OPUS=$((oh + hh))
+}
+
+cap_summary() { # after cap_counts
+  printf '%s of %s machine-wide (%s of %s here · opus %s of %s)' "$N_ALL" "$CAP_G" "$N_HERE" "$CAP_P" "$N_OPUS" "$CAP_O"
+  [ "$CAP_BAND" = green ] || printf ' — band %s caps' "$CAP_BAND"
+  echo
+}
+
+# shellcheck disable=SC2088 # a path shown to the user, not expanded
+tilde() { case "$1" in "$HOME"/*) printf '~/%s' "${1#"$HOME"/}" ;; *) printf '%s' "$1" ;; esac; }
+
+cap_holders() { # stdin: claude_active lines → "  pid 123 · ~/repo · opus · busy"
+  local pid sid proj m why rest
+  while IFS=$TAB read -r pid sid proj m why rest; do
+    [ -n "$pid" ] || continue
+    if [ "$pid" = - ]; then printf '  pending spawn %s · %s · %s\n' "$sid" "$(tilde "$proj")" "$m"
+    else printf '  pid %s · %s · %s · %s\n' "$pid" "$(tilde "$proj")" "$m" "$why"; fi
+  done
+}
+
+# `jarvis spawn` runs this under the machine-wide spawn lease (jarvis-lock.pl, class
+# spawn, host 1): count, check the caps, record the spawn as pending. So two Jarvis
+# instances can't both take the last slot. The launch runs after the lease is let go
+# (a host CLI that starts a daemon would otherwise keep it for good); until the new
+# session's record appears, the pending entry holds its slot.
+# $1 = canonical model, $2 = force (0|1), $3 = brief, $4 = the entry to write.
+cap_claim() {
+  local canon=$1 force=$2 brief=$3 entry=$4 cap="" n lim who f
+  cap_counts
+  if [ "$N_ALL" -ge "$CAP_G" ]; then
+    cap="machine-wide"; n=$N_ALL; lim=$CAP_G; who=$(printf '%s\n' "$CAP_LINES" | cap_holders)
+  elif [ "$N_HERE" -ge "$CAP_P" ]; then
+    cap="this checkout"; n=$N_HERE; lim=$CAP_P
+    who="$(printf '%s\n' "$CAP_LINES" | awk -F'\t' -v p="$ROOTP" '$3 == p' | cap_holders)
+  OPEN.md: Jarvis + $((N_OPEN - 1)) running Claude worker(s)"
+  elif heavy "$canon" && [ "$N_OPUS" -ge "$CAP_O" ]; then
+    cap="Opus"; n=$N_OPUS; lim=$CAP_O
+    who=$(printf '%s\n' "$CAP_LINES" | awk -F'\t' '$4 == "opus" || $4 == "fable" || $4 == "unknown"' | cap_holders)
+  fi
+  if [ -n "$cap" ]; then
+    if [ "$force" = 1 ]; then
+      audit cap-force - "$brief" "cap=$cap n=$n limit=$lim band=$CAP_BAND" passed
+      echo "jarvis: --force: past the $cap Claude cap ($n of $lim, band $CAP_BAND); logged in $STATE/audit.log" >&2
+    else
+      {
+        printf 'jarvis: Claude cap reached: %s, %s of %s' "$cap" "$n" "$lim"
+        if [ "$CAP_BAND" = green ]; then echo; else echo " (band $CAP_BAND: caps lowered)"; fi
+        echo "held by:"
+        printf '%s\n' "${who:-  the count in OPEN.md}" | grep -v '^$'
+        printf 'Options: queue it under To-do in OPEN.md; route it to Codex or OpenCode; or close one of your own idle sessions (handoffs/bin/jarvis sessions lists them)'
+        [ "$cap" = Opus ] && printf '; or give it model: sonnet'
+        echo ". --force passes this cap (logged)."
+      } >&2
+      exit 1
+    fi
+  fi
+  (umask 077; mkdir -p "$JHOME/spawning") || exit 1
+  for f in "$JHOME"/spawning/*; do # expired entries go
+    [ -f "$f" ] || continue
+    n=$(rec_get "$f" epoch); case "$n" in ""|*[!0-9]*) n=0 ;; esac
+    [ $(( $(now) - n )) -lt "$JARVIS_PENDING_SEC" ] || rm -f "$f"
+  done
+  printf 'epoch: %s\nproject: %s\nmodel: %s\nbrief: %s\n' "$(now)" "$ROOTP" "$canon" "$brief" > "$entry.tmp" \
+    && mv "$entry.tmp" "$entry" || exit 1
+}
+
+dur() { # $1 = seconds: 2d03h, 5h10m, 7m
+  local s=$1
+  [ "$s" -ge 0 ] 2>/dev/null || s=0
+  if [ "$s" -ge 86400 ]; then printf '%dd%02dh' $((s / 86400)) $((s % 86400 / 3600))
+  elif [ "$s" -ge 3600 ]; then printf '%dh%02dm' $((s / 3600)) $((s % 3600 / 60))
+  else printf '%dm' $((s / 60)); fi
+}
+
+cmd_sessions() {
+  local pid sid proj m why st up t old
+  have jq || die "jq is needed to read Claude Code's session records"
+  cap_counts
+  echo "claude sessions: $(cap_summary)"
+  echo "counting toward the caps (busy, active in the last $JARVIS_ACTIVE_MIN min, Jarvis's, or being spawned):"
+  [ -n "$CAP_LINES" ] || echo "  none"
+  while IFS=$TAB read -r pid sid proj m why st up; do
+    [ -n "$pid" ] || continue
+    printf '  %-7s %-7s %-7s %s  %s\n' "$pid" "$why" "$m" "$(tilde "$proj")" "$(short "$sid")"
+  done <<LINES
+$CAP_LINES
+LINES
+  [ "$N_OPEN" -gt 1 ] && echo "  (OPEN.md here: Jarvis + $((N_OPEN - 1)) running Claude worker(s))"
+  # open for hours and idle: they cost nothing, but they're the user's to close
+  t=$(now)
+  old=$(printf '%s\n' "$CAP_IDLE" | awk -F'\t' -v t="$t" 'NF >= 7 && $6 > 0 && t * 1000 - $6 > 8 * 3600000')
+  [ -n "$old" ] || return 0
+  echo "idle, open more than 8 h (they burn nothing; close the ones you're done with yourself — jarvis never stops them):"
+  while IFS=$TAB read -r pid sid proj m why st up; do
+    [ -n "$pid" ] || continue
+    printf '  pid %s · %s · open %s · last active %s ago\n' "$pid" "$(tilde "$proj")" \
+      "$(dur $(( t - st / 1000 )))" "$(dur $(( t - up / 1000 )))"
+  done <<LINES
+$old
+LINES
+}
 
 # ---------------------------------------------------------------- start / status
 
@@ -462,7 +786,7 @@ cmd_start() {
 }
 
 cmd_status() {
-  local b line id brief ho ids="" n=0 changed claimed unclaimed live
+  local b line id brief ho ids="" n=0 changed claimed unclaimed
   [ -f "$OPEN" ] || die "no $OPEN — run jarvis:setup first"
 
   b=$(band)
@@ -471,14 +795,9 @@ cmd_status() {
     green|amber|red) open_set "Usage band" "$(printf '%s' "$b" | cut -f1) ($(printf '%s' "$b" | cut -f2 | cut -d, -f1), $(date +%H:%M))" ;;
   esac
 
-  printf 'claude sessions: %s of %s (Jarvis included)\n' "$(claude_sessions)" "$JARVIS_MAX_CLAUDE"
-  # what is actually running here, from Claude Code's session records, when it writes them
-  if have jq && ls "$CLAUDE_DIR"/sessions/*.json "$HOME"/.claude/sessions/*.json >/dev/null 2>&1; then
-    live=$(claude_here | wc -l | tr -d ' ')
-    printf '  claude processes alive in this checkout: %s' "$live"
-    [ "$live" -gt "$(claude_sessions)" ] && printf ' (%s more than OPEN.md lists)' $((live - $(claude_sessions)))
-    echo
-  fi
+  # every active Claude session on the machine, from Claude Code's session records
+  cap_counts
+  printf 'claude sessions: %s\n' "$(cap_summary)"
   fable_status
   while IFS= read -r line; do
     [ -n "$line" ] || continue
@@ -546,7 +865,7 @@ codex_trust() {
 }
 
 cmd_spawn() {
-  local brief="" after="" force=0 atts="" worker model effort tier canon prompt name id b cap_now ifs old spawned
+  local brief="" after="" force=0 atts="" worker model effort tier canon prompt name id b ifs old spawned
   while [ $# -gt 0 ]; do
     case "$1" in
       --after) after="${2:-}"; shift 2 ;;
@@ -592,10 +911,6 @@ cmd_spawn() {
 
   if [ "$worker" = claude ] && [ $force = 0 ]; then
     [ "$b" = red ] && [ "$tier" != other ] && die "band is red: new $tier-tier work goes to Codex (gpt-6-astra / gpt-5.6-sol). Edit the header, or --force"
-    cap_now=$(claude_sessions)
-    if [ "$cap_now" -ge "$JARVIS_MAX_CLAUDE" ]; then
-      die "Claude cap reached ($cap_now of $JARVIS_MAX_CLAUDE, Jarvis included). Queue it under To-do in OPEN.md, route it to OpenCode/Codex, or --force"
-    fi
   fi
 
   [ "$worker" = codex ] && codex_trust
@@ -617,6 +932,13 @@ cmd_spawn() {
   set +f
   IFS=$ifs
   old=$(runs_of "$brief" running | tr '\n' ' ' | sed 's/ $//')
+  # the caps: counted, checked and the slot taken under the machine-wide spawn lease;
+  # a launch that fails gives the slot back
+  if [ "$worker" = claude ]; then
+    SPAWN_PENDING="$JHOME/spawning/$name.$(now).$$"
+    spawn_claim "$canon" "$force" "$brief" "$SPAWN_PENDING" || exit $?
+    trap 'rm -f "$SPAWN_PENDING"' EXIT
+  fi
   # used up here, last thing before the launch: a failed launch needs a new `fable allow`
   [ "$canon" = fable ] && fable_consume "$brief" "$name"
   # taken before the host starts the agent, so the agent's own start time is never earlier
@@ -624,6 +946,10 @@ cmd_spawn() {
   id=$(host spawn "$worker" "$model" "$effort" "$prompt" "$name" "$@") \
     || die "spawn failed on $HOST (a failed Claude spawn can mean the red band)"
   [ -n "$id" ] || die "spawn on $HOST returned no terminal id"
+  if [ -n "${SPAWN_PENDING:-}" ]; then # launched: the entry stays until its session shows up, or the run ends
+    trap - EXIT
+    run_ok "$id" && printf 'run: %s\n' "$id" >> "$SPAWN_PENDING"
+  fi
 
   brief_set_started "$brief" "started: $(date '+%Y-%m-%d %H:%M') · terminal: $id"
   if run_ok "$id"; then
@@ -634,9 +960,26 @@ cmd_spawn() {
     echo "warning: terminal id '$id' has characters the run registry doesn't take: not recorded in $RUNS, so merge closes it only through the brief's started: line"
   fi
   open_add_running "- $(date '+%Y-%m-%d %H:%M') · $worker/${model:-default}${effort:+ $effort} · term $id · $brief"
-  echo "spawned $(short "$id") $worker/${model:-default}${effort:+ $effort} ← $brief (Claude sessions $(claude_sessions) of $JARVIS_MAX_CLAUDE)"
+  cap_counts
+  echo "spawned $(short "$id") $worker/${model:-default}${effort:+ $effort} ← $brief (claude sessions: $(cap_summary))"
   [ -n "$old" ] && echo "warning: $brief already had a running worker ($old); merge closes every worker of this brief. To close the old one now: handoffs/bin/jarvis close ${old%% *}"
   return 0
+}
+
+spawn_claim() { # $@ = cap_claim's arguments: run it under the spawn lease, one spawn at a time machine-wide
+  local pl dir="${JARVIS_LOCK_DIR:-$JHOME/locks}" rc=0
+  if have perl && pl=$(lock_pl 2>/dev/null); then
+    JARVIS_CALLER_PWD="$JARVIS_CALLER_PWD" JARVIS_LOCK_DIR="$dir" JARVIS_LOCK_POLL="${JARVIS_LOCK_POLL:-0.2}" \
+      perl "$pl" run spawn host 1 "$ROOT" "${JARVIS_SPAWN_WAIT:-120}" 0 "$0" _claim "$@" || rc=$?
+    case $rc in
+      0|1) return $rc ;; # 1: a cap, already explained
+      75) die "another spawn has held the spawn lease for ${JARVIS_SPAWN_WAIT:-120}s: try again (jarvis resources shows who)" ;;
+      *) die "can't take the spawn lease in $dir (exit $rc), so the caps can't be checked: spawn refused" ;;
+    esac
+  else
+    echo "jarvis: no perl here, so the cap check can't be made atomic across repos; checking without the lease" >&2
+    (cap_claim "$@")
+  fi
 }
 
 # Record the terminal in the brief: rewrite its started: line, or add one after the
@@ -2127,14 +2470,15 @@ EOF
 # Statusline tap: Claude Code hands the statusline its rate-limit numbers. Save
 # them for `jarvis band`, then run the user's own statusline unchanged.
 cmd_statusline() {
-  local in cmd tmp
+  local in cmd line
   in=$(cat)
   if have jq; then
-    mkdir -p "$STATE" 2>/dev/null
-    tmp="$STATE/usage.json.$$"
-    printf '%s' "$in" | jq -c --argjson ts "$(now)" 'select(.rate_limits.five_hour) | .rate_limits + {ts: $ts}' \
-      > "$tmp" 2>/dev/null && [ -s "$tmp" ] && mv "$tmp" "$STATE/usage.json"
-    rm -f "$tmp"
+    line=$(printf '%s' "$in" | jq -c --argjson ts "$(now)" 'select(.rate_limits.five_hour) | .rate_limits + {ts: $ts}' 2>/dev/null)
+    if [ -n "$line" ]; then
+      # the machine-wide reading `band` uses, its history, and this repo's own copy (`jarvis usage`)
+      (umask 077; mkdir -p "$JHOME") 2>/dev/null && usage_save "$JHOME" "$line" && usage_hist "$line"
+      mkdir -p "$STATE" 2>/dev/null && usage_save "$STATE" "$line"
+    fi
     cmd="${JARVIS_STATUSLINE_CMD:-$(jq -r '.statusLine.command // empty' "$HOME/.claude/settings.json" 2>/dev/null)}"
   else
     cmd="${JARVIS_STATUSLINE_CMD:-}"
@@ -2143,6 +2487,24 @@ cmd_statusline() {
   if [ -n "$cmd" ]; then printf '%s' "$in" | sh -c "$cmd"
   elif have jq; then printf '%s' "$in" | jq -r '"\(.model.display_name // "") · 5h \(.rate_limits.five_hour.used_percentage // "?" | tostring | .[0:4])%"'
   fi
+}
+
+usage_save() { # $1 = dir, $2 = the reading: written to a temp file beside usage.json, then moved
+  local tmp="$1/usage.json.$$"
+  printf '%s\n' "$2" > "$tmp" 2>/dev/null && mv "$tmp" "$1/usage.json" || { rm -f "$tmp"; return 1; }
+}
+
+# One "<ts> <five_hour %> <seven_day %> <five_hour resets_at>" line per minute at most,
+# the last 500 kept: the burn rate `band` reads.
+usage_hist() { # $1 = the reading
+  local h="$JHOME/usage.hist" l t
+  l=$(printf '%s' "$1" | jq -r '"\(.ts) \(.five_hour.used_percentage // "-") \(.seven_day.used_percentage // "-") \(.five_hour.resets_at // "-")"' 2>/dev/null) || return 0
+  t=$(tail -n 1 "$h" 2>/dev/null | awk '{print $1}')
+  case "$t" in ""|*[!0-9]*) t=0 ;; esac
+  [ $(( ${l%% *} - t )) -ge 60 ] || return 0
+  printf '%s\n' "$l" >> "$h"
+  [ "$(wc -l < "$h")" -gt 500 ] && tail -n 500 "$h" > "$h.$$" && mv "$h.$$" "$h"
+  return 0
 }
 
 # ---------------------------------------------------------------- usage
@@ -2291,6 +2653,8 @@ cmd="${1:-}"
 case "$cmd" in
   start) cmd_start "$@" ;;
   status) cmd_status ;;
+  sessions) cmd_sessions ;;
+  _claim) cap_claim "$@" ;; # spawn's cap check, run by jarvis-lock.pl under the spawn lease
   band) cmd_band ;;
   spawn) cmd_spawn "$@" ;;
   read) cmd_read "$@" ;;

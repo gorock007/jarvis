@@ -13,6 +13,8 @@ brief="$here/briefs/$(ls "$here/briefs" | head -n 1)"
 term="$here/terminals/$(ls "$here/terminals" | head -n 1)"
 tmp=$(mktemp -d "${TMPDIR:-/tmp}/jev-selftest.XXXXXX")
 export JEV_LOG_DIR="$tmp/log"
+# spawn counts every Claude session on the machine and reads ~/.jarvis: keep the real ones out
+export HOME="$tmp/home" JARVIS_HOME="$tmp/jh" CLAUDE_CONFIG_DIR="$tmp/cc" GIT_AUTHOR_NAME=selftest GIT_AUTHOR_EMAIL=selftest@example.invalid GIT_COMMITTER_NAME=selftest GIT_COMMITTER_EMAIL=selftest@example.invalid
 fails=0
 ok() { echo "  ok    $1"; }
 bad() { echo "  FAIL  $1"; fails=$((fails + 1)); }
@@ -112,11 +114,11 @@ EOT
     echo "{\"model\":{},\"rate_limits\":{\"five_hour\":{\"used_percentage\":40,\"resets_at\":$((now + 4 * 3600))}}}" \
       | JARVIS_STATUSLINE_CMD='cat >/dev/null; echo mine' $J statusline | grep -qx mine; check "statusline tap runs the user's statusline" $?
     $J band | grep -q '^amber .*on pace for 200%'; check "40% in the first hour is amber (pace)" $?
-    echo "{\"five_hour\":{\"used_percentage\":30,\"resets_at\":$((now + 2 * 3600))},\"ts\":$now}" > handoffs/.jarvis/usage.json
+    echo "{\"five_hour\":{\"used_percentage\":30,\"resets_at\":$((now + 2 * 3600))},\"ts\":$now}" > "$JARVIS_HOME/usage.json"
     $J band | grep -q '^green'; check "30% three hours in is green" $?
-    echo "{\"five_hour\":{\"used_percentage\":80,\"resets_at\":$((now + 3600))},\"ts\":$now}" > handoffs/.jarvis/usage.json
+    echo "{\"five_hour\":{\"used_percentage\":80,\"resets_at\":$((now + 3600))},\"ts\":$now}" > "$JARVIS_HOME/usage.json"
     $J band | grep -q '^red'; check "80% is red" $?
-    echo "{\"five_hour\":{\"used_percentage\":55,\"resets_at\":$((now + 3600))},\"ts\":$now}" > handoffs/.jarvis/usage.json
+    echo "{\"five_hour\":{\"used_percentage\":55,\"resets_at\":$((now + 3600))},\"ts\":$now}" > "$JARVIS_HOME/usage.json"
     sed -i.bak '/b2.md/d' handoffs/OPEN.md && rm -f handoffs/OPEN.md.bak
     out=$(JARVIS_HOME="$tmp/jh" $J spawn handoffs/briefs/b5.md 2>&1); [ $? = 1 ] && printf '%s' "$out" | grep -q 'fable'; check "an unauthorized fable worker is refused (eval/fabletest.sh tests the rest)" $?
 
@@ -280,8 +282,8 @@ EOT
     grep -q '^outcome: close FAILED' "$runs/$r3" && grep -q "close run=$r3 .*result=FAILED" handoffs/.jarvis/audit.log; check "…and kept in the run record and the audit log" $?
 
     nb r4; $J spawn handoffs/briefs/r4.md --force >/dev/null 2>&1; r4=$(tid r4)
-    p4=$(agent r4 "$(uuid)"); pn=$(agent "" "$(uuid)"); pw=$(agent r4 "$(uuid)" "Thu Jan 1 00:00:00 2026")
-    $J status | grep -q 'claude processes alive in this checkout: 2'; check "status counts live Claude processes here, a stale session record left out" $?
+    p4=$(agent r4 "$(uuid)" "" busy); pn=$(agent "" "$(uuid)" "" busy); pw=$(agent r4 "$(uuid)" "Thu Jan 1 00:00:00 2026" busy)
+    [ "$($J sessions | grep -c '^  [0-9][0-9]* *busy ')" = 2 ]; check "jarvis sessions counts live Claude processes here, a stale session record left out" $?
     hof r4; out=$($J merge handoffs/hr4.md --no-push)
     printf '%s' "$out" | grep -q "worker pid $p4 didn't exit on close: stopped (TERM)"; check "merge stops a worker agent the close left running" $?
     sleep 1; ! alive "$p4"; check "…and it's gone" $?
@@ -362,7 +364,7 @@ EOT
     alive "$pd1" && alive "$pd6" && alive "$pnw" && alive "$pjv"; check "…and leaves running, busy, non-worker and Jarvis alone" $?
     alive "$pd8" && alive "$pd9" && alive "$pd12" && ! grep -qE "pid=($pd8|$pd9|$pd12) " handoffs/.jarvis/audit.log; check "…and every resumed session" $?
     grep -qx 'state: lost' "$runs/$d7" && grep -qx 'state: merged' "$runs/term-d5" && grep -qx 'state: running' "$runs/$d1"; check "--apply marks the lost run, records the legacy close" $?
-    [ "$(wc -l < handoffs/.jarvis/audit.log | tr -d ' ')" = 6 ] \
+    [ "$(grep -vc ' cap-force ' handoffs/.jarvis/audit.log)" = 6 ] \
       && grep -q "close run=$d2 .*result=ok" handoffs/.jarvis/audit.log && grep -q "signal run=$d2 .*pid=$pd2 .*TERM sent" handoffs/.jarvis/audit.log \
       && grep -q "close run=term-d5 .*result=ok" handoffs/.jarvis/audit.log && grep -q "signal run=$d3 .*pid=$pd3 .*TERM sent" handoffs/.jarvis/audit.log \
       && grep -q "signal run=term-d4 brief=handoffs/briefs/d4.md pid=$pd4 .*TERM sent" handoffs/.jarvis/audit.log \
@@ -510,6 +512,7 @@ fi
 
 echo "jarvis lock (eval/locktest.sh)"; "$BASH" "$here/locktest.sh" 2>&1 | tee "$tmp/lock.out"; grep -q '^locktest: all passed' "$tmp/lock.out" || { n=$(grep -c '^  FAIL' "$tmp/lock.out"); fails=$((fails + (n > 0 ? n : 1))); }
 echo "fable gate (eval/fabletest.sh)"; "$BASH" "$here/fabletest.sh" 2>&1 | tee "$tmp/fable.out"; grep -q '^fabletest: all passed' "$tmp/fable.out" || { n=$(grep -c '^  FAIL' "$tmp/fable.out"); fails=$((fails + (n > 0 ? n : 1))); }
+echo "claude caps and band (eval/captest.sh)"; "$BASH" "$here/captest.sh" 2>&1 | tee "$tmp/cap.out"; grep -q '^captest: all passed' "$tmp/cap.out" || { n=$(grep -c '^  FAIL' "$tmp/cap.out"); fails=$((fails + (n > 0 ? n : 1))); }
 echo "jarvis usage (eval/usagetest.sh)"; "$BASH" "$here/usagetest.sh" 2>&1 | tee "$tmp/usage.out"; grep -q '^usagetest: all passed' "$tmp/usage.out" || { n=$(grep -c '^  FAIL' "$tmp/usage.out"); fails=$((fails + (n > 0 ? n : 1))); }
 rm -rf "$tmp"
 echo; [ "$fails" = 0 ] && echo "selftest: all passed" || { echo "selftest: $fails failed"; exit 1; }

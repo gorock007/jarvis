@@ -92,6 +92,7 @@ cd "$sb" || exit 1
 git init -q
 cp -R "$tpl/handoffs" . && sed -e 's/{{MAX_CLAUDE}}/50/' -e 's/{{AMBER}}/50/' -e 's/{{RED}}/75/' "$tpl/handoffs/jarvis.conf" > handoffs/jarvis.conf
 echo 'JARVIS_FABLE_SUPERSET_AGENT=fable-cfg' >> handoffs/jarvis.conf
+echo 'JARVIS_MAX_CLAUDE_GLOBAL=50 JARVIS_MAX_OPUS=50 JARVIS_AMBER_GLOBAL=50 JARVIS_AMBER_OPUS=50' >> handoffs/jarvis.conf
 echo a > app.txt && git add -A && git -c user.name=t -c user.email=t@t commit -qm init
 J=handoffs/bin/jarvis
 $J start >/dev/null
@@ -205,7 +206,7 @@ $J fable revoke "$fb" >/dev/null
 authorize "$fb"; chmod -R a-w "$JARVIS_HOME"; c=$(creates)
 out=$($J spawn "$fb" 2>&1); rc=$?
 chmod -R u+w "$JARVIS_HOME"
-[ $rc = 1 ] && printf '%s' "$out" | grep -q 'fable needs your authorization' && [ "$(creates)" = "$c" ]; check "unwritable JARVIS_HOME: refused (it can't be used up)" $?
+[ $rc = 1 ] && printf '%s' "$out" | grep -Eq "fable needs your authorization|can't take the spawn lease" && [ "$(creates)" = "$c" ]; check "unwritable JARVIS_HOME: refused (it can't be used up)" $?
 band red; c=$(creates)
 out=$($J spawn "$fb" --force 2>&1); rc=$?
 [ $rc = 1 ] && printf '%s' "$out" | grep -q 'band is red: fable is off even when authorized' && [ "$(creates)" = "$c" ] && [ -n "$(ls "$FD"/pending/)" ]; check "red band refuses even an authorized one, --force or not, and leaves it unused" $?
