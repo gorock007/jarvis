@@ -118,7 +118,7 @@ EOT
     $J band | grep -q '^red'; check "80% is red" $?
     echo "{\"five_hour\":{\"used_percentage\":55,\"resets_at\":$((now + 3600))},\"ts\":$now}" > handoffs/.jarvis/usage.json
     sed -i.bak '/b2.md/d' handoffs/OPEN.md && rm -f handoffs/OPEN.md.bak
-    $J spawn handoffs/briefs/b5.md 2>&1 | grep -q 'fable is off'; check "amber refuses a fable worker" $?
+    out=$(JARVIS_HOME="$tmp/jh" $J spawn handoffs/briefs/b5.md 2>&1); [ $? = 1 ] && printf '%s' "$out" | grep -q 'fable'; check "an unauthorized fable worker is refused (eval/fabletest.sh tests the rest)" $?
 
     mkdir -p src && echo x > src/new.txt && echo b > app.txt && echo other > other.txt
     printf '# Add new\nstatus: done\nagent: claude claude-opus-5-5\nbrief: handoffs/briefs/b1.md\n## Files\n- `src/new.txt` — created\n- app.txt — modified\n- gone.txt — modified\n## Checks run\nnone\n' > handoffs/h1.md
@@ -509,5 +509,7 @@ else
 fi
 
 echo "jarvis lock (eval/locktest.sh)"; "$BASH" "$here/locktest.sh" 2>&1 | tee "$tmp/lock.out"; grep -q '^locktest: all passed' "$tmp/lock.out" || { n=$(grep -c '^  FAIL' "$tmp/lock.out"); fails=$((fails + (n > 0 ? n : 1))); }
+echo "fable gate (eval/fabletest.sh)"; "$BASH" "$here/fabletest.sh" 2>&1 | tee "$tmp/fable.out"; grep -q '^fabletest: all passed' "$tmp/fable.out" || { n=$(grep -c '^  FAIL' "$tmp/fable.out"); fails=$((fails + (n > 0 ? n : 1))); }
+echo "jarvis usage (eval/usagetest.sh)"; "$BASH" "$here/usagetest.sh" 2>&1 | tee "$tmp/usage.out"; grep -q '^usagetest: all passed' "$tmp/usage.out" || { n=$(grep -c '^  FAIL' "$tmp/usage.out"); fails=$((fails + (n > 0 ? n : 1))); }
 rm -rf "$tmp"
 echo; [ "$fails" = 0 ] && echo "selftest: all passed" || { echo "selftest: $fails failed"; exit 1; }

@@ -16,6 +16,18 @@
           }
         ]
       }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Agent|Task|Edit|Write|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/handoffs/bin/jarvis hook pretool",
+            "timeout": 10
+          }
+        ]
+      }
     ]
   },
   "statusLine": {

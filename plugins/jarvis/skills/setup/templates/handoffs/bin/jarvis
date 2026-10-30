@@ -24,10 +24,15 @@
 #                                      or frozen; /clears it first after a long idle. --start
 #                                      opens that terminal, unless a watcher is already running
 #   jarvis band                        the usage band from the latest statusline reading
-#   jarvis usage [--days N | --since DATE]
+#   jarvis usage [--days N | --since DATE] [--all-projects]
 #                                      coordinating vs building, from local transcripts
 #   jarvis hook prompt                 UserPromptSubmit guard (from .claude/settings.json)
-#   jarvis statusline                  statusline tap: saves the 5-hour reading, then runs yours
+#   jarvis hook pretool                PreToolUse guard: no Fable subagent, no Fable in a settings allowlist
+#   jarvis fable allow <brief.md>      (the user, in their own terminal) let that brief's next spawn run on Fable
+#   jarvis fable list | revoke <brief.md>
+#                                      authorizations pending, used and expired, and the log tail
+#   jarvis fable backstop [--apply]    whether the user-level availableModels keeps Fable out; --apply writes it
+#   jarvis statusline                 statusline tap: saves the 5-hour reading, then runs yours
 #   jarvis lock <class> [--wait <sec>] [--reuse] -- <command…>
 #                                      run a heavy command only while holding its class's lease,
 #                                      machine-wide or per checkout; waiters queue in order
@@ -40,8 +45,21 @@
 # "hosts" below). The agent in each terminal is any CLI: claude, codex, opencode, or
 # one added as JARVIS_AGENT_<name> in jarvis.conf.
 # Settings live in handoffs/jarvis.conf. Works on the stock macOS bash (3.2).
-# jq is needed for spawn, the hooks and the band; everything fails open without it.
+# jq is needed for spawn, the hooks and the band; everything fails open without it,
+# except the Fable checks, which fail closed.
 set -u
+
+# PreToolUse runs this on every Agent, Task, Edit and Write call: leave before anything
+# else runs unless the input names fable or a settings*.json file. A settings file goes
+# on to be rebuilt and parsed every time, since its JSON can spell fable in \u escapes
+# or across several edits.
+if [ "${1:-} ${2:-}" = "hook pretool" ]; then
+  JARVIS_HOOK_IN=$(cat)
+  case "$JARVIS_HOOK_IN" in
+    *[Ff][Aa][Bb][Ll][Ee]*|*[Ss][Ee][Tt][Tt][Ii][Nn][Gg][Ss]*.[Jj][Ss][Oo][Nn]*) ;;
+    *) exit 0 ;;
+  esac
+fi
 
 ROOT=$(git rev-parse --show-toplevel 2>/dev/null) || ROOT="${CLAUDE_PROJECT_DIR:-$PWD}"
 JARVIS_CALLER_PWD=$PWD   # `lock` runs its command where it was called from
@@ -62,6 +80,8 @@ JARVIS_PUSH=1
 JARVIS_REAP=1            # merge stops what the closed worker left running (0 = only list it)
 JARVIS_STOP_GRACE=10     # seconds merge/close wait for a closed worker's terminal and agent to go
 JARVIS_HOST=""           # superset | ultron | tmux | <name> with handoffs/bin/hosts/<name>.sh; empty = detect
+JARVIS_FABLE_TTL_MIN=120 # minutes a `jarvis fable allow` stays usable
+JARVIS_FABLE_SUPERSET_AGENT=""  # a Superset agent config id that lifts the backstop; empty = no Fable on Superset
 # How a terminal host that isn't an agent launcher itself (tmux) starts each worker:
 # a sh command line reading $JARVIS_MODEL, $JARVIS_EFFORT and $JARVIS_PROMPT from its
 # environment. The flags are the ones Superset's agent presets launch with, so a
@@ -112,6 +132,10 @@ mtime() { stat -f %m "$1" 2>/dev/null || stat -c %Y "$1" 2>/dev/null || echo 0; 
 # Built in: superset, ultron and tmux. Another (an IDE, a remote box) defines the same
 # functions in handoffs/bin/hosts/<name>.sh and is picked with JARVIS_HOST=<name> in
 # jarvis.conf.
+# Every spawn passes the Fable final check in host() first. For an authorized Fable run
+# it sets FABLE_LIFT=1, and the spawn adds --settings "$FABLE_SETTINGS" to that one
+# claude launch, so the user-level allowlist without Fable (the backstop) lets it through.
+# A host that can't pass it leaves the backstop in force: the worker runs on Opus.
 
 superset_self() { printf '%s' "${SUPERSET_TERMINAL_ID:-}"; }
 
@@ -120,6 +144,12 @@ superset_spawn() {
   shift 5
   # each attachment becomes "--attachment <path>" at the end of the list, the original dropped
   for a in "$@"; do set -- "$@" --attachment "$a"; shift; done
+  # a launch can't carry --settings here; an agent config can (JARVIS_FABLE_SUPERSET_AGENT).
+  # Another agent naming fable keeps its own config, and the backstop stays in force.
+  if [ "${FABLE_LIFT:-0}" = 1 ] && [ "$agent" = claude ]; then
+    [ -n "$JARVIS_FABLE_SUPERSET_AGENT" ] || { echo "$FABLE_SUPERSET_MSG" >&2; return 1; }
+    agent=$JARVIS_FABLE_SUPERSET_AGENT
+  fi
   set -- "$@" --workspace "$WS" --agent "$agent" --prompt "$prompt" --json
   case "$model" in ""|\<*) ;; *) set -- "$@" --model "$model" ;; esac
   [ -n "$effort" ] && set -- "$@" --effort "$effort"
@@ -173,6 +203,8 @@ ultron_spawn() {
   set -- "$@" --agent "$agent" --role worker --title "$name" --cwd "$ROOT" --prompt "$prompt" --json
   case "$model" in ""|\<*) ;; *) set -- "$@" --model "$model" ;; esac
   [ -n "$effort" ] && set -- "$@" --effort "$effort"
+  # extra args for claude itself; another agent's CLI wouldn't take them
+  [ "${FABLE_LIFT:-0}" = 1 ] && [ "$agent" = claude ] && set -- "$@" -- --settings "$FABLE_SETTINGS"
   out=$(ult agent spawn "$@" 2>&1) || { echo "$out (is this checkout an Ultron project? ultron project add .)" >&2; return 1; }
   printf '%s' "$out" | jq -r '.id // empty' 2>/dev/null | grep . || { echo "no id in: $out" >&2; return 1; }
 }
@@ -250,6 +282,7 @@ tmux_spawn() {
   {
     echo "# written by jarvis spawn; tmux runs it in the worker's window"
     echo "unset CLAUDECODE CLAUDE_CODE_SESSION_ID CLAUDE_CODE_ENTRYPOINT"
+    tmux_fable_lines "$model"
     echo "$cmd"
     # shellcheck disable=SC2016
     echo 's=$?; printf "\n[jarvis] %s exited (%s). Its window stays open until jarvis merge or close.\n" "$JARVIS_AGENT" "$s"'
@@ -260,6 +293,26 @@ tmux_spawn() {
     "sh $launch") || return 1
   tmux set-option -p -t "$id" @jarvis "$name" 2>/dev/null
   echo "$id"
+}
+
+# The final check once more, inside the launch script, for any agent (one may wrap
+# claude): the window's environment comes from the tmux server too, and the script can
+# be edited before it runs. So: no alias variable may point at Fable, JARVIS_MODEL must
+# be the model spawn checked, and only an authorized run gets the allowlist that lifts
+# the backstop. $1 = that model.
+tmux_fable_lines() {
+  local v q
+  q=$(printf '%s' "$1" | sed "s/'/'\\\\''/g")   # quoted for sh: ' becomes '\''
+  for v in ANTHROPIC_MODEL ANTHROPIC_DEFAULT_OPUS_MODEL ANTHROPIC_DEFAULT_SONNET_MODEL ANTHROPIC_DEFAULT_HAIKU_MODEL \
+           ANTHROPIC_SMALL_FAST_MODEL CLAUDE_CODE_SUBAGENT_MODEL; do
+    echo "case \"\$(printf '%s' \"\${$v:-}\" | tr '[:upper:]' '[:lower:]')\" in *fable*) unset $v ;; esac"
+  done
+  echo "if [ \"\$JARVIS_MODEL\" != '$q' ]; then printf '[jarvis] refused: JARVIS_MODEL is not the model spawn checked (%s)\\n' '$q'; exec tail -f /dev/null; fi"
+  if [ "${FABLE_LIFT:-0}" = 1 ]; then
+    echo "claude() { command claude --settings '$FABLE_SETTINGS' \"\$@\"; }"
+  else
+    echo "case \"\$(printf '%s' \"\${JARVIS_MODEL%%\\[*}\" | tr '[:upper:]' '[:lower:]')\" in *fable*) printf '[jarvis] refused: fable without authorization\\n'; exec tail -f /dev/null ;; esac"
+  fi
 }
 
 tmux_run() { tmux new-window -d -t "$(tmux_session):" -n "$1" -c "$ROOT" "$2"; }
@@ -322,6 +375,7 @@ host() { # $1 = op, then its arguments
   shift
   need_host
   type "${HOST}_$op" >/dev/null 2>&1 || die "host $HOST has no $op: define ${HOST}_$op in $BIN/hosts/$HOST.sh"
+  [ "$op" = spawn ] && fable_final "$@"   # whoever called, the last word before a launch
   "${HOST}_$op" "$@"
 }
 
@@ -425,6 +479,7 @@ cmd_status() {
     [ "$live" -gt "$(claude_sessions)" ] && printf ' (%s more than OPEN.md lists)' $((live - $(claude_sessions)))
     echo
   fi
+  fable_status
   while IFS= read -r line; do
     [ -n "$line" ] || continue
     n=$((n + 1))
@@ -491,7 +546,7 @@ codex_trust() {
 }
 
 cmd_spawn() {
-  local brief="" after="" force=0 atts="" worker model effort tier prompt name id b cap_now ifs old spawned
+  local brief="" after="" force=0 atts="" worker model effort tier canon prompt name id b cap_now ifs old spawned
   while [ $# -gt 0 ]; do
     case "$1" in
       --after) after="${2:-}"; shift 2 ;;
@@ -515,16 +570,28 @@ cmd_spawn() {
   case "$effort" in \<*) effort="" ;; esac
   case "$worker" in claude|codex) [ -n "$model" ] || die "brief header needs a model" ;; esac
   [ "$worker" = opencode ] && effort=""
-  case "$model" in fable) tier=top ;; claude-opus-5-5|opus) tier=workhorse ;; *) tier=other ;; esac
+  # the tier goes by the model's canonical name, so no alias skips the band checks;
+  # a Claude model that can't be named is refused (it might resolve to Fable), and any
+  # worker whose model names fable goes through every Fable check
+  canon=$(model_canon "$worker" "$model") || fable_refuse "$brief" - "spawn: model '$model' can't be resolved" "$(model_refusal "$model")"
+  { [ "$worker" = claude ] || [ "$canon" = fable ]; } && fable_preflight "$brief" -
+  case "$canon" in fable) tier=top ;; opus) tier=workhorse ;; *) tier=other ;; esac
+
+  b=$(band | cut -f1)
+  # Fable: never without the user's authorization for this brief, --force or not; never
+  # in the red band even with it; amber allows an authorized one
+  if [ "$canon" = fable ]; then
+    [ "$b" = red ] && fable_refuse "$brief" - "spawn: red band" "band is red: fable is off even when authorized. New top-tier work goes to Codex: worker: codex, model: gpt-6-astra"
+    [ "$worker" = claude ] && [ "$HOST" = superset ] && [ -z "$JARVIS_FABLE_SUPERSET_AGENT" ] && fable_refuse "$brief" - "spawn: superset has no fable agent config" "$FABLE_SUPERSET_MSG"
+    fable_find "$brief" || fable_refuse "$brief" - "spawn: $FABLE_WHY" "$(fable_needs "$brief") [$FABLE_WHY]"
+  fi
 
   if [ -x "$BIN/jev.sh" ]; then
     "$BIN/jev.sh" brief "$brief" || [ $force = 1 ] || die "sharpen the brief (or --force if the lint is wrong)"
   fi
 
-  b=$(band | cut -f1)
   if [ "$worker" = claude ] && [ $force = 0 ]; then
     [ "$b" = red ] && [ "$tier" != other ] && die "band is red: new $tier-tier work goes to Codex (gpt-6-astra / gpt-5.6-sol). Edit the header, or --force"
-    [ "$b" = amber ] && [ "$model" = fable ] && die "band is amber: fable is off for workers. Use model: claude-opus-5-5 (amber band; fable-tier task), or --force"
     cap_now=$(claude_sessions)
     if [ "$cap_now" -ge "$JARVIS_MAX_CLAUDE" ]; then
       die "Claude cap reached ($cap_now of $JARVIS_MAX_CLAUDE, Jarvis included). Queue it under To-do in OPEN.md, route it to OpenCode/Codex, or --force"
@@ -550,6 +617,8 @@ cmd_spawn() {
   set +f
   IFS=$ifs
   old=$(runs_of "$brief" running | tr '\n' ' ' | sed 's/ $//')
+  # used up here, last thing before the launch: a failed launch needs a new `fable allow`
+  [ "$canon" = fable ] && fable_consume "$brief" "$name"
   # taken before the host starts the agent, so the agent's own start time is never earlier
   spawned=$(now)
   id=$(host spawn "$worker" "$model" "$effort" "$prompt" "$name" "$@") \
@@ -1449,6 +1518,7 @@ cmd_doctor() {
   echo "leftovers:"; if [ -n "$out" ]; then printf '%s\n' "$out" | sed 's/^/  /'; else echo "  none"; fi
   out=$(doc_locks)
   echo "locks:"; if [ -n "$out" ]; then printf '%s\n' "$out"; else echo "  none held or queued here or machine-wide"; fi
+  fable_status | grep -v 'blocked (backstop on)'
 
   if [ $apply = 0 ]; then
     [ $((n1 + n2 + n3)) -gt 0 ] && echo "act on the FINISHED and lost ones (nothing else is touched): handoffs/bin/jarvis doctor --apply"
@@ -1587,6 +1657,365 @@ cmd_watch() {
   while :; do sleep "$JARVIS_WATCH_SEC"; watch_tick; done
 }
 
+# ---------------------------------------------------------------- fable
+
+# No worker starts on Fable unless the user authorized that exact brief, once, at a
+# real terminal: a Claude worker, or any other whose model names fable (an agent of
+# jarvis.conf or a Superset agent config may wrap claude). `jarvis fable allow <brief>` reads the brief's slug from /dev/tty,
+# which an agent's Bash tool doesn't have, and refuses when an agent CLI is among its
+# parent processes or has left its variables in the environment. That is a speed bump,
+# not a lock: an agent set on it can still open a pty of its own, detach from its
+# parent, or write a record by hand. The layers left then are the audit log, the
+# PreToolUse hook (no Fable subagent, no Fable put into a settings allowlist) and the
+# backstop: a user-level availableModels without Fable, which Claude Code enforces by
+# running the default model instead, Agent-tool overrides included. The backstop alone
+# holds against a Bash command editing a settings file and an agent definition's
+# model: fable; nothing here checks those.
+#
+# An authorization is a record in $FABLE_DIR/pending/: the brief's physical path, the
+# sha256 of the brief without its started: lines (spawn rewrites those), this
+# checkout's root and when it was allowed. Spawn moves it into used/, the run's name
+# appended, right before the launch, and host() checks that it did. Anything missing,
+# unreadable, edited, from another checkout or older than JARVIS_FABLE_TTL_MIN refuses;
+# so does a red band, --force or not. Every allow, deny, consume and revoke is one line
+# of $FABLE_DIR/audit.log. Allowlists merge across settings files (an entry in any
+# scope lets a model in), so a project or local settings file listing fable undoes the
+# backstop: spawn refuses while one exists here, and status and doctor name it.
+
+FABLE_DIR="${JARVIS_HOME:-$HOME/.jarvis}/fable"
+FABLE_ALLOWED='["opus","sonnet","haiku"]'   # the backstop's availableModels: aliases cover the full ids
+FABLE_SETTINGS='{"availableModels":["opus","sonnet","haiku","fable"]}'   # added to one authorized launch
+FABLE_SUPERSET_MSG="Superset can't pass --settings to a single launch, so under the backstop an authorized fable worker would run on Opus. Set JARVIS_FABLE_SUPERSET_AGENT in $H/jarvis.conf (see the comment there), run Jarvis on tmux or Ultron, or use worker: codex, model: gpt-6-astra"
+FABLE_REMAP_VARS="ANTHROPIC_MODEL ANTHROPIC_DEFAULT_OPUS_MODEL ANTHROPIC_DEFAULT_SONNET_MODEL ANTHROPIC_DEFAULT_HAIKU_MODEL ANTHROPIC_SMALL_FAST_MODEL CLAUDE_CODE_SUBAGENT_MODEL"
+FABLE_WHY=""
+FABLE_REC=""
+FABLE_LIFT=0
+
+# $1 agent, $2 model: fable for any agent whose model names it ([…] suffix aside: an
+# agent of jarvis.conf, or a Superset agent config, may wrap claude); for claude also
+# opus | sonnet | haiku, failing when it can't tell; other for any other agent's model
+model_canon() {
+  local m
+  m=$(printf '%s' "$2" | tr '[:upper:]' '[:lower:]')
+  case "${m%%\[*}" in *fable*) echo fable; return 0 ;; esac
+  [ "$1" = claude ] || { echo other; return 0; }
+  printf '%s' "$m" | grep -Eq '^[a-z0-9._:-]+(\[[a-z0-9._:-]*\])?$' || return 1
+  case "$m" in *fable*) echo fable; return 0 ;; esac
+  m=${m%%\[*}
+  case "$m" in
+    opus|claude-opus-*) echo opus ;;
+    sonnet|claude-sonnet-*) echo sonnet ;;
+    haiku|claude-haiku-*) echo haiku ;;
+    *) return 1 ;; # best, default, opusplan, empty, unknown: any of them might resolve to Fable
+  esac
+}
+
+model_refusal() {
+  echo "model '$1' isn't one jarvis can resolve for a Claude worker, and an alias it can't resolve might be Fable: use model: claude-opus-5-5, sonnet or haiku"
+}
+
+fable_needs() { # $1 = brief
+  echo "fable needs your authorization for this brief: run handoffs/bin/jarvis fable allow $1 in your own terminal — or use worker: codex, model: gpt-6-astra"
+}
+
+fable_log() { # $1 event, $2 brief, $3 hash, $4 run, $5 reason: one line of the audit log; fails when it can't write
+  ( umask 077; mkdir -p "$FABLE_DIR" \
+    && printf '%s %s root=%s brief=%s hash=%s run=%s reason=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$1" "$ROOT" \
+      "${2:--}" "${3:--}" "${4:--}" "$(printf '%s' "${5:--}" | tr '\n' ' ')" >> "$FABLE_DIR/audit.log" ) 2>/dev/null
+}
+
+fable_refuse() { # $1 brief, $2 run, $3 reason for the log, $4 message: log a deny, then stop
+  fable_log deny "$1" - "$2" "$3"
+  die "$4"
+}
+
+phys_path() { (cd "$(dirname "$1")" 2>/dev/null && printf '%s/%s\n' "$(pwd -P)" "$(basename "$1")"); }
+
+brief_hash() { # $1 = brief: sha256 of it without its started: lines
+  local h
+  [ -r "$1" ] || return 1
+  if have shasum; then h=$(grep -v '^started:' "$1" | shasum -a 256)
+  elif have sha256sum; then h=$(grep -v '^started:' "$1" | sha256sum)
+  else return 1; fi
+  h=${h%% *}
+  [ ${#h} = 64 ] && echo "$h"
+}
+
+rec_get() { awk -v k="$2" 'index($0, k ": ") == 1 {print substr($0, length(k) + 3); exit}' "$1" 2>/dev/null; } # $1 record, $2 key
+
+# The usable pending record for brief $1, in FABLE_REC; else FABLE_WHY says what's wrong.
+fable_find() {
+  local p h root f t ttl
+  FABLE_REC=""
+  FABLE_WHY="no authorization for this brief"
+  p=$(phys_path "$1") && h=$(brief_hash "$1") || { FABLE_WHY="can't read or hash the brief"; return 1; }
+  root=$(cd "$ROOT" && pwd -P)
+  ttl=$JARVIS_FABLE_TTL_MIN
+  case "$ttl" in ""|*[!0-9]*) ttl=0 ;; esac
+  for f in "$FABLE_DIR"/pending/*; do
+    [ -f "$f" ] || continue
+    [ -r "$f" ] && [ -O "$f" ] || { FABLE_WHY="an authorization record is unreadable or not yours"; continue; }
+    [ "$(rec_get "$f" brief)" = "$p" ] && [ "$(rec_get "$f" root)" = "$root" ] || continue
+    [ "$(rec_get "$f" hash)" = "$h" ] || { FABLE_WHY="the brief changed after it was authorized"; continue; }
+    t=$(rec_get "$f" allowed)
+    case "$t" in ""|*[!0-9]*) FABLE_WHY="an authorization record is malformed"; continue ;; esac
+    [ $(( $(now) - t )) -lt $((ttl * 60)) ] || { FABLE_WHY="the authorization expired (they last $ttl min)"; continue; }
+    FABLE_REC=$f
+    return 0
+  done
+  return 1
+}
+
+fable_consume() { # $1 brief, $2 run: use the authorization up, or refuse
+  local h u
+  fable_find "$1" || fable_refuse "$1" "$2" "consume: $FABLE_WHY" "$(fable_needs "$1") [$FABLE_WHY]"
+  h=$(rec_get "$FABLE_REC" hash)
+  u="$FABLE_DIR/used/$(basename "$FABLE_REC").$2"
+  ( umask 077; mkdir -p "$FABLE_DIR/used" ) 2>/dev/null
+  # rename(2): of two spawns racing for one record, one gets it
+  mv "$FABLE_REC" "$u" 2>/dev/null && [ ! -e "$FABLE_REC" ] \
+    || fable_refuse "$1" "$2" "consume: can't move the record into used/" "$(fable_needs "$1") [its authorization couldn't be used up: is $FABLE_DIR writable?]"
+  printf 'consumed: %s\nrun: %s\n' "$(now)" "$2" >> "$u" 2>/dev/null \
+    || fable_refuse "$1" "$2" "consume: can't write the used record" "$(fable_needs "$1") [can't write $u]"
+  fable_log consume "$1" "$h" "$2" "spawn" \
+    || die "$(fable_needs "$1") [can't write the audit log $FABLE_DIR/audit.log]"
+}
+
+# Refuse a Claude launch while an alias variable, in this environment or a settings
+# file's env, points at Fable, or while this checkout's own settings let Fable in.
+fable_preflight() { # $1 brief, $2 run
+  local v val f
+  for v in $FABLE_REMAP_VARS; do
+    eval "val=\${$v:-}"
+    case "$(printf '%s' "$val" | tr '[:upper:]' '[:lower:]')" in
+      *fable*) fable_refuse "$1" "$2" "preflight: $v names fable" "$v=$val points a model alias at Fable: unset it before spawning a Claude worker" ;;
+    esac
+  done
+  have jq || fable_refuse "$1" "$2" "preflight: no jq" "jq is needed to check the settings files for Fable"
+  # every settings file a worker here reads: user-level (Superset's default account
+  # too), project, local. An alias variable in env, or modelOverrides, naming fable.
+  while IFS= read -r f; do
+    [ -f "$f" ] || continue
+    v=$(jq -r --arg vars " $FABLE_REMAP_VARS " '((.env // {}) | if type == "object" then to_entries[] else empty end
+        | .key as $k | select(($vars | index(" " + $k + " ")) and (.value | tostring | ascii_downcase | test("fable"))) | $k),
+      (if (.modelOverrides // {}) | tostring | ascii_downcase | test("fable") then "modelOverrides" else empty end)' "$f" 2>/dev/null | head -n 1)
+    case "$v" in
+      "") ;;
+      modelOverrides) fable_refuse "$1" "$2" "preflight: $f modelOverrides names fable" "$f has a modelOverrides entry naming Fable: take it out before spawning a Claude worker" ;;
+      *) fable_refuse "$1" "$2" "preflight: $f env $v names fable" "$f sets $v to Fable in its env: take it out before spawning a Claude worker" ;;
+    esac
+  done <<EOF
+$(backstop_files)
+$ROOT/.claude/settings.json
+$ROOT/.claude/settings.local.json
+EOF
+  f=$(fable_holes | head -n 1)
+  [ -z "$f" ] || fable_refuse "$1" "$2" "preflight: $f lists fable" "$f lists fable in availableModels, and allowlists merge across settings files, so it re-opens Fable for every session in this checkout, backstop or not: take it out"
+}
+
+fable_holes() { # this checkout's settings files whose availableModels lets Fable in (unparseable + mentions fable counts)
+  local f
+  for f in .claude/settings.json .claude/settings.local.json; do
+    [ -f "$ROOT/$f" ] || continue
+    if have jq && jq empty "$ROOT/$f" 2>/dev/null; then
+      jq -e '(.availableModels // []) | if type == "array" then map(tostring | ascii_downcase | test("fable")) | any
+             else tostring | ascii_downcase | test("fable") end' "$ROOT/$f" >/dev/null 2>&1 && echo "$f"
+    else
+      grep -qi fable "$ROOT/$f" && echo "$f"
+    fi
+  done
+}
+
+# The final check, from host() before any spawn (cmd_spawn's, a custom host's, a future
+# caller's): the model resolves, nothing remaps it, and a Fable run has an authorization
+# that spawn used up for this very run in the last two minutes, not yet launched.
+# $@ = the spawn arguments: agent model effort prompt name.
+fable_final() {
+  local canon f u="" c root
+  FABLE_LIFT=0
+  canon=$(model_canon "$1" "$2") || fable_refuse - "$5" "final check: model '$2' can't be resolved" "$(model_refusal "$2")"
+  [ "$1" = claude ] || [ "$canon" = fable ] || return 0
+  fable_preflight - "$5"
+  [ "$canon" = fable ] || return 0
+  root=$(cd "$ROOT" && pwd -P)
+  for f in "$FABLE_DIR"/used/*."$5"; do
+    [ -f "$f" ] && [ -O "$f" ] && [ "$(rec_get "$f" run)" = "$5" ] && [ "$(rec_get "$f" root)" = "$root" ] || continue
+    grep -q '^launched:' "$f" && continue
+    c=$(rec_get "$f" consumed)
+    case "$c" in ""|*[!0-9]*) continue ;; esac
+    [ $(( $(now) - c )) -le 120 ] || continue
+    u=$f
+    break
+  done
+  [ -n "$u" ] || fable_refuse - "$5" "final check: no authorization used up for this run" \
+    "fable needs your authorization: no authorization was used up for run '$5'. Spawn it with handoffs/bin/jarvis spawn after the user runs handoffs/bin/jarvis fable allow <brief> — or use worker: codex, model: gpt-6-astra"
+  printf 'launched: %s\n' "$(now)" >> "$u" 2>/dev/null || fable_refuse - "$5" "final check: can't mark the record launched" "can't write $u"
+  FABLE_LIFT=1
+}
+
+under_agent() { # prints why, when an agent CLI runs this: its variables, or one among the parent processes
+  local v c p
+  for v in CLAUDECODE CLAUDE_CODE_SESSION_ID CLAUDE_CODE_ENTRYPOINT CLAUDE_PID OPENCODE; do
+    eval "c=\${$v:-}"
+    [ -z "$c" ] || { echo "$v is set, so this runs inside an agent"; return 0; }
+  done
+  # CODEX_HOME is the user's own setting; Codex sets other CODEX_ variables for what it runs
+  v=$(env | sed -n 's/^\(CODEX_[A-Z0-9_]*\)=.*/\1/p' | grep -vx CODEX_HOME | head -n 1)
+  [ -z "$v" ] || { echo "$v is set, so this runs inside an agent"; return 0; }
+  for p in $(ancestors); do
+    c=$(ps -ww -o command= -p "$p" 2>/dev/null)
+    printf '%s\n' "$c" | awk '{ a = $1; sub(/.*\//, "", a); sub(/\.(js|mjs|cjs|exe)$/, "", a)
+        if (a ~ /^(claude|codex|opencode)$/ || $1 ~ /\/claude\/versions\// \
+            || (a ~ /^(node|bun|deno)$/ && $2 ~ /(claude|codex|opencode)/)) f = 1 }
+      END { exit !f }' && { echo "an agent is among this command's parent processes (pid $p: $(printf '%s' "$c" | cut -c1-60))"; return 0; }
+  done
+  return 1
+}
+
+cmd_fable() {
+  local sub="${1:-}"
+  [ $# -gt 0 ] && shift
+  case "$sub" in
+    allow) fable_allow "$@" ;;
+    list) fable_list ;;
+    revoke) fable_revoke "$@" ;;
+    backstop) fable_backstop "$@" ;;
+    *) die "usage: jarvis fable allow <brief.md> | list | revoke <brief.md> | backstop [--apply]" ;;
+  esac
+}
+
+fable_allow() {
+  local brief="${1:-}" slug title typed p h root rec tmp why
+  [ -f "$brief" ] || die "usage: jarvis fable allow <handoffs/briefs/file.md>"
+  [ "$(model_canon "$(field worker "$brief" | awk '{print $1}')" "$(field model "$brief" | awk '{print $1}')" 2>/dev/null)" = fable ] \
+    || die "$brief isn't a Fable brief (its model: doesn't name fable): nothing to authorize"
+  if why=$(under_agent); then
+    fable_log deny "$brief" - - "allow: $why"
+    die "refused: $why. Only the user authorizes Fable: in your own terminal, run handoffs/bin/jarvis fable allow $brief"
+  fi
+  { : </dev/tty; } 2>/dev/null || {
+    fable_log deny "$brief" - - "allow: no terminal"
+    die "refused: there's no terminal to confirm on (/dev/tty won't open). Run it yourself, in your own terminal"
+  }
+  p=$(phys_path "$brief") && h=$(brief_hash "$brief") || die "can't read or hash $brief"
+  root=$(cd "$ROOT" && pwd -P)
+  slug=$(basename "$brief" .md | sed -E 's/^[0-9]{4}-[0-9]{2}-[0-9]{2}-[0-9]{4}-//')
+  title=$(sed -n '1s/^#[[:space:]]*//p' "$brief")
+  printf 'Authorize ONE Fable run of this brief:\n  %s\n  %s\n  in %s\nUsable once, for %s min. Type its slug to confirm: %s\n> ' \
+    "$title" "$brief" "$root" "$JARVIS_FABLE_TTL_MIN" "$slug" >/dev/tty
+  IFS= read -r typed </dev/tty || typed=""
+  if [ "$typed" != "$slug" ]; then
+    fable_log deny "$brief" "$h" - "allow: the slug typed didn't match"
+    die "not authorized: that isn't the slug"
+  fi
+  ( umask 077; mkdir -p "$FABLE_DIR/pending" ) 2>/dev/null && chmod 700 "$FABLE_DIR" "$FABLE_DIR/pending" 2>/dev/null \
+    && tmp=$(umask 077; mktemp "$FABLE_DIR/pending/.tmp.XXXXXX" 2>/dev/null) || die "can't write $FABLE_DIR/pending: not authorized"
+  rec="$FABLE_DIR/pending/$slug.$(now).$$"
+  { printf 'brief: %s\nhash: %s\nroot: %s\nallowed: %s\n' "$p" "$h" "$root" "$(now)" > "$tmp" && chmod 600 "$tmp" && mv "$tmp" "$rec"; } 2>/dev/null \
+    || { rm -f "$tmp"; die "can't write $rec: not authorized"; }
+  fable_log allow "$brief" "$h" - "typed at $(tty </dev/tty 2>/dev/null || echo a terminal)" \
+    || { rm -f "$rec"; die "can't write the audit log $FABLE_DIR/audit.log: not authorized"; }
+  echo "authorized: the next spawn of $brief may run on Fable, once, within $JARVIS_FABLE_TTL_MIN min"
+}
+
+fable_revoke() {
+  local brief="${1:-}" p f n=0
+  [ -f "$brief" ] || die "usage: jarvis fable revoke <handoffs/briefs/file.md>"
+  p=$(phys_path "$brief")
+  for f in "$FABLE_DIR"/pending/*; do
+    [ -f "$f" ] && [ "$(rec_get "$f" brief)" = "$p" ] || continue
+    rm -f "$f" && n=$((n + 1)) && fable_log revoke "$brief" "$(rec_get "$f" hash)" - "jarvis fable revoke"
+  done
+  echo "revoked $n pending authorization(s) for $brief"
+}
+
+fable_list() {
+  local f t ttl=$JARVIS_FABLE_TTL_MIN left any=0
+  case "$ttl" in ""|*[!0-9]*) ttl=0 ;; esac
+  echo "pending (in $FABLE_DIR):"
+  for f in "$FABLE_DIR"/pending/*; do
+    [ -f "$f" ] || continue
+    any=1
+    t=$(rec_get "$f" allowed)
+    case "$t" in ""|*[!0-9]*) t=0 ;; esac
+    left=$(( (t + ttl * 60 - $(now)) / 60 ))
+    printf '  %s · %s · %s\n' "$(rec_get "$f" brief)" "$(rec_get "$f" root)" \
+      "$(if [ "$left" -gt 0 ]; then echo "usable for $left more min"; else echo EXPIRED; fi)"
+  done
+  [ $any = 1 ] || echo "  none"
+  echo "used (latest 10):"
+  # shellcheck disable=SC2012
+  ls -t "$FABLE_DIR"/used/ 2>/dev/null | head -n 10 | while read -r f; do
+    f="$FABLE_DIR/used/$f"
+    printf '  %s · run %s · %s\n' "$(rec_get "$f" brief)" "$(rec_get "$f" run)" \
+      "$(if grep -q '^launched:' "$f"; then echo launched; else echo "used up, not launched"; fi)"
+  done
+  echo "log (latest 10):"
+  tail -n 10 "$FABLE_DIR/audit.log" 2>/dev/null | sed 's/^/  /' || true
+}
+
+backstop_files() { # the user-level settings Claude Code reads for workers: the config dir's, and Superset's default account's when it sets one
+  local d
+  echo "$CLAUDE_DIR/settings.json"
+  d=$(cat "${SUPERSET_HOME_DIR:-$HOME/.superset}/state/default-claude-config-dir" 2>/dev/null)
+  [ -n "$d" ] && [ "$d/settings.json" != "$CLAUDE_DIR/settings.json" ] && echo "$d/settings.json"
+  return 0
+}
+
+backstop_on() { # $1 = settings file: its availableModels is a non-empty list without Fable
+  have jq && [ -f "$1" ] && jq -e '(.availableModels | type == "array" and length > 0)
+    and ((.availableModels | map(tostring | ascii_downcase | test("fable")) | any) | not)' "$1" >/dev/null 2>&1
+}
+
+fable_status() { # `jarvis status`: one line, plus one per settings file here that re-opens Fable
+  local f off=0
+  if have jq; then
+    while IFS= read -r f; do [ -n "$f" ] && { backstop_on "$f" || off=1; }; done <<EOF
+$(backstop_files)
+EOF
+    if [ $off = 0 ]; then echo "fable: blocked (backstop on)"; else echo "fable: backstop off — handoffs/bin/jarvis fable backstop --apply"; fi
+  else
+    echo "fable: backstop not checked (no jq); spawn refuses Fable without your authorization anyway"
+  fi
+  fable_holes | while read -r f; do echo "fable: $f lists fable in availableModels, which re-opens it in this checkout — take it out"; done
+}
+
+fable_backstop() {
+  local apply=0 f tmp bak mode
+  case "${1:-}" in "") ;; --apply) apply=1 ;; *) die "usage: jarvis fable backstop [--apply]" ;; esac
+  have jq || die "jq is needed to read and write settings.json"
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    if backstop_on "$f"; then echo "on: $f has availableModels $(jq -c .availableModels "$f") — Fable is blocked"; continue; fi
+    if [ $apply = 0 ]; then
+      if [ -f "$f" ]; then echo "off: $f has availableModels $(jq -c '.availableModels // "(none)"' "$f" 2>/dev/null || echo '(unreadable)')"
+      else echo "off: $f doesn't exist"; fi
+      echo "  apply: handoffs/bin/jarvis fable backstop --apply (it lists $FABLE_ALLOWED; Claude Code then runs the default model instead of Fable)"
+      continue
+    fi
+    if [ -f "$f" ]; then
+      jq empty "$f" 2>/dev/null || die "$f isn't valid JSON: left as it is"
+      bak="$f.bak-jarvis-$(date +%Y%m%d%H%M%S)"
+      cp -p "$f" "$bak" || die "can't back $f up to $bak: left as it is"
+    else
+      mkdir -p "$(dirname "$f")" || die "can't create $(dirname "$f")"
+      bak=""
+    fi
+    tmp=$(mktemp "$f.jarvis.XXXXXX") || die "can't write beside $f"
+    # keep a list the user already narrowed, minus Fable; else the default list
+    { if [ -f "$f" ]; then cat "$f"; else echo '{}'; fi; } | jq --argjson a "$FABLE_ALLOWED" '
+      ((.availableModels // []) | if type == "array" then map(select(tostring | ascii_downcase | test("fable") | not)) else [] end) as $k
+      | .availableModels = (if ($k | length) > 0 then $k else $a end)' > "$tmp" || { rm -f "$tmp"; die "jq failed: $f left as it is"; }
+    if [ -f "$f" ]; then mode=$(stat -f %Lp "$f" 2>/dev/null || stat -c %a "$f" 2>/dev/null); [ -n "$mode" ] && chmod "$mode" "$tmp"; fi
+    mv "$tmp" "$f" || { rm -f "$tmp"; die "can't replace $f"; }
+    fable_log backstop - - - "applied to $f"
+    echo "applied: $f availableModels $(jq -c .availableModels "$f")${bak:+ (backup: $bak)}"
+  done <<EOF
+$(backstop_files)
+EOF
+  fable_holes | while read -r f; do echo "but: $f lists fable in availableModels, which re-opens it in this checkout — take it out"; done
+}
+
 # ---------------------------------------------------------------- hooks
 
 # UserPromptSubmit, Jarvis's terminal only: after a long idle the prompt cache has
@@ -1637,6 +2066,64 @@ hook_prompt() {
     '{decision: "block", reason: $r}'
 }
 
+# PreToolUse, every session in the checkout: deny an Agent/Task call whose model is
+# Fable, and an Edit/Write/MultiEdit after which a settings file lets Fable in: in
+# availableModels (that re-opens it: allowlists merge), modelOverrides, or an alias
+# variable in env. A settings file is rebuilt as the edit would leave it and parsed by
+# jq, which decodes \u escapes, so neither escapes nor a word split across edits get
+# past. The top of this script has already left unless the input names fable or a
+# settings*.json file. No jq, or input that doesn't parse: allow, and the backstop
+# covers it. Not covered (documented limits; the backstop is what holds there): a Bash
+# command writing the file, a symlink to it, an agent definition's model: fable.
+hook_pretool() {
+  local in tool m f lf d why=""
+  in=${JARVIS_HOOK_IN:-}
+  have jq || exit 0
+  tool=$(printf '%s' "$in" | jq -r '.tool_name // empty' 2>/dev/null) || exit 0
+  case "$tool" in
+    Agent|Task)
+      m=$(printf '%s' "$in" | jq -r '.tool_input.model // empty' 2>/dev/null)
+      case "$(printf '%s' "$m" | tr '[:upper:]' '[:lower:]')" in
+        *fable*) why="Fable is off for subagents here: use model: \"sonnet\" (or leave model out; subagents default to Sonnet)" ;;
+      esac ;;
+    Edit|Write|MultiEdit)
+      f=$(printf '%s' "$in" | jq -r '.tool_input.file_path // empty' 2>/dev/null)
+      # case-blind, as macOS paths are: .claude/Settings.json is the same file
+      lf=$(printf '%s' "$f" | tr '[:upper:]' '[:lower:]')
+      case "$lf" in
+        */.claude/settings*.json|.claude/settings*.json) ;;
+        *) while IFS= read -r d; do
+             d=$(dirname "$d" | tr '[:upper:]' '[:lower:]')
+             case "$lf" in "$d"/settings*.json) d=hit; break ;; esac
+           done <<EOF
+$(backstop_files)
+EOF
+           [ "$d" = hit ] || exit 0 ;;
+      esac
+      # the file as it would be after the edit; text that isn't JSON counts if it names fable
+      m=$(printf '%s' "$in" | jq -r --arg cur "$(cat "$f" 2>/dev/null)" --arg vars " $FABLE_REMAP_VARS " '
+        def rep($s; $o; $n; $all): ($s | split($o)) as $p
+          | if ($p | length) < 2 then $s elif $all then $p | join($n) else $p[0] + $n + ($p[1:] | join($o)) end;
+        .tool_input as $t
+        | (if .tool_name == "Write" then ($t.content // "")
+           elif .tool_name == "Edit" then rep($cur; $t.old_string // ""; $t.new_string // ""; $t.replace_all // false)
+           else reduce ($t.edits // [])[] as $e ($cur; rep(.; $e.old_string // ""; $e.new_string // ""; $e.replace_all // false)) end) as $new
+        | ($new | try fromjson catch null) as $j
+        | def fab: tostring | ascii_downcase | test("fable");
+          if ($j | type) == "object" then
+            (($j.availableModels // []) | if type == "array" then map(fab) | any else fab end)
+            or (($j.modelOverrides // {}) | fab)
+            or (($j.env // {}) | if type == "object" then to_entries | map(select(.key as $k | $vars | index(" " + $k + " ")) | .value | fab) | any else false end)
+          else ($new | ascii_downcase | test("fable")) end' 2>/dev/null)
+      [ "$m" = true ] && why="After this edit $f lets Fable in (availableModels, modelOverrides or a model alias in env). Allowlists merge across settings files, so that re-opens Fable for every session that reads it. Leave it out: only the user authorizes Fable, one brief at a time (handoffs/bin/jarvis fable allow)."
+      m=$f ;;
+    *) exit 0 ;;
+  esac
+  [ -n "$why" ] || exit 0
+  fable_log deny - - "$(printf '%s' "$in" | jq -r '.session_id // "-"' 2>/dev/null)" "hook: $tool ${m:--}"
+  jq -n --arg r "$why" '{hookSpecificOutput: {hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: $r}}'
+}
+
 # Statusline tap: Claude Code hands the statusline its rate-limit numbers. Save
 # them for `jarvis band`, then run the user's own statusline unchanged.
 cmd_statusline() {
@@ -1666,7 +2153,7 @@ cmd_usage() {
   have jq || die "jq is needed for jarvis usage"
   audit="$(cd "$(dirname "$0")" && pwd)/cc_usage_audit.py"
   [ -f "$audit" ] || die "no $audit — re-run jarvis:setup"
-  set -- --project="$PROJ" \
+  set -- --project="$PROJ" --repo-root="$ROOT" --usage-file="$STATE/usage.json" --top=5 \
     --role worker='^You are a Jarvis worker' \
     --role-tool orchestrator='superset agents create|ultron agent spawn|handoffs/bin/jarvis (start|status|spawn|merge|send|read|close)' \
     --bash-category coordination='terminals (read|send|list|close)|term (read|send|list|close)|chat send|tmux |handoffs/|OPEN\.md|jev\.sh|bin/jarvis' \
@@ -1676,15 +2163,38 @@ cmd_usage() {
   merged=$(git log --since="$since_arg" --diff-filter=A --name-only --format= -- "$H/merged/*.md" 2>/dev/null | grep -c '\.md$')
   printf '%s' "$json" | jq -r --argjson merged "$merged" '
     def usd: "$" + ((. * 100 | round) / 100 | tostring);
+    def age:
+      if . < 3600 then ((. / 60 | floor | tostring) + "m")
+      else ((. / 3600 | floor | tostring) + "h" + (((. % 3600) / 60 | floor) | tostring) + "m") end;
     def role(r): [.by_role | to_entries[] | select(.key == r or .key == (r + " > subagents")) | .value.usd] | add // 0;
     (role("orchestrator")) as $coord | (role("worker")) as $build
-    | "jarvis usage · \(.period[0][0:16]) → \(.period[1][0:16]) · \(.total_usd | usd) in this repo at API prices",
+    | (if has("machine_peak_concurrent_sessions_10min") then "all projects" else "this repo" end) as $scope
+    | (if $scope == "all projects" then ([.briefs[] | select(.outcome == "merged")] | length) else $merged end) as $merged_count
+    | "jarvis usage · \(.period[0][0:16]) → \(.period[1][0:16])",
+      "API-equivalent estimate at list prices (not your subscription usage): \(.total_usd | usd) in \($scope)",
+      (if .subscription_usage then
+         "subscription usage: 5h \(.subscription_usage.five_hour_pct // "?")% · 7d \(.subscription_usage.seven_day_pct // "?")% · reading \(.subscription_usage.age_seconds | age) old"
+       else "subscription usage: no reading — check /usage" end),
+      "",
       "  coordinating (Jarvis + its subagents): \($coord | usd)",
       "  building (workers + their subagents):  \($build | usd)",
       "  coordinating ÷ building: \(if $build > 0 then ($coord / $build * 100 | round) / 100 else "n/a" end)   (target ≤ 0.3)",
-      "  merged handoffs: \($merged) · cost per merged handoff: \(if $merged > 0 then (($coord + $build) / $merged) | usd else "n/a" end)",
+      "  merged handoffs: \($merged_count) · cost per merged handoff: \(if $merged_count > 0 then (($coord + $build) / $merged_count) | usd else "n/a" end)",
       "  worst 5-hour window: \(.peak_window_usd | usd) · most sessions in one 10-min slot: \(.peak_concurrent_sessions_10min)",
+      (if has("machine_peak_concurrent_sessions_10min") then "  machine-wide peak across all projects: \(.machine_peak_concurrent_sessions_10min) sessions / 10 min" else empty end),
       "  cache reloads after idle (Jarvis): \([.reloads[] | select(.role == "orchestrator" and .cause == "after idle")] | "\(map(.turns) | add // 0) turns, \(map(.usd) | add // 0 | usd)")",
+      "",
+      "  Workers (top 5 by API-equivalent cost):",
+      (.workers[:5][]? | "    \(.brief) · \(.model) · \(.turns) turns · \(.usd | usd) · context \((.start_ctx / 1000) | round)k→\((.peak_ctx / 1000) | round)k · \((.wall_seconds / 60) | round)m · \(.outcome)"),
+      "  Most expensive briefs:",
+      (.top_briefs[]? | "    \(.brief) · \(.sessions) attempt\(if .sessions == 1 then "" else "s" end) · \(.usd | usd) · \(.outcome)"),
+      "",
+      "  Waste signals:",
+      "    abandoned: \(.abandoned.sessions) sessions · \(.abandoned.usd | usd)",
+      "    repeated attempts: \(.repeated_attempts.briefs) briefs · \(.repeated_attempts.extra_sessions) extra sessions · \(.repeated_attempts.extra_usd | usd) extra",
+      "    failed test runs (workers with 3+): \(if (.failed_test_runs | length) == 0 then "none" else [.failed_test_runs[] | "\(.brief) \(.count)"] | join(", ") end)",
+      "    stale open >8h and idle >1h: \(if (.stale_open_sessions | length) == 0 then "none" else [.stale_open_sessions[].name] | join(", ") end)",
+      "    worker cost above 150k context: \((.context_growth.worker_usd_above_150k_share * 100) | round)% · peak p50 \(((.context_growth.peak_ctx_p50 // 0) / 1000) | round)k · p90 \(((.context_growth.peak_ctx_p90 // 0) / 1000) | round)k",
       "",
       "  Jarvis by model (for comparing coordinator configs):",
       ([.by_role_model[]? | select(.role == "orchestrator")] | sort_by(-.usd)[]
@@ -1794,9 +2304,11 @@ case "$cmd" in
   watch) cmd_watch "$@" ;;
   usage) cmd_usage "$@" ;;
   statusline) cmd_statusline ;;
+  fable) cmd_fable "$@" ;;
   hook)
     case "${1:-}" in
       prompt) hook_prompt ;;
+      pretool) hook_pretool ;;
       *) exit 0 ;;
     esac ;;
   *) awk 'NR > 1 && !/^#/ {exit} NR > 1 {sub(/^# ?/, ""); print}' "$0"; exit 2 ;;

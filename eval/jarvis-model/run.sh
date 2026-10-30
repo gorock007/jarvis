@@ -24,7 +24,7 @@ here=$(cd "$(dirname "$0")" && pwd)
 repo=$(cd "$here/../.." && pwd)
 refs="$repo/plugins/jarvis/skills"
 
-CONFIGS="fable-high:fable:high,opus55-high:claude-opus-5-5:high,opus55-xhigh:claude-opus-5-5:xhigh"
+CONFIGS="opus55-high:claude-opus-5-5:high,opus55-xhigh:claude-opus-5-5:xhigh"
 TASKS="routing,review"
 LIMIT=0 ONLY="" REPEAT=1 JOBS=3 OUT="" DRY=0
 while [ $# -gt 0 ]; do

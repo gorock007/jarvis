@@ -165,8 +165,13 @@ cmd_brief() {
     --arg worker "$(printf '%s\n' "$header" | sed -n 's/^worker:[[:space:]]*//p' | head -n 1)" \
     --arg jmodel "$(printf '%s\n' "$header" | sed -n 's/^model:[[:space:]]*//p' | head -n 1)" \
     --arg effort "$(printf '%s\n' "$header" | sed -n 's/^effort:[[:space:]]*//p' | head -n 1)" '
-    def tier_of: {"fable":"top","gpt-6-astra":"top","opus":"workhorse","claude-opus-5-5":"workhorse","gpt-5.6-sol":"workhorse",
-      "sonnet":"light","gpt-5.6-terra":"light","haiku":"trivial","gpt-5.6-luna":"trivial"}[.] // null;
+    # Claude aliases by their canonical name, as bin/jarvis model_canon does
+    def tier_of: if type != "string" then null else (ascii_downcase | sub("\\[.*$"; "")) as $m
+      | if ($m | test("fable")) then "top"
+        elif ($m | test("^(opus|claude-opus-)")) then "workhorse"
+        elif ($m | test("^(sonnet|claude-sonnet-)")) then "light"
+        elif ($m | test("^(haiku|claude-haiku-)")) then "trivial"
+        else {"gpt-6-astra":"top","gpt-5.6-sol":"workhorse","gpt-5.6-terra":"light","gpt-5.6-luna":"trivial"}[$m] // null end end;
     def p(k): .answers[k].noul // 0;
     . as $r
     # "opus (amber band; fable-tier task)" was a fable-tier call: compare on intent.
