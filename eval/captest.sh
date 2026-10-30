@@ -94,14 +94,15 @@ echo "machine-wide cap"
 green; reset
 for i in 1 2 3 4; do sess "$tmp/o$i" busy 5 claude-sonnet-5-5 >/dev/null; done
 out=$(spawn A son 2>&1); rc=$?
-[ $rc = 1 ] && printf '%s' "$out" | grep -q 'Claude cap reached: machine-wide, 5 of 4'; check "4 active sessions in other projects → refused" $?
+[ $rc = 1 ] && printf '%s' "$out" | grep -q 'Claude cap reached: machine-wide, 4 of 4'; check "4 active sessions in other projects → refused (Jarvis here not counted)" $?
 printf '%s' "$out" | grep -q "pid [0-9]* · $tmp/o1 · sonnet · busy" && printf '%s' "$out" | grep -q 'Options: queue it under To-do' \
   && printf '%s' "$out" | grep -q 'close one of your own idle sessions'; check "…naming the sessions (pid, project, model) and the options" $?
 [ ! -d "$JARVIS_HOME/spawning" ] || [ -z "$(ls "$JARVIS_HOME/spawning")" ]; check "…and leaves no pending entry" $?
 out=$(spawn A cx 2>&1); check "a Codex worker isn't held by the Claude caps" $?
 reset
 for i in 1 2; do sess "$tmp/o$i" busy 5 claude-sonnet-5-5 >/dev/null; done
-spawn A son >/dev/null 2>&1; check "2 elsewhere + Jarvis here → spawned (4th slot)" $?
+sess "$tmp/o3" busy 5 claude-sonnet-5-5 >/dev/null
+spawn A son >/dev/null 2>&1; check "3 elsewhere + Jarvis here → spawned (4th slot)" $?
 
 echo "what counts"
 reset
@@ -109,20 +110,20 @@ for i in 1 2 3 4 5; do sess "$tmp/o$i" idle 10800 claude-sonnet-5-5 >/dev/null; 
 spawn A son >/dev/null 2>&1; check "sessions idle for hours don't count" $?
 reset
 for i in 1 2 3 4 5; do sess "$tmp/o$i" idle 10800 claude-sonnet-5-5 >/dev/null; done
-for i in 6 7 8; do sess "$tmp/o$i" busy 10800 claude-sonnet-5-5 >/dev/null; done
-spawn A son >/dev/null 2>&1; [ $? = 1 ]; check "a busy one does, however long ago it was updated (3 busy + Jarvis)" $?
+for i in 6 7 8 9; do sess "$tmp/o$i" busy 10800 claude-sonnet-5-5 >/dev/null; done
+spawn A son >/dev/null 2>&1; [ $? = 1 ]; check "a busy one does, however long ago it was updated (4 busy)" $?
 reset
-for i in 1 2 3; do sess "$tmp/o$i" idle 120 claude-sonnet-5-5 >/dev/null; done
+for i in 1 2 3 4; do sess "$tmp/o$i" idle 120 claude-sonnet-5-5 >/dev/null; done
 spawn A son >/dev/null 2>&1; [ $? = 1 ]; check "an idle one updated 2 min ago counts (recent)" $?
 reset
 true & dead=$!; wait "$dead"
 printf '{"pid":%s,"sessionId":"sdead","cwd":"%s/o1","procStart":"Thu Jan  1 00:00:00 2026","status":"busy","updatedAt":%s000,"entrypoint":"cli"}\n' \
   "$dead" "$tmp" "$(date +%s)" > "$CLAUDE_CONFIG_DIR/sessions/$dead.json"
 reused=$(sess "$tmp/o2" busy 5 claude-sonnet-5-5 cli "Thu Jan  1 00:00:00 2026")
-for i in 3 4; do sess "$tmp/o$i" busy 5 claude-sonnet-5-5 >/dev/null; done
+for i in 3 4 5; do sess "$tmp/o$i" busy 5 claude-sonnet-5-5 >/dev/null; done
 out=$(J B sessions)
 ! printf '%s' "$out" | grep -q "^  $dead " && ! printf '%s' "$out" | grep -q "^  $reused "; check "a dead PID and a reused one (procStart differs) aren't listed" $?
-spawn A son >/dev/null 2>&1; check "…and don't count (2 real + Jarvis → spawned)" $?
+spawn A son >/dev/null 2>&1; check "…and don't count (3 real → spawned)" $?
 reset
 for i in 1 2 3 4; do sess "$tmp/o$i" busy 5 claude-sonnet-5-5 sdk-py >/dev/null; done
 sess "$tmp/o5" busy 5 claude-sonnet-5-5 sdk-ts >/dev/null
@@ -133,7 +134,8 @@ reset
 sess "$tmp/A" busy 5 claude-sonnet-5-5 >/dev/null; sess "$tmp/A" busy 5 claude-sonnet-5-5 >/dev/null
 sess "$tmp/A/sub" busy 5 claude-sonnet-5-5 >/dev/null
 out=$(spawn A son 2>&1); [ $? = 1 ] && printf '%s' "$out" | grep -q 'Claude cap reached: this checkout, 3 of 3'; check "3 active sessions in this checkout (one in a subfolder) → refused (per checkout)" $?
-out=$(spawn B son 2>&1); [ $? = 1 ] && printf '%s' "$out" | grep -q 'machine-wide, 4 of 4'; check "…and the other repo counts them machine-wide (3 + its Jarvis = 4 → refused)" $?
+sess "$tmp/o1" busy 5 claude-sonnet-5-5 >/dev/null
+out=$(spawn B son 2>&1); [ $? = 1 ] && printf '%s' "$out" | grep -q 'machine-wide, 4 of 4'; check "…and the other repo counts them machine-wide (3 + 1 elsewhere = 4 → refused)" $?
 reset
 sess "$tmp/o1" busy 5 claude-opus-5-5 >/dev/null; unk=$(sess "$tmp/o2" busy 5 -)
 out=$(spawn A opus 2>&1); [ $? = 1 ] && printf '%s' "$out" | grep -q 'Claude cap reached: Opus, 2 of 2'; check "Opus 2: one opus + one whose model can't be told → refused" $?
@@ -145,14 +147,14 @@ J B sessions | grep -q ' busy    unknown '; check "a transcript whose last model
 
 echo "race and pending spawns"
 reset
-for i in 1 2; do sess "$tmp/o$i" busy 5 claude-sonnet-5-5 >/dev/null; done
+for i in 1 2 3; do sess "$tmp/o$i" busy 5 claude-sonnet-5-5 >/dev/null; done
 (spawn A son > "$tmp/ra" 2>&1; echo $? > "$tmp/ra.rc") & pa=$!
 (spawn B son > "$tmp/rb" 2>&1; echo $? > "$tmp/rb.rc") & pb=$!
 wait "$pa" "$pb"
 [ "$(cat "$tmp/ra.rc")$(cat "$tmp/rb.rc")" = 01 ] || [ "$(cat "$tmp/ra.rc")$(cat "$tmp/rb.rc")" = 10 ]; check "two repos racing for the last slot: exactly one spawns" $?
 cat "$tmp/ra" "$tmp/rb" | grep -q 'pending spawn son\.'; check "…the other is refused by the winner's pending spawn" $?
 reset
-for i in 1 2; do sess "$tmp/o$i" busy 5 claude-sonnet-5-5 >/dev/null; done
+for i in 1 2 3; do sess "$tmp/o$i" busy 5 claude-sonnet-5-5 >/dev/null; done
 spawn A son >/dev/null 2>&1
 J B sessions | grep -q "^  -       pending sonnet  $tmp/A  son\."; check "a spawn counts as pending, machine-wide" $?
 spawn B son >/dev/null 2>&1; [ $? = 1 ]; check "…and holds its slot (B refused)" $?
@@ -184,6 +186,41 @@ wp=$(sess "$tmp/A" idle 10800 -); echo "s$wp" > "$tmp/A/handoffs/.jarvis/session
 out=$(J A sessions)
 printf '%s' "$out" | grep -q "^  $jp  *jarvis  opus " && printf '%s' "$out" | grep -q "^  $wp  *jarvis  sonnet "; check "Jarvis and its running worker count while idle, the worker on its registry model" $?
 ! J B sessions | grep -q "^  $jp "; check "…but another repo's idle Jarvis doesn't count there" $?
+
+echo "the machine-wide and Opus caps count workers, not Jarvis"
+jt() { echo "s$2" > "$tmp/$1/handoffs/.jarvis/sessions/jarvis-t"; } # $1 repo, $2 pid: that repo's Jarvis session
+js() { sess "$tmp/$1" busy 5 claude-opus-5-5 cli "" 3600; } # a Jarvis on Opus, started an hour ago (not a new worker's)
+mkdir -p "$tmp/B/handoffs/.jarvis/sessions"; mk A opus2 claude claude-opus-5-5; mk A opus3 claude claude-opus-5-5
+reset; jp=$(js A); jt A "$jp"
+echo 'JARVIS_MAX_CLAUDE=10' >> "$tmp/A/handoffs/jarvis.conf"  # isolate the Opus cap from the per-checkout one
+spawn A opus >/dev/null 2>&1 && spawn A opus2 >/dev/null 2>&1; check "this checkout's Jarvis on Opus (busy) + 1 Opus worker → a 2nd Opus worker spawns" $?
+out=$(spawn A opus3 2>&1); [ $? = 1 ] && printf '%s' "$out" | grep -q 'Claude cap reached: Opus, 2 of 2' && ! printf '%s' "$out" | grep -q "pid $jp "
+check "…a 3rd is refused, Jarvis not named among the holders" $?
+sed -i.bak '$d' "$tmp/A/handoffs/jarvis.conf" && rm -f "$tmp/A/handoffs/jarvis.conf.bak"
+reset; jt B "$(js B)"; sess "$tmp/o1" busy 5 claude-opus-5-5 >/dev/null
+spawn A opus >/dev/null 2>&1; check "another repo's Jarvis on Opus (its sessions file) doesn't count toward Opus" $?
+reset; rm -f "$tmp/B/handoffs/.jarvis/sessions/jarvis-t"; bj=$(js B)
+jq -n --arg s "s$bj" '{terminal: "jarvis-t", session_id: $s}' > "$tmp/B/handoffs/.jarvis/session.json"
+sess "$tmp/o1" busy 5 claude-opus-5-5 >/dev/null
+spawn A opus >/dev/null 2>&1; check "…nor one named by its session.json" $?
+rm -f "$tmp/B/handoffs/.jarvis/session.json"
+reset; jt B 0; sess "$tmp/B" busy 5 claude-opus-5-5 >/dev/null; sess "$tmp/o1" busy 5 claude-opus-5-5 >/dev/null
+out=$(spawn A opus 2>&1); [ $? = 1 ] && printf '%s' "$out" | grep -q 'Opus, 2 of 2'; check "a non-Jarvis Opus session in another Jarvis repo (the user's own) still counts" $?
+reset; jt A "$(js A)"; sess "$tmp/A" busy 5 claude-sonnet-5-5 >/dev/null; sess "$tmp/A" busy 5 claude-sonnet-5-5 >/dev/null
+out=$(spawn A son 2>&1); [ $? = 1 ] && printf '%s' "$out" | grep -q 'this checkout, 3 of 3'; check "Jarvis's Opus session still counts per checkout" $?
+reset; rm -f "$tmp/A/handoffs/.jarvis/sessions/jarvis-t"; jt B "$(js B)"
+for i in 1 2; do sess "$tmp/o$i" busy 5 claude-sonnet-5-5 >/dev/null; done
+spawn A son >/dev/null 2>&1; check "…but no repo's Jarvis counts machine-wide (2 others + 2 Jarvis → spawned)" $?
+reset; jp=$(js A); jt A "$jp"; for i in 1 2 3 4; do sess "$tmp/o$i" busy 5 claude-sonnet-5-5 >/dev/null; done
+out=$(spawn A son 2>&1); [ $? = 1 ] && printf '%s' "$out" | grep -q 'machine-wide, 4 of 4' && ! printf '%s' "$out" | grep -q "pid $jp "
+check "this checkout's Jarvis + 4 non-Jarvis sessions elsewhere → refused, Jarvis not named" $?
+reset; jt A "$(js A)"; jt B "$(js B)"; for i in 1 2 3; do sess "$tmp/o$i" busy 5 claude-sonnet-5-5 >/dev/null; done
+spawn A son >/dev/null 2>&1; check "3 others + Jarvis here + another repo's Jarvis → a 4th is allowed" $?
+reset; jt A "$(js A)"; sess "$tmp/o1" busy 5 claude-opus-5-5 >/dev/null
+J A status | grep -q '^claude sessions: 1 of 4 machine-wide (1 of 3 here · opus 1 of 2)$'; check "status shows 1 machine-wide and opus 1 of 2, without Jarvis" $?
+reset; reading 80 7200 0; jt A "$(js A)"
+out=$(spawn A opus 2>&1); [ $? = 1 ]; check "red: Opus cap 0 still refuses a new Opus worker with only Jarvis on Opus" $?
+green; reset; rm -f "$tmp/A/handoffs/.jarvis/sessions/jarvis-t" "$tmp/B/handoffs/.jarvis/sessions/jarvis-t"
 
 echo "usage band"
 reset; rm -f "$JARVIS_HOME/usage.json" "$JARVIS_HOME/usage.hist"
@@ -224,7 +261,7 @@ J A band | grep -q '^amber' && ! J A band | grep -q burning; check "history from
 
 echo "band-lowered caps and --force"
 rm -f "$JARVIS_HOME/usage.hist"; reset; reading 55 7200 0
-for i in 1 2; do sess "$tmp/o$i" busy 5 claude-sonnet-5-5 >/dev/null; done
+for i in 1 2 3; do sess "$tmp/o$i" busy 5 claude-sonnet-5-5 >/dev/null; done
 out=$(spawn A son 2>&1); [ $? = 1 ] && printf '%s' "$out" | grep -q 'machine-wide, 3 of 3 (band amber: caps lowered)'; check "amber: machine-wide cap 3" $?
 J A status | grep -q '^claude sessions: 3 of 3 machine-wide (1 of 3 here · opus 0 of 2) — band amber caps$'; check "status shows the effective caps" $?
 reset; sess "$tmp/o1" busy 5 claude-opus-5-5 >/dev/null
@@ -233,13 +270,13 @@ reset; sess "$tmp/o1" busy 5 claude-opus-5-5 >/dev/null; sess "$tmp/o2" busy 5 c
 echo 'JARVIS_AMBER_GLOBAL=50' >> "$tmp/A/handoffs/jarvis.conf"  # isolate the Opus cap from amber's lower global cap
 out=$(spawn A opus 2>&1); [ $? = 1 ] && printf '%s' "$out" | grep -q 'Opus, 2 of 2'; check "amber: Opus cap 2 refuses the next one" $?
 sed -i.bak '$d' "$tmp/A/handoffs/jarvis.conf" && rm -f "$tmp/A/handoffs/jarvis.conf.bak"
-reset; reading 80 7200 0; sess "$tmp/o1" busy 5 claude-sonnet-5-5 >/dev/null
+reset; reading 80 7200 0; sess "$tmp/o1" busy 5 claude-sonnet-5-5 >/dev/null; sess "$tmp/o2" busy 5 claude-sonnet-5-5 >/dev/null
 out=$(spawn A son 2>&1); [ $? = 1 ] && printf '%s' "$out" | grep -q 'machine-wide, 2 of 2 (band red'; check "red: machine-wide cap 2" $?
 out=$(spawn A opus 2>&1); [ $? = 1 ] && printf '%s' "$out" | grep -q 'band is red'; check "red: no new Opus work" $?
 green; reset
 for i in 1 2 3 4; do sess "$tmp/o$i" busy 5 claude-sonnet-5-5 >/dev/null; done
-out=$(spawn A son --force 2>&1) && printf '%s' "$out" | grep -q -- '--force: past the machine-wide Claude cap (5 of 4'; check "--force passes the machine-wide cap" $?
-grep -q 'cap-force run=- brief=handoffs/briefs/son.md cap=machine-wide n=5 limit=4 band=green result=passed' "$tmp/A/handoffs/.jarvis/audit.log"; check "…logged in the audit log" $?
+out=$(spawn A son --force 2>&1) && printf '%s' "$out" | grep -q -- '--force: past the machine-wide Claude cap (4 of 4'; check "--force passes the machine-wide cap" $?
+grep -q 'cap-force run=- brief=handoffs/briefs/son.md cap=machine-wide n=4 limit=4 band=green result=passed' "$tmp/A/handoffs/.jarvis/audit.log"; check "…logged in the audit log" $?
 out=$(spawn A fab --force 2>&1); [ $? = 1 ] && printf '%s' "$out" | grep -q 'fable'; check "…but never Fable" $?
 reset; sess "$tmp/A" busy 5 claude-sonnet-5-5 >/dev/null; sess "$tmp/A" busy 5 claude-sonnet-5-5 >/dev/null; sess "$tmp/A" busy 5 claude-sonnet-5-5 >/dev/null
 spawn A son --force >/dev/null 2>&1; check "--force passes the per-checkout cap" $?

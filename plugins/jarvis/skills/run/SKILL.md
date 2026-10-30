@@ -130,8 +130,9 @@ handoffs/bin/jarvis spawn handoffs/briefs/<file>.md --after handoffs/merged/<pre
   red refuses new top or workhorse Claude work and names the Codex tier to
   use instead; `--force` can pass that one. See `model-routing.md`.
 - **The caps.** It refuses a Claude worker that would pass 4 sessions
-  machine-wide, 3 in this checkout or 2 on Opus (3 and 2 in amber, 2 and 0 in
-  red), counting every repo's sessions and the user's own. The refusal lists
+  machine-wide (Jarvis sessions not counted), 3 in this checkout (Jarvis
+  included) or 2 Opus workers (Jarvis doesn't count; 3 and 2 in amber, 2 and
+  0 in red), counting every repo's sessions and the user's own. The refusal lists
   who holds each slot, and `jarvis sessions` shows them any time. Queue the
   brief under **To-do**, or route it to OpenCode or Codex if it passes their
   tests. Don't `--force` past a cap to go faster. The caps exist because

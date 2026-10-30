@@ -82,7 +82,7 @@ It's probably not for you if:
 | 🛠️ **Parallel workers** | Each task runs in its own terminal (a Superset terminal, an Ultron session or a tmux window) on the same checkout. Jarvis starts independent tasks at the same time. |
 | 🎯 **Model routing** | Each task goes to the cheapest agent and model that can do it well: Claude Code (`claude-opus-5-5` / `sonnet` / `haiku`), Codex, or OpenCode's free models. `fable` is off unless you authorize one brief yourself. |
 | 📉 **Usage bands** | Jarvis reads Claude Code's own 5-hour usage numbers and the burn rate. Past 50%, on pace to run out, or with no fresh reading, the session caps drop. Past 75%, new heavy work goes to Codex. `jarvis spawn` enforces both. |
-| 🚦 **Caps on Claude sessions** | At most 4 Claude sessions run at once on the machine (every repo, your own sessions included), 3 per project and 2 on Opus. Codex and OpenCode don't count. Extra briefs wait in a queue or go to the free tier, so parallel work doesn't use up your 5-hour window in two hours. |
+| 🚦 **Caps on Claude sessions** | At most 4 Claude sessions run at once on the machine (every repo, your own sessions included, Jarvis sessions not counted), 3 per project (Jarvis included) and 2 Opus workers. Codex and OpenCode don't count. Extra briefs wait in a queue or go to the free tier, so parallel work doesn't use up your 5-hour window in two hours. |
 | ⏱️ **Worker budgets** | Each worker has limits on working time, estimated cost, context, failed tests and attempts. Past one it is asked for a partial handoff, then interrupted. Nothing is closed. |
 | ❓ **Grouped questions** | Workers never wait for you. They write their questions into a handoff file, and Jarvis collects them into one numbered message for you. |
 | ✅ **Review and commit** | Jarvis checks each handoff against `git status`, reads the diff, and runs your checks. Then it commits only the listed files, one commit per task. |
@@ -429,8 +429,8 @@ parties, so it never sees real credentials or user data. If OpenCode gets a
 task wrong, Jarvis gives it one correction, then moves the task to `sonnet`.
 
 Three caps apply to Claude sessions: **4 machine-wide** (every repo and your
-own sessions included), **3 in this project** (Jarvis included) and **2 on
-Opus**. Past any of them, `jarvis spawn` refuses and names who holds each
+own sessions included, Jarvis sessions not counted), **3 in this project**
+(Jarvis included) and **2 Opus workers** (Jarvis doesn't count). Past any of them, `jarvis spawn` refuses and names who holds each
 slot (`jarvis sessions` shows them any time). The brief then waits under
 To-do in `OPEN.md`, or goes to OpenCode or Codex if it fits them. Idle
 sessions don't count, and Jarvis never stops a session it didn't start.
@@ -445,7 +445,7 @@ Jarvis and every Claude session draw from the same usage limit, so Jarvis
 tracks a **band** and records it in `OPEN.md`. The band sets how many Claude
 sessions may run:
 
-| Band | Trigger | Caps (machine-wide · Opus) | What changes |
+| Band | Trigger | Caps (machine-wide · Opus workers, Jarvis not counted) | What changes |
 | --- | --- | --- | --- |
 | 🟢 Green | under 50%, and not on pace to run out | 4 · 2 | The routing table as written |
 | 🟡 Amber | 50%+, burning fast (on pace to use the whole 5-hour window before it resets, or 15+ points in 20 minutes), a 7-day reading at 80%+, or no reading or a stale one | 3 · 2 | New Claude work waits sooner. Running workers are untouched. |

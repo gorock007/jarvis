@@ -82,10 +82,10 @@ STATE="$H/.jarvis"
 BIN="$H/bin"
 
 JARVIS_MAX_CLAUDE=3      # Claude sessions at once in this checkout, Jarvis included; Codex/OpenCode don't count
-JARVIS_MAX_CLAUDE_GLOBAL=4  # active Claude sessions on the whole machine, any repo, the user's own included
-JARVIS_MAX_OPUS=2        # of those, on Opus (or Fable, or a model that can't be told)
-JARVIS_AMBER_GLOBAL=3    # the machine-wide cap in the amber band
-JARVIS_AMBER_OPUS=2      # the Opus cap in amber (Jarvis itself counts)
+JARVIS_MAX_CLAUDE_GLOBAL=4  # active Claude sessions on the whole machine, any repo, the user's own included; Jarvis sessions don't count
+JARVIS_MAX_OPUS=2        # of those, Opus workers (or Fable, or a model that can't be told); Jarvis doesn't count
+JARVIS_AMBER_GLOBAL=3    # the machine-wide cap in the amber band (Jarvis sessions don't count)
+JARVIS_AMBER_OPUS=2      # the Opus cap in amber (Jarvis doesn't count)
 JARVIS_RED_GLOBAL=2      # the machine-wide cap in red
 JARVIS_RED_OPUS=0        # the Opus cap in red: no new Opus work
 JARVIS_ACTIVE_MIN=10     # a session busy, or updated this many minutes ago, is active; idle ones don't count
@@ -644,13 +644,25 @@ $sid"; regm="$regm$sid $m
 
 heavy() { case "$1" in opus|fable|unknown) return 0 ;; esac; return 1; } # counts toward the Opus cap
 
+jarvis_sids() { # $1 = a project root: the session ids of its Jarvis coordinator, one a line (none without one)
+  local t
+  t=$(sed -n 's/^Jarvis session:[[:space:]]*//p' "$1/$OPEN" 2>/dev/null | head -n 1 | awk '{print $1}' | grep -v '^<')
+  case "$t" in ""|*/*|.*) return 0 ;; esac
+  cat "$1/$STATE/sessions/$t" 2>/dev/null
+  have jq && jq -r '.session_id // empty' "$1/$STATE/session.json" 2>/dev/null
+  return 0
+}
+
 # Sets CAP_BAND, the effective caps CAP_G (machine) CAP_P (this checkout) CAP_O (Opus),
 # the counts N_ALL N_HERE N_OPUS, N_OPEN (OPEN.md's, Jarvis included), CAP_LINES (the
-# sessions that count) and CAP_IDLE (the idle ones). This checkout counts as whichever
-# is higher: OPEN.md's Jarvis + running Claude workers, or its active sessions; so
-# Jarvis and its workers always count, whatever their status, and none counts twice.
+# sessions that count), CAP_IDLE (the idle ones) and CAP_JARVIS (" <sid> " for each
+# Jarvis coordinator session, any repo's). This checkout counts as whichever is higher:
+# OPEN.md's Jarvis + running Claude workers, or its active sessions; so Jarvis and its
+# workers always count, whatever their status, and none counts twice. The machine-wide
+# and Opus caps leave out every repo's Jarvis: they count workers and the user's own
+# sessions (a pending spawn always counts).
 cap_counts() {
-  local all pid sid proj m why rest here=0 hh=0 oth=0 oh=0 open_h=0
+  local all pid sid proj m why rest here=0 here_w=0 hh=0 oth=0 oh=0 open_h=0 roots=$TAB s j
   CAP_BAND=$(band | cut -f1)
   case "$CAP_BAND" in
     red) CAP_G=$JARVIS_RED_GLOBAL; CAP_O=$JARVIS_RED_OPUS ;;
@@ -664,10 +676,21 @@ cap_counts() {
   all=$(claude_active --all)
   CAP_LINES=$(printf '%s\n' "$all" | awk -F'\t' 'NF >= 5 && $5 != "idle"')
   CAP_IDLE=$(printf '%s\n' "$all" | awk -F'\t' 'NF >= 5 && $5 == "idle"')
+  CAP_JARVIS=" "
   while IFS=$TAB read -r pid sid proj m why rest; do
     [ -n "$pid" ] || continue
-    if [ "$proj" = "$ROOTP" ]; then here=$((here + 1)); heavy "$m" && hh=$((hh + 1))
-    else oth=$((oth + 1)); heavy "$m" && oh=$((oh + 1)); fi
+    j=0
+    if [ "$pid" != - ]; then
+      case "$roots" in *"$TAB$proj$TAB"*) ;; *) # each root's Jarvis read once
+        roots="$roots$proj$TAB"
+        for s in $(jarvis_sids "$proj"); do CAP_JARVIS="$CAP_JARVIS$s "; done ;;
+      esac
+      case "$CAP_JARVIS" in *" $sid "*) j=1 ;; esac
+    fi
+    if [ "$proj" = "$ROOTP" ]; then
+      here=$((here + 1))
+      [ "$j" = 1 ] || { here_w=$((here_w + 1)); heavy "$m" && hh=$((hh + 1)); }
+    elif [ "$j" = 0 ]; then oth=$((oth + 1)); heavy "$m" && oh=$((oh + 1)); fi
   done <<LINES
 $CAP_LINES
 LINES
@@ -677,7 +700,8 @@ LINES
   done
   N_HERE=$here; [ "$N_OPEN" -gt "$N_HERE" ] && N_HERE=$N_OPEN
   [ "$open_h" -gt "$hh" ] && hh=$open_h
-  N_ALL=$((oth + N_HERE))
+  [ $((N_OPEN - 1)) -gt "$here_w" ] && here_w=$((N_OPEN - 1)) # OPEN.md's workers, without Jarvis
+  N_ALL=$((oth + here_w))
   N_OPUS=$((oh + hh))
 }
 
@@ -709,14 +733,16 @@ cap_claim() {
   local canon=$1 force=$2 brief=$3 entry=$4 cap="" n lim who f
   cap_counts
   if [ "$N_ALL" -ge "$CAP_G" ]; then
-    cap="machine-wide"; n=$N_ALL; lim=$CAP_G; who=$(printf '%s\n' "$CAP_LINES" | cap_holders)
+    cap="machine-wide"; n=$N_ALL; lim=$CAP_G
+    who=$(printf '%s\n' "$CAP_LINES" | awk -F'\t' -v j="$CAP_JARVIS" 'index(j, " " $2 " ") == 0' | cap_holders)
   elif [ "$N_HERE" -ge "$CAP_P" ]; then
     cap="this checkout"; n=$N_HERE; lim=$CAP_P
     who="$(printf '%s\n' "$CAP_LINES" | awk -F'\t' -v p="$ROOTP" '$3 == p' | cap_holders)
   OPEN.md: Jarvis + $((N_OPEN - 1)) running Claude worker(s)"
   elif heavy "$canon" && [ "$N_OPUS" -ge "$CAP_O" ]; then
     cap="Opus"; n=$N_OPUS; lim=$CAP_O
-    who=$(printf '%s\n' "$CAP_LINES" | awk -F'\t' '$4 == "opus" || $4 == "fable" || $4 == "unknown"' | cap_holders)
+    who=$(printf '%s\n' "$CAP_LINES" | awk -F'\t' -v j="$CAP_JARVIS" \
+      '($4 == "opus" || $4 == "fable" || $4 == "unknown") && index(j, " " $2 " ") == 0' | cap_holders)
   fi
   if [ -n "$cap" ]; then
     if [ "$force" = 1 ]; then

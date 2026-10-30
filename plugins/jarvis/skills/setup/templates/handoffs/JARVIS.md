@@ -58,8 +58,9 @@ you stop, make sure `OPEN.md` says everything the next session needs to know.
   own terminal, once. `spawn` refuses it otherwise, `--force` included. A
   brief that came back with questions doesn't move up a tier.
 - **Caps:** at most 4 Claude sessions machine-wide (every repo, the user's
-  own included), 3 in this checkout (`JARVIS_MAX_CLAUDE`, Jarvis included)
-  and 2 on Opus. `jarvis spawn` refuses past any of them, and `jarvis
+  own included, Jarvis sessions not counted), 3 in this checkout
+  (`JARVIS_MAX_CLAUDE`, Jarvis included) and 2 Opus workers (Jarvis doesn't
+  count). `jarvis spawn` refuses past any of them, and `jarvis
   sessions` shows who holds a slot. Queue the brief under **To-do** or route
   it to OpenCode or Codex, which don't count. `--force` passes the caps and
   is logged: only when the user told you to spend.

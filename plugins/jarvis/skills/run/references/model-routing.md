@@ -236,8 +236,8 @@ thresholds are in `handoffs/jarvis.conf`.
 
 | Band | Routing and caps |
 | --- | --- |
-| **Green: under 50%, and not on pace to use the window** | The table above, unchanged. Light and trivial work still prefers OpenCode, because free work is free in every band. Caps: 4 machine-wide, 3 here, 2 Opus (section 5). |
-| **Amber: 50% and over, burning fast, a reading that is missing or stale, or 7-day at 80%+** | Caps drop to **3 machine-wide and 2 Opus** (Jarvis counts). Fable stays unavailable unless authorized, as in every band. Light and trivial tiers are unchanged. Jarvis keeps its model. |
+| **Green: under 50%, and not on pace to use the window** | The table above, unchanged. Light and trivial work still prefers OpenCode, because free work is free in every band. Caps: 4 machine-wide (Jarvis sessions not counted), 3 here, 2 Opus workers (section 5). |
+| **Amber: 50% and over, burning fast, a reading that is missing or stale, or 7-day at 80%+** | Caps drop to **3 machine-wide and 2 Opus workers** (Jarvis sessions not counted in either). Fable stays unavailable unless authorized, as in every band. Light and trivial tiers are unchanged. Jarvis keeps its model. |
 | **Red: 75% and over, about to run out, a usage-limit message in a worker, a failed Claude spawn, or 7-day at 95%+** | Caps drop to **2 machine-wide and no new Opus**. New top-tier and workhorse briefs go to **Codex** (`gpt-6-astra` / `gpt-5.6-sol`). Claude Code is kept for Jarvis and for workers already in flight. Fable is refused even when authorized. Anything OpenCode can safely take, it takes. Tell the user plainly that you've moved the fleet and why. |
 
 The band fails closed. **No reading, an unreadable one, or one older than
@@ -317,16 +317,17 @@ three caps (`handoffs/jarvis.conf`):
 
 | Cap | Green | Amber | Red | Setting |
 | --- | --- | --- | --- | --- |
-| Active Claude sessions, **machine-wide**, every repo and the user's own included | 4 | 3 | 2 | `JARVIS_MAX_CLAUDE_GLOBAL` |
+| Active Claude sessions, **machine-wide**, every repo and the user's own included, Jarvis sessions not counted | 4 | 3 | 2 | `JARVIS_MAX_CLAUDE_GLOBAL` |
 | Sessions in **this checkout**, Jarvis included | 3 | 3 | 3 | `JARVIS_MAX_CLAUDE` |
-| Sessions **on Opus** (Fable and a model that can't be told count too) | 2 | 2 | 0 | `JARVIS_MAX_OPUS` |
+| **Opus workers**, Jarvis doesn't count (Fable and a model that can't be told count too) | 2 | 2 | 0 | `JARVIS_MAX_OPUS` |
 
 The amber and red values are `JARVIS_AMBER_GLOBAL`, `JARVIS_AMBER_OPUS`,
 `JARVIS_RED_GLOBAL` and `JARVIS_RED_OPUS`.
 
 A session counts while it is busy or was active in the last
 `JARVIS_ACTIVE_MIN` (10) minutes. This checkout's Jarvis and running workers
-always count. A session idle for hours burns nothing and doesn't. A spawn
+always count here. A Jarvis coordinator session, this checkout's or another
+repo's, never counts toward the machine-wide or Opus cap. A session idle for hours burns nothing and doesn't. A spawn
 holds its slot for up to `JARVIS_PENDING_SEC` (180) while its session
 starts, and the count and claim happen under a machine-wide lease, so two
 repos spawning at once can't both take the last slot. A band never raises a
