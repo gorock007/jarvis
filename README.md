@@ -549,7 +549,8 @@ behind it, not just advice:
 | 11 sessions at once used up the 5-hour window in 2.5 hours | A cap on Claude sessions, and a band that watches the burn rate |
 
 `handoffs/bin/jarvis usage` reports the numbers that show whether this
-worked: coordinating ÷ building (about 1.13 when measured, target ≤ 0.3),
+worked: coordinating ÷ building (1.13 when first measured, 0.37 in the
+[November 2026 baseline](docs/benchmarks/2026-11-baseline.md), target ≤ 0.3),
 cost per merged handoff, and the worst 5-hour window. Details are in
 [`efficiency.md`](plugins/jarvis/skills/run/references/efficiency.md).
 
