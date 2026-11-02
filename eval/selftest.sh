@@ -278,6 +278,14 @@ EOT
       fp_setup claude '`src/`' '`src/widget.py`'; fp_tick "$(fp_cap 41)"; fp_woke; check "fast edit: live Edit capture of an excluded file wakes Jarvis" $?
       fp_setup claude '`src/`'; fp_tick "$(fp_cap 42)"; fp_woke; check "fast edit: live capture with a shortened …path wakes Jarvis" $?
       fp_setup claude '`src/`'; fp_tick "$(fp_cap 45)"; fp_woke; check "fast edit: live Bash command capture wakes Jarvis" $?
+      # Claude Code's own folder trust (eval/terminals/50): never answered, even for the checkout itself.
+      for a in claude codex; do
+        fp_setup "$a" '`src/`'; fp_tick "$(fp_cap 50)"; fp_woke; check "fast trust: live Claude folder-trust capture wakes Jarvis ($a)" $?
+      done
+      fp_setup claude '`src/`'; fp_tick "$(fp_cap 50 | awk -v p=" $(pwd -P)" 'NR == 5 {print p; next} NR == 6 {next} {print}')"
+      fp_woke; check "fast trust: Claude folder trust naming the checkout still wakes Jarvis" $?
+      fp_setup claude '`src/`'; fp_tick "$(fp_cap 50 | grep -v 'trust this folder')"
+      fp_woke; check "fast trust: Claude folder trust is seen by its question alone" $?
       fp_setup claude '`src/`'; fp_tick "$(fp_cap 44 | sed 's/⏺ Write(/⏺ Update(/')"; fp_woke; check "fast edit: an Update header over an Overwrite dialog wakes Jarvis" $?
       fp_setup claude '`src/`'; fp_tick "$(fp_box '⏺ Update(src/new.py)' src/new.py 'Do you want to create new.py?' '' 'Create file')"
       fp_woke; check "fast edit: an Update header over a Create dialog wakes Jarvis" $?
@@ -482,14 +490,14 @@ $trust"
       done
       if [ "$count" = 40 ]; then ok "fast fixtures: replayed all 40 labelled terminal tails"; else bad "fast fixtures: expected 40 tails, got $count"; fi
       count=0
-      for fixture in "$here"/terminals/4[1-9]-*.txt; do
+      for fixture in "$here"/terminals/4[1-9]-*.txt "$here"/terminals/50-*.txt; do
         name=${fixture##*/}
         case "$name" in *-claude-*) agent=claude ;; *-codex-*) agent=codex ;; *) bad "capture has no agent label: $name"; continue ;; esac
         fp_setup "$agent" '`src/`'; echo 'JARVIS_FASTPATH=""' >> handoffs/jarvis.conf
         fp_tick "$(cat "$fixture")"; fp_woke; check "fast fixture: live capture $name wakes Jarvis with the fast paths off" $?
         count=$((count + 1))
       done
-      if [ "$count" = 9 ]; then ok "fast fixtures: replayed all 9 live captures"; else bad "fast fixtures: expected 9 live captures, got $count"; fi
+      if [ "$count" = 10 ]; then ok "fast fixtures: replayed all 10 live captures"; else bad "fast fixtures: expected 10 live captures, got $count"; fi
     )
 
     echo s > self.txt

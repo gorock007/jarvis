@@ -81,7 +81,17 @@
     "37-stuck-opencode-npm-install-eresolve.txt": {"state":"looping_or_stuck","hard":false},
     "38-crashed-claude-node-heap-oom.txt": {"state":"crashed","hard":false},
     "39-crashed-codex-rust-panic.txt": {"state":"crashed","hard":false},
-    "40-crashed-opencode-killed.txt": {"state":"crashed","hard":false}
+    "40-crashed-opencode-killed.txt": {"state":"crashed","hard":false},
+    "41-permission-claude-edit-file-capture.txt": {"state":"permission_prompt","hard":false},
+    "42-permission-claude-edit-long-path-capture.txt": {"state":"permission_prompt","hard":false},
+    "43-permission-claude-create-file-capture.txt": {"state":"permission_prompt","hard":false},
+    "44-permission-claude-overwrite-file-capture.txt": {"state":"permission_prompt","hard":false},
+    "45-permission-claude-bash-command-capture.txt": {"state":"permission_prompt","hard":false},
+    "46-permission-claude-edit-file-80col-capture.txt": {"state":"permission_prompt","hard":false},
+    "47-permission-codex-trust-folder-capture.txt": {"state":"permission_prompt","hard":false},
+    "48-permission-codex-trust-folder-80col-capture.txt": {"state":"permission_prompt","hard":false},
+    "49-permission-claude-edit-wrapped-diff-capture.txt": {"state":"permission_prompt","hard":false},
+    "50-permission-claude-folder-trust-capture.txt": {"state":"permission_prompt","hard":false}
   },
   "has_fake_secret": ["01-working-claude-invoice-tests.txt", "24-permission-claude-curl-github-api.txt", "31-finished-codex-stripe-webhook.txt", "38-crashed-claude-node-heap-oom.txt"]
 }

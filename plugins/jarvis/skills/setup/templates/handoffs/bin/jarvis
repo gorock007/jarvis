@@ -137,7 +137,7 @@ TAB=$(printf '\t')
 
 LIMIT_RE="(usage|rate|session|weekly|daily|hourly|5-hour) limit (was |has been )?(reached|exceeded|hit)|(hit|reached|exceeded) (your|the) [a-z0-9 -]*limit|limit reached|quota (was |has been )?(exceeded|exhausted)|out of credits|too many requests"
 # A worker sitting at a trust or approval prompt does nothing until someone answers it.
-PROMPT_RE="trust (this|the files in this) folder|do you trust|allow codex to work in this folder|press enter to confirm|would you like to (run|make|apply)|do you want to (proceed|make this edit|create|overwrite|run|allow)|allow (this|once)|\\(y/n\\)|\\[y/n\\]"
+PROMPT_RE="trust (this|the files in this) folder|do you trust|is this a project you created or one you trust|allow codex to work in this folder|press enter to confirm|would you like to (run|make|apply)|do you want to (proceed|make this edit|create|overwrite|run|allow)|allow (this|once)|\\(y/n\\)|\\[y/n\\]"
 
 die() { echo "jarvis: $*" >&2; exit 1; }
 have() { command -v "$1" >/dev/null 2>&1; }
