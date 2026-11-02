@@ -226,14 +226,25 @@ EOT
         : > "$FAKE_LOG"
       }
       fp_tick() { : > "$FAKE_LOG"; FAKE_SCREEN="$1" $J watch --once >/dev/null; }
-      fp_box() { # header line or '', path in the box, prompt basename, raw rows after the path row
+      # The live Claude Code 2.1.311 layout (eval/terminals/41-46), at 80 columns.
+      fp_rule='────────────────────────────────────────────────────────────────────────────────'
+      fp_dash='╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌'
+      fp_box() { # header line or '', path row, question, raw rows before the diff, title, option 1 row
         [ -z "$1" ] || printf '%s\n\n' "$1"
-        printf '╭──────────────────────────────╮\n│ Edit file │\n│ ╭──────────────────────────╮ │\n│ │ %s │ │\n' "$2"
+        printf '%s\n %s\n %s\n%s\n' "$fp_rule" "${5:-Edit file}" "$2" "$fp_dash"
         [ -z "${4:-}" ] || printf '%s\n' "$4"
-        printf '│ │   1 -old │ │\n│ │   1 +new │ │\n│ ╰──────────────────────────╯ │\n│ Do you want to make this edit to %s? │\n' "$3"
-        printf '│ ❯ 1. Yes │\n│   2. Yes, allow all edits during this session │\n│   3. No │\n╰──────────────────────────────╯\n'
+        printf ' 1 -old = 1\n 1 +new = 1\n%s\n %s\n%s\n' "$fp_dash" "$3" "${6:- ❯ 1. Yes}"
+        printf '   2. Yes, and switch to accept edits (auto-approve file edits and common file\n      commands) for this session (shift+tab)\n   3. No\n\n Esc to cancel · Tab to amend\n'
       }
-      fp_edit() { fp_box "⏺ Update($1)" "$1" "${2:-${1##*/}}"; }
+      fp_edit() { fp_box "⏺ Update($1)" "$1" "Do you want to make this edit to ${2:-${1##*/}}?"; }
+      fp_cap() { cat "$here/terminals/$1"-*.txt; }
+      # The live Codex 0.157.1 trust screen (eval/terminals/47-48); $1 replaces the folder rows.
+      fp_trust() {
+        printf '\n  Folder access\n%s\n\n' "${1:-  $(pwd -P)}"
+        printf '  Trust this folder? Codex can read, edit, and run files here, subject to your permission\n'
+        printf '  settings. Folder settings can run code automatically, even without a model request. Continue\n'
+        printf '  only if you trust these files. Your trust decision will be saved.\n\n%s\n  2. Quit\n\n  enter continue · esc quit\n' "${2:-› 1. Trust and continue}"
+      }
       fp_woke() { grep -q 'terminal jarvis-t --text .*waiting at a prompt' "$FAKE_LOG" && ! grep -q -- '--keys' "$FAKE_LOG"; }
       fp_approved() { grep -q 'terminal fp --keys enter$' "$FAKE_LOG" && ! grep -q 'terminal jarvis-t --text' "$FAKE_LOG" && [ ! -f handoffs/.jarvis/watch.pending ]; }
       fp_age() { touch -t "$(date -r "$1" +%Y%m%d%H%M.%S 2>/dev/null || date -d "@$1" +%Y%m%d%H%M.%S)" handoffs/.jarvis/screen-fp; }
@@ -252,13 +263,43 @@ EOT
       fp_setup claude '`src/`'
       echo 'JARVIS_BATCH_SEC=600' >> handoffs/jarvis.conf
       fp_tick "$(fp_edit src/new.py)"; fp_approved; check "fast edit: a new file inside a listed directory is approved immediately, outside batching" $?
-      fp_setup claude '`src/`'; fp_tick "$(fp_box '⏺ Write(src/new.py)' src/new.py new.py)"
-      fp_approved; check "fast edit: recognizes a Write header" $?
-      fp_setup claude '`src/`'; fp_tick "$(fp_box '' src/new.py new.py)"
-      fp_approved; check "fast edit: a dialog whose header scrolled off uses its first inner row" $?
+      fp_setup claude '`src/`'; fp_tick "$(fp_box '⏺ Write(src/new.py)' src/new.py 'Do you want to create new.py?' '' 'Create file')"
+      fp_approved; check "fast edit: recognizes a Write header on a Create-file dialog" $?
+      fp_setup claude '`src/`'; fp_tick "$(fp_box '' src/new.py 'Do you want to make this edit to new.py?')"
+      fp_approved; check "fast edit: a dialog whose header scrolled off uses the row under its title" $?
+      # Live captures (eval/terminals/41-48): Claude Code 2.1.311 and Codex 0.157.1.
+      for c in 41 43 44 46 49; do
+        fp_setup claude '`src/`'; fp_tick "$(fp_cap $c)"
+        case $c in 43) f=helpers ;; 49) f=long ;; *) f=widget ;; esac
+        fp_approved && grep -q "path=src/$f.py key=enter" handoffs/.jarvis/audit.log
+        check "fast edit: live capture $c is approved for the file it names" $?
+      done
+      fp_setup claude '`src/widget.py`'; fp_tick "$(fp_cap 43)"; fp_woke; check "fast edit: live Create capture for an unlisted file wakes Jarvis" $?
+      fp_setup claude '`src/`' '`src/widget.py`'; fp_tick "$(fp_cap 41)"; fp_woke; check "fast edit: live Edit capture of an excluded file wakes Jarvis" $?
+      fp_setup claude '`src/`'; fp_tick "$(fp_cap 42)"; fp_woke; check "fast edit: live capture with a shortened …path wakes Jarvis" $?
+      fp_setup claude '`src/`'; fp_tick "$(fp_cap 45)"; fp_woke; check "fast edit: live Bash command capture wakes Jarvis" $?
+      fp_setup claude '`src/`'; fp_tick "$(fp_cap 44 | sed 's/⏺ Write(/⏺ Update(/')"; fp_woke; check "fast edit: an Update header over an Overwrite dialog wakes Jarvis" $?
+      fp_setup claude '`src/`'; fp_tick "$(fp_box '⏺ Update(src/new.py)' src/new.py 'Do you want to create new.py?' '' 'Create file')"
+      fp_woke; check "fast edit: an Update header over a Create dialog wakes Jarvis" $?
+      fp_setup claude '`src/`'; fp_tick "$(fp_box '⏺ Update(src/new.py)' src/new.py 'Do you want to create new.py?')"
+      fp_woke; check "fast edit: a question that doesn't match the title wakes Jarvis" $?
       fp_setup claude '`src/`'
       fp_tick "$(sed 's#config/settings\.py#src/widget.py#; s#settings\.py#widget.py#' "$here/terminals/20-permission-claude-edit-settings-file.txt")"
-      fp_approved; check "fast edit: the real Edit-file dialog layout (fixture 20, retargeted to src/) is approved" $?
+      fp_woke; check "fast edit: the hand-written boxed layout (fixture 20, retargeted to src/) is no longer accepted" $?
+      fp_setup claude '`src/`'; fp_tick "$(fp_box '⏺ Update(src/widget.py)' src/widget.py 'Do you want to make this edit to widget.py?' '' '' ' ❯ 1. Yes, allow all edits during this session')"
+      fp_woke; check "fast edit: an allow-all first option wakes Jarvis" $?
+      fp_setup claude '`src/`'; fp_tick "$(fp_edit src/widget.py | sed 's/switch to accept edits/allow all edits/')"
+      fp_woke; check "fast edit: an unknown second option wakes Jarvis" $?
+      fp_setup claude '`src/`'; fp_tick "$(fp_edit src/widget.py | sed 's/^ ❯ 1\. Yes$/   1. Yes/; s/^   3\. No$/ ❯ 3. No/')"
+      fp_woke; check "fast edit: Yes not highlighted wakes Jarvis" $?
+      fp_setup claude '`src/`'; fp_tick "$(fp_edit src/widget.py | sed 's/^ src\/widget\.py$/ src\/widget.py\
+ src\/other.py/')"
+      fp_woke; check "fast edit: an extra row between title and diff wakes Jarvis" $?
+      fp_setup claude '`src/`'; fp_tick "$(fp_edit src/widget.py | sed '1,5d')"
+      fp_woke; check "fast edit: a dialog whose title scrolled off wakes Jarvis" $?
+      fp_setup claude '`src/`'; fp_tick "$(fp_edit src/widget.py | sed 's/^\( 1 +new = 1\)$/\1\
+ continued text/')"
+      fp_woke; check "fast edit: an unnumbered diff row with less than a wrap indent wakes Jarvis" $?
       fp_setup claude '`src/`'; fp_tick 'Edit file: src/new.py
 Do you want to make this edit to new.py?
 ❯ 1. Yes'; fp_woke; check "fast edit: a prompt outside an Edit-file dialog wakes Jarvis" $?
@@ -279,7 +320,7 @@ Do you want to make this edit to new.py?
       fp_tick 'Do you want to make this edit to widget.py?
 ❯ 1. Yes'; fp_woke; check "fast edit: truncated path header wakes Jarvis" $?
       fp_setup claude '`src/`'
-      fp_tick "$(fp_box '⏺ Update(src/widget.py)' src/private.py private.py)"; fp_woke; check "fast edit: conflicting headers wake Jarvis" $?
+      fp_tick "$(fp_box '⏺ Update(src/widget.py)' src/private.py 'Do you want to make this edit to private.py?')"; fp_woke; check "fast edit: conflicting headers wake Jarvis" $?
       fp_setup claude '`src/`'
       fp_tick '⏺ Update(src/widget.py)
 ⏺ Bash(echo hello)
@@ -301,23 +342,27 @@ Do you want to proceed?
       echo '- May touch: `src/`' >> handoffs/briefs/fp.md
       fp_tick "$(fp_edit src/widget.py)"; fp_woke; check "fast edit: ambiguous scope lists fail closed" $?
       # Review of ad5b044, finding 1: diff text inside the dialog must never name the file.
+      q='Do you want to make this edit to foo.sh?'
       fp_setup claude '`src/`' '`scripts/foo.sh`'
-      fp_tick "$(fp_box '⏺ Update(scripts/foo.sh)' scripts/foo.sh foo.sh '⏺ Update(src/foo.sh)')"
-      fp_woke; check "fast edit: a gutterless diff row reading ⏺ Update(src/foo.sh) can't redirect a scripts/foo.sh edit" $?
+      fp_tick "$(fp_box '⏺ Update(scripts/foo.sh)' scripts/foo.sh "$q" '⏺ Update(src/foo.sh)')"
+      fp_woke; check "fast edit: a diff row reading ⏺ Update(src/foo.sh) can't redirect a scripts/foo.sh edit" $?
       fp_setup claude '`src/`' '`scripts/foo.sh`'
-      fp_tick "$(fp_box '⏺ Update(scripts/foo.sh)' scripts/foo.sh foo.sh '│ │ ⏺ Update(src/foo.sh) │ │')"
-      fp_woke; check "fast edit: a diff row with a tool header inside the gutter fails closed" $?
+      fp_tick "$(fp_box '⏺ Update(scripts/foo.sh)' scripts/foo.sh "$q" ' 3 +⏺ Update(src/foo.sh)')"
+      fp_woke; check "fast edit: a numbered diff row carrying a tool header fails closed" $?
       fp_setup claude '`src/`' '`scripts/foo.sh`'
-      fp_tick "$(fp_box '⏺ Update(scripts/foo.sh)' scripts/foo.sh foo.sh '⏺ Update(src/foo.sh)
+      fp_tick "$(fp_box '⏺ Update(scripts/foo.sh)' scripts/foo.sh "$q" "⏺ Update(src/foo.sh)
 
-╭──────────────────────────────╮
-│ Edit file │
-│ ╭──────────────────────────╮ │
-│ │ src/foo.sh │ │')"
-      fp_woke; check "fast edit: a second dialog staged inside the real one fails closed" $?
+$fp_rule
+ Edit file
+ src/foo.sh
+$fp_dash")"
+      fp_woke; check "fast edit: a second dialog staged inside the real one's diff fails closed" $?
       fp_setup claude '`src/`' '`scripts/foo.sh`'
-      fp_tick "$(printf '│ │  40 +x │ │\n'; fp_box '⏺ Update(src/foo.sh)' src/foo.sh foo.sh)"
-      fp_woke; check "fast edit: a staged dialog below the rows of a scrolled-off one fails closed" $?
+      fp_tick "$(fp_box '⏺ Update(scripts/foo.sh)' scripts/foo.sh "$q" "$(printf ' %s +x\n' 3 4 5 6)
+$fp_dash
+ Do you want to make this edit to foo.sh?
+ ❯ 1. Yes")"
+      fp_woke; check "fast edit: a question and Yes staged in the diff fail closed" $?
       fp_setup claude '`src/`'; fp_tick "$(fp_edit src/widget.py)
   some text below the dialog"
       fp_woke; check "fast edit: text after the dialog fails closed" $?
@@ -332,41 +377,49 @@ Do you want to proceed?
       fp_setup claude '`src/`' '`src/private.py`'
       fp_tick "$(fp_edit src/hard.py)"; fp_woke; check "fast edit: a hard link to an excluded file is excluded" $?
       rm -f src/secret.py src/hard.py
+      # Scope entries written as prose around one backticked path.
+      fp_setup claude '`src/`' 'root `handoffs/`, `README.md`'
+      fp_tick "$(fp_edit src/widget.py)"; fp_approved; check "fast edit: Must not touch root \`handoffs/\` reads as handoffs/, not a denial" $?
+      fp_setup claude '`src/`' 'anything in `src/private.py`'
+      fp_tick "$(fp_edit src/private.py)"; fp_woke; check "fast edit: a prose exclusion still excludes its backticked path" $?
+      fp_setup claude '`src/`' 'root handoffs'
+      fp_tick "$(fp_edit src/widget.py)"; fp_woke; check "fast edit: an entry with spaces and no backticks fails closed" $?
+      fp_setup claude '`src/`' '`src/a.py` or `src/b.py`'
+      fp_tick "$(fp_edit src/widget.py)"; fp_woke; check "fast edit: an entry with two backticked paths fails closed" $?
+      fp_setup claude '`src/widget.py`, new files in `src/`'
+      fp_tick "$(fp_edit src/widget.py)"; fp_approved; check "fast edit: a plain grant still works next to a prose one" $?
+      fp_setup claude '`src/widget.py`, new files in `src/`'
+      fp_tick "$(fp_edit src/private.py)"; fp_woke; check "fast edit: a prose grant (new files in \`src/\`) grants nothing" $?
       # Finding 3: the checker runs isolated, so modules planted in the checkout never load.
       printf 'open(%s, "w").close()\nraise SystemExit(0)\n' "'$tmp/planted'" > re.py
       fp_setup claude '`src/`'; fp_tick "$(fp_edit src/widget.py)"
       fp_approved && [ ! -e "$tmp/planted" ]; check "fast edit: a planted re.py in the checkout is not imported" $?
       rm -f re.py
 
-      trust='Trust this folder? › 1. Yes, continue  2. No, quit'
+      trust=$(fp_trust)
       fp_setup codex '`src/`'; fp_tick "$trust"
       fp_approved && [ "$(wl)" = 'auto trust 1' ] && grep -q 'auto-trust run=fp brief=handoffs/briefs/fp.md path=trust key=enter result=sent' handoffs/.jarvis/audit.log
-      check "fast trust: Codex gets Yes, continue, both logs, no Jarvis wake" $?
+      check "fast trust: Codex gets Trust and continue, both logs, no Jarvis wake" $?
       fp_tick "$trust"; fp_woke && grep -q 'did not take' "$FAKE_LOG"; check "fast trust: unchanged prompt is not answered twice, it wakes Jarvis" $?
       fp_setup codex '`src/`'; FAKE_SEND_FAIL=1 fp_tick "$trust"
       grep -q 'terminal jarvis-t --text .*waiting at a prompt' "$FAKE_LOG" && [ "$(wl)" = 'woke prompt 1' ] \
         && [ ! -f handoffs/.jarvis/audit.log ]; check "fast trust: failed send wakes Jarvis without logging auto" $?
-      fp_setup codex '`src/`'; fp_tick 'Trust this folder? Yes, continue'
-      fp_woke; check "fast trust: missing option key fails closed" $?
-      fp_setup codex '`src/`'; fp_tick "$trust
-Would you like to run the following command?
-1. Yes, proceed (y)"
-      fp_woke; check "fast trust: an old trust prompt above a command approval is never answered" $?
-      fp_setup codex '`src/`'; fp_tick 'Allow Codex to work in this folder?
-  2. Yes, continue
-  1. No, quit'
-      grep -q 'terminal fp --keys 2$' "$FAKE_LOG"; check "fast trust: with no highlight, sends only the displayed Yes digit" $?
-      fp_setup codex '`src/`'; fp_tick 'Trust this folder?
-  1. Yes, continue
-› 2. No, quit'
-      grep -q 'terminal fp --keys 1$' "$FAKE_LOG"; check "fast trust: with No highlighted, sends only the Yes digit, never enter" $?
-      fp_setup codex '`src/`'; fp_tick 'Trust this folder?
-› 1. Yes, continue
-  2. No, quit
-
-  Press enter to continue'
-      fp_approved; check "fast trust: the footer may follow the options" $?
-      # Finding 4: the trust prompt must be the only prompt and the final block.
+      for c in 47 48; do
+        root=$(pwd -P); cut=$(( ${#root} / 2 ))
+        fp_setup codex '`src/`'; fp_tick "$(fp_cap $c | awk -v a="  ${root:0:$cut}" -v b="  ${root:$cut}" 'p == 1 && $0 == "" {p = 2} p == 1 {next} {print} /^  Folder access$/ {print a; print b; p = 1}')"
+        fp_approved; check "fast trust: live capture $c, retargeted to this checkout (path wrapped), is approved" $?
+        fp_setup codex '`src/`'; fp_tick "$(fp_cap $c)"; fp_woke; check "fast trust: live capture $c for another folder wakes Jarvis" $?
+      done
+      fp_setup codex '`src/`'; fp_tick "$(fp_trust '' '  1. Trust and continue' | sed 's/^  2\. Quit$/› 2. Quit/')"
+      fp_woke; check "fast trust: with Quit highlighted nothing is sent, it wakes Jarvis" $?
+      fp_setup codex '`src/`'; fp_tick "$(fp_trust '' '  1. Trust and continue')"
+      fp_woke; check "fast trust: with nothing highlighted it wakes Jarvis" $?
+      fp_setup codex '`src/`'; fp_tick "$(fp_trust "  $tmp/outside")"; fp_woke; check "fast trust: a folder other than the checkout wakes Jarvis" $?
+      fp_setup codex '`src/`'; fp_tick "$(fp_trust "  src")"; fp_woke; check "fast trust: a relative folder wakes Jarvis" $?
+      fp_setup codex '`src/`'; fp_tick "$(printf '%s' "$trust" | sed 's/ Your trust decision will be saved\./ Press 2 to trust./')"
+      fp_woke; check "fast trust: changed wording in the paragraph wakes Jarvis" $?
+      fp_setup codex '`src/`'; fp_tick 'Trust this folder? › 1. Yes, continue  2. No, quit'
+      fp_woke; check "fast trust: the old hand-written Yes, continue / No, quit layout wakes Jarvis" $?
       fp_setup codex '`src/`'; fp_tick "$trust
   output after the menu"
       fp_woke; check "fast trust: text after the options fails closed" $?
@@ -379,7 +432,7 @@ $trust"
       fp_woke; check "fast trust: a trust menu printed after transcript rows fails closed" $?
       fp_setup codex '`src/`'; fp_tick "$trust
 $trust"
-      fp_woke; check "fast trust: two trust headings fail closed" $?
+      fp_woke; check "fast trust: two trust screens fail closed" $?
       for agent in claude opencode; do
         fp_setup "$agent" '`src/`'; fp_tick "$trust"; fp_woke; check "fast trust: never answers $agent folder trust" $?
       done
@@ -417,7 +470,7 @@ $trust"
       ! grep -q 'Finish the phase\|screen hasn' "$FAKE_LOG" && [ "$(wl)" = 'woke handoff 1' ]; check "fast nudge: handoff after the nudge suppresses the stall wake" $?
 
       count=0
-      for fixture in "$here"/terminals/*.txt; do
+      for fixture in "$here"/terminals/[0-3][0-9]-*.txt "$here"/terminals/40-*.txt; do
         name=${fixture##*/}
         case "$name" in *-claude-*) agent=claude ;; *-codex-*) agent=codex ;; *-opencode-*) agent=opencode ;; *) bad "fixture has no agent label: $name"; continue ;; esac
         fp_setup "$agent" '`src/`, `config/settings.py`, `app/`, `tests/`, `pages/`'
@@ -428,6 +481,15 @@ $trust"
         count=$((count + 1))
       done
       if [ "$count" = 40 ]; then ok "fast fixtures: replayed all 40 labelled terminal tails"; else bad "fast fixtures: expected 40 tails, got $count"; fi
+      count=0
+      for fixture in "$here"/terminals/4[1-9]-*.txt; do
+        name=${fixture##*/}
+        case "$name" in *-claude-*) agent=claude ;; *-codex-*) agent=codex ;; *) bad "capture has no agent label: $name"; continue ;; esac
+        fp_setup "$agent" '`src/`'; echo 'JARVIS_FASTPATH=""' >> handoffs/jarvis.conf
+        fp_tick "$(cat "$fixture")"; fp_woke; check "fast fixture: live capture $name wakes Jarvis with the fast paths off" $?
+        count=$((count + 1))
+      done
+      if [ "$count" = 9 ]; then ok "fast fixtures: replayed all 9 live captures"; else bad "fast fixtures: expected 9 live captures, got $count"; fi
     )
 
     echo s > self.txt

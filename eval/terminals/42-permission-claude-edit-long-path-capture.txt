@@ -1,0 +1,20 @@
+❯ Use the Edit tool to change "short" to "long" in src/very/deeply/nested/package/directory/structu
+  re/for/testing/long/paths/configuration_settings_module.py without reading anything else.
+
+⏺ Update(src/very/deeply/nested/package/directory/structure/for/t…/configuration_settings_module.py)
+
+────────────────────────────────────────────────────────────────────────────────────────────────────
+ Edit file
+ …deeply/nested/package/directory/structure/for/testing/long/paths/configuration_settings_module.py
+╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
+ 1  VALUE = 1
+ 2 -NAME = "short"
+ 2 +NAME = "long"
+╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
+ Do you want to make this edit to configuration_settings_module.py?
+ ❯ 1. Yes
+   2. Yes, and switch to accept edits (auto-approve file edits and common file commands) for this
+      session (shift+tab)
+   3. No
+
+ Esc to cancel · Tab to amend

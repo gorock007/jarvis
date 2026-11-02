@@ -137,7 +137,7 @@ TAB=$(printf '\t')
 
 LIMIT_RE="(usage|rate|session|weekly|daily|hourly|5-hour) limit (was |has been )?(reached|exceeded|hit)|(hit|reached|exceeded) (your|the) [a-z0-9 -]*limit|limit reached|quota (was |has been )?(exceeded|exhausted)|out of credits|too many requests"
 # A worker sitting at a trust or approval prompt does nothing until someone answers it.
-PROMPT_RE="trust (this|the files in this) folder|do you trust|allow codex to work in this folder|press enter to confirm|would you like to (run|make|apply)|do you want to (proceed|make this edit|create|run|allow)|allow (this|once)|\\(y/n\\)|\\[y/n\\]"
+PROMPT_RE="trust (this|the files in this) folder|do you trust|allow codex to work in this folder|press enter to confirm|would you like to (run|make|apply)|do you want to (proceed|make this edit|create|overwrite|run|allow)|allow (this|once)|\\(y/n\\)|\\[y/n\\]"
 
 die() { echo "jarvis: $*" >&2; exit 1; }
 have() { command -v "$1" >/dev/null 2>&1; }
@@ -2288,95 +2288,97 @@ def deny():
 # Do not interpret terminal escape/control sequences as a path or an approval.
 if any(ord(c) < 32 and c not in "\n\t" for c in screen):
     deny()
-raw_lines = screen.splitlines()
-lines = [s.strip(" \t│┃") for s in raw_lines]
+raw_lines = [s.rstrip() for s in screen.splitlines()]
+# Both layouts below are copied from live screens (Claude Code 2.1.311, Codex
+# 0.157.1; eval/terminals/41-48). Any other shape, wording or width fails closed.
 if agent == "codex":
-    heading = r"(?:Trust this folder\?|Do you trust (?:this folder|the files in this folder)\?|Allow Codex to work in this folder\?)"
-    trusts = list(re.finditer(r"(?im)^\s*" + heading, screen))
-    if len(trusts) != 1:
+    # The trust prompt is a full screen of its own: blank rows, then exactly
+    #   Folder access / <checkout path, maybe wrapped> / blank / the paragraph /
+    #   blank / › 1. Trust and continue / 2. Quit / blank / enter continue · esc quit
+    rows = raw_lines
+    while rows and not rows[0]:
+        rows = rows[1:]
+    gaps = [i for i, s in enumerate(rows) if not s]
+    if len(gaps) != 3 or rows[0] != "  Folder access" or gaps[0] < 2:
         deny()
-    trust = trusts[0]
-    # Accept only a complete final menu, never a trust-looking transcript above
-    # another prompt or arbitrary output. Unknown footer wording fails closed.
-    # The real prompt comes before any transcript (• / └ rows), so command output can't stage it.
-    if re.search(r"(?im)\?|would you like|do you want|bash command|allow once|^\s*[•└]", screen[:trust.start()]):
+    folder, para, menu, foot = rows[1:gaps[0]], rows[gaps[0] + 1:gaps[1]], rows[gaps[1] + 1:gaps[2]], rows[gaps[2] + 1:]
+    text = "Trust this folder? Codex can read, edit, and run files here, subject to your permission settings. " \
+        "Folder settings can run code automatically, even without a model request. " \
+        "Continue only if you trust these files. Your trust decision will be saved."
+    if any(not s.startswith("  ") or s[2:3] == " " for s in folder + para) or " ".join(s[2:] for s in para) != text \
+            or menu != ["› 1. Trust and continue", "  2. Quit"] or foot != ["  enter continue · esc quit"]:
         deny()
-    menu = re.fullmatch(
-        r"\s*([›❯]?)\s*([1-9])\. Yes, continue\s+([›❯]?)\s*([1-9])\. No, quit"
-        r"\s*(?:Press enter to continue\.?\s*)?", screen[trust.end():])
-    if not menu or menu[2] == menu[4] or (menu[1] and menu[3]):
+    # A wrapped path is split mid-word, so its rows join with nothing between them.
+    shown = "".join(s[2:] for s in folder)
+    try:
+        if not os.path.isabs(shown) or not os.path.samefile(shown, root):
+            deny()
+    except OSError:
         deny()
-    # A single key cannot spill a trailing Enter into the next queued prompt.
-    print("trust\t%s\ttrust" % ("enter" if menu[1] else menu[2]))
+    # Trust highlighted: Enter confirms it. A digit only moves the highlight in
+    # this menu, so with Quit highlighted nothing is sent (the menu check above).
+    print("trust\tenter\ttrust")
     sys.exit(0)
 
-prompts = [(i, re.fullmatch(r"Do you want to make this edit to ([^/?]+)\?", s)) for i, s in enumerate(lines)]
-prompts = [(i, m) for i, m in prompts if m]
-if len(prompts) != 1:
+# Claude's edit dialog ends the screen, nothing in a box or gutter:
+#   ⏺ Update|Write(<path>)        the tool header, if it hasn't scrolled off
+#   ──────────                    full-width rule
+#    Edit file | Create file | Overwrite file
+#    <path>                       one row; a long one is shortened to …<tail>
+#   ╌╌╌╌╌╌╌╌╌╌                    then diff rows, then ╌╌╌╌╌╌╌╌╌╌ again
+#    Do you want to make this edit to <name>? | create <name>? | overwrite <name>?
+#    ❯ 1. Yes / 2. Yes, and switch to accept edits (…) / 3. No / blank / footer
+# The path comes only from the row under the title. Diff rows are untrusted text,
+# but each starts with its line number or, wrapped, with 3+ spaces, so none can
+# pass for a rule or title row (column 0 or 1).
+kinds = {"Edit file": ("Update", r"make this edit to"), "Create file": ("Write", r"create"),
+         "Overwrite file": ("Write", r"overwrite")}
+tail = raw_lines
+while tail and not tail[-1]:
+    tail = tail[:-1]
+if len(tail) < 12 or tail[-1] != " Esc to cancel · Tab to amend" or tail[-2] != "":
     deny()
-idx, prompt = prompts[0]
-if any(re.search(r"(?i)would you like|do you want|bash command|allow once", s) for i, s in enumerate(lines) if i != idx):
+end = len(tail) - 2
+opts = [i for i in range(end) if tail[i].startswith(" ❯ 1. ")]
+if len(opts) != 1 or tail[end - 1] != "   3. No":
     deny()
-# The prompt must sit in one intact Edit-file dialog that ends the screen:
-#   ╭─╮ │Edit file│ │╭─╮│ ││<path>││ <diff rows> │╰─╯│ │Do you want…?│ │❯ 1. Yes│ … ╰─╯
-# Only the first inner row names the file; every other inner row is untrusted
-# diff. A row without the dialog's gutter (a wrapped or injected line), a
-# dialog inside another box, or anything below the dialog fails closed.
-frame = re.fullmatch(r"(\s*)│.*│", raw_lines[idx])
-if not frame:
+idx = opts[0] - 1   # the question, and the only prompt-like row on the screen
+if any(re.search(r"(?i)would you like|do you want|bash command|allow once", s) for i, s in enumerate(tail) if i != idx):
     deny()
-indent = frame[1]
-def row(i):
-    s = raw_lines[i]
-    if len(s) < len(indent) + 2 or not s.startswith(indent + "│") or not s.endswith("│"):
+option2 = " ".join(s.strip() for s in tail[opts[0] + 1:end - 1])
+if tail[opts[0]] != " ❯ 1. Yes" or not tail[opts[0] + 1].startswith("   2. ") \
+        or any(not s.startswith("      ") for s in tail[opts[0] + 2:end - 1]) \
+        or option2 != "2. Yes, and switch to accept edits (auto-approve file edits and common file commands) for this session (shift+tab)":
+    deny()
+low = idx - 1
+if low < 5 or not re.fullmatch(r"╌{20,}", tail[low]):
+    deny()
+high = low - 1
+while high >= 0 and re.match(r" {0,6}\d+(?: |$)| {3,}\S", tail[high]):
+    # A row that echoes a tool header or dialog title is not trusted as plain diff.
+    if re.search(r"⏺|(?:Edit|Create|Overwrite) file", tail[high]):
         deny()
-    return s[len(indent) + 1:-1].strip()
-def corner(i, a, b):
-    return re.fullmatch(re.escape(indent) + a + "─+" + b, raw_lines[i]) is not None
-top = idx - 1
-while top >= 0 and not corner(top, "╭", "╮"):
-    row(top)
-    top -= 1
-bottom = idx + 1
-while bottom < len(raw_lines) and not corner(bottom, "╰", "╯"):
-    row(bottom)
-    bottom += 1
-if top < 0 or bottom >= len(raw_lines) or len(raw_lines[top]) != len(raw_lines[bottom]) \
-        or any(s.strip() for s in raw_lines[bottom + 1:]) or row(idx + 1) != "❯ 1. Yes":
+    high -= 1
+if high < 3 or tail[high] != tail[low] or len(tail[high - 3]) != len(tail[low]) \
+        or not re.fullmatch(r"─+", tail[high - 3]) or high == low - 1:
     deny()
-body = [row(i) for i in range(top + 1, idx)]
-if len(body) < 4 or body[0] != "Edit file" or not re.fullmatch(r"╭─+╮", body[1]):
+title, path = tail[high - 2][1:], tail[high - 1][1:]
+if tail[high - 2][:1] != " " or tail[high - 1][:1] != " " or title not in kinds:
     deny()
-def cell(s):
-    m = re.fullmatch(r"│(.*)│", s)
-    if not m or re.search(r"⏺|╭|╰|Edit file", m[1]):
-        deny()
-    return m[1].strip()
-path = cell(body[2])
-end = next((k for k in range(3, len(body)) if re.fullmatch(r"╰─+╯", body[k])), None)
-if end is None or any(body[end + 1:]):
+tool, ask = kinds[title]
+prompt = re.fullmatch(r" Do you want to " + ask + r" ([^/?]+)\?", tail[idx])
+if not prompt or not path or path != path.strip() or os.path.basename(path) != prompt[1]:
     deny()
-for s in body[3:end]:
-    cell(s)
-# Above the dialog: every box at its indent or less is closed, and the nearest
-# line, when there is one, is the matching tool header, which is not itself
-# under another pending edit header.
-depth = 0
-for s in raw_lines[:top]:
-    t = s.lstrip()
-    if len(s) - len(t) <= len(indent) and t[:1] in ("╭", "╰", "│"):
-        depth += {"╭": 1, "╰": -1}.get(t[0], 0)
-        if depth < 0 or (t[0] == "│" and depth == 0):
-            deny()
-if depth:
+# Above the dialog: no rule or title row (dialog chrome there means this
+# "dialog" sits inside another one), and the nearest line, if any is visible, is
+# the matching tool header, not itself under another pending edit header.
+if any(re.fullmatch(r"─{20,}|╌{20,}| (?:Edit|Create|Overwrite) file", s) for s in tail[:high - 3]):
     deny()
-above = [s.strip() for s in raw_lines[:top] if s.strip()]
+above = [s.strip() for s in tail[:high - 3] if s.strip()]
 if above:
-    head = re.fullmatch(r"⏺ (?:Update|Write)\(([^()]+)\)", above[-1])
-    if not head or head[1] != path or (len(above) > 1 and re.match(r"⏺ (?:Update|Write)\(", above[-2])):
+    head = re.fullmatch(r"⏺ (Update|Write)\(([^()]+)\)", above[-1])
+    if not head or head[1] != tool or head[2] != path or (len(above) > 1 and re.match(r"⏺ (?:Update|Write)\(", above[-2])):
         deny()
-if not path or os.path.basename(path) != prompt[1]:
-    deny()
 
 def resolve(p):
     if not re.fullmatch(r"[A-Za-z0-9_./@+ -]+", p) or ".." in p.split("/"):
@@ -2412,8 +2414,18 @@ try:
         result = []
         for entry in rows[0].split(","):
             entry = entry.strip()
-            if entry.startswith("`") and entry.endswith("`"):
-                entry = entry[1:-1]
+            spans = re.findall(r"`([^`]*)`", entry)
+            if re.fullmatch(r"`[^`]*`", entry):
+                entry = spans[0]
+            elif len(spans) == 1 and entry.count("`") == 2:
+                # Prose around one backticked path ("root `handoffs/`", "new files in `x/`").
+                # As an exclusion it names the whole path, which only widens it; as a
+                # grant the prose may narrow it, so the entry grants nothing.
+                if label == "May touch":
+                    continue
+                entry = spans[0]
+            elif "`" in entry or re.search(r"\s", entry):
+                deny()
             a, b = resolve(entry)
             result.append((a, b, entry.endswith("/") or os.path.isdir(a)))
         return result

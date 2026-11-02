@@ -1,0 +1,32 @@
+❯ Testing the permission UI. Use the Read tool on src/long.py, then make ONE
+  Edit whose old_string is the entire file content (all 3 lines) and whose
+  new_string is the same but with Y = 3 and the first abcdefghij uppercased.
+
+  Read 1 file
+
+⏺ Update(src/long.py)
+
+────────────────────────────────────────────────────────────────────────────────
+ Edit file
+ src/long.py
+╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
+ 1 -X = "abcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghija
+   -bcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefg
+   -hijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabc
+   -defghijabcdefghijabcdefghij"
+ 1 +X = "ABCDEFGHIJabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghija
+   +bcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefg
+   +hijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabc
+   +defghijabcdefghijabcdefghijabcdefghij"
+ 2  # ──────────────────────────────────────────────────────────────────────────
+    ────
+ 3 -Y = 2
+ 3 +Y = 3
+╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
+ Do you want to make this edit to long.py?
+ ❯ 1. Yes
+   2. Yes, and switch to accept edits (auto-approve file edits and common file
+      commands) for this session (shift+tab)
+   3. No
+
+ Esc to cancel · Tab to amend
