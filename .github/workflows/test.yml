@@ -1,0 +1,48 @@
+name: test
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    name: ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install packages (Ubuntu)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends jq perl libio-pty-perl tmux python3 git procps curl shellcheck
+      - name: Install packages (macOS)
+        if: runner.os == 'macOS'
+        run: brew install jq tmux shellcheck
+      - name: shellcheck (errors only)
+        if: ${{ !cancelled() }}
+        run: |
+          shellcheck -S error \
+            plugins/jarvis/skills/setup/templates/handoffs/bin/jarvis \
+            plugins/jarvis/skills/setup/templates/handoffs/bin/jev.sh
+      - name: selftest
+        if: ${{ !cancelled() }}
+        run: eval/selftest.sh
+      - name: locktest
+        if: ${{ !cancelled() }}
+        run: eval/locktest.sh
+      - name: captest
+        if: ${{ !cancelled() }}
+        run: eval/captest.sh
+      - name: budgettest
+        if: ${{ !cancelled() }}
+        run: eval/budgettest.sh
+      - name: fabletest
+        if: ${{ !cancelled() }}
+        run: eval/fabletest.sh
+      - name: usagetest
+        if: ${{ !cancelled() }}
+        run: eval/usagetest.sh
