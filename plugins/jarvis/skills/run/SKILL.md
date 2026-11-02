@@ -161,8 +161,14 @@ for.
 again in a few minutes" turns. `jarvis watch` runs in its own plain terminal
 and wakes you with a `[jarvis watch]` message when a handoff lands, a
 worker hits a usage limit, a worker sits at a trust or approval prompt, or a
-worker's screen hasn't changed for `JARVIS_STALL_MIN` minutes with no
-handoff. Events within `JARVIS_BATCH_SEC` (60 s) of the first come as one
+worker's screen stays frozen with no handoff after its one stall nudge.
+`JARVIS_FASTPATH="trust edit nudge"` handles Codex folder trust, Claude's
+single-edit Yes within the brief's scope (excluding protected paths/settings),
+and one stall nudge per run without waking you. The nudge comes after
+`JARVIS_STALL_MIN`; another frozen interval wakes you. Every action goes to
+`watch.log` and `audit.log`, outside the event batch. Remove a word to disable
+it, or set `""` to wake on prompts/stalls as before.
+Events within `JARVIS_BATCH_SEC` (60 s) of the first come as one
 message. If you've been idle past `JARVIS_IDLE_MIN`, it `/clear`s you first.
 `jarvis spawn` also marks the checkout as trusted in Codex's config before a
 Codex worker starts, so Codex's first-run "Trust this folder?" prompt doesn't

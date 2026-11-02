@@ -101,7 +101,8 @@ JARVIS_IDLE_MIN=55       # minutes idle after which a big context is cheaper to 
 JARVIS_GUARD_TOKENS=100000
 JARVIS_WATCH_SEC=60
 JARVIS_BATCH_SEC=60      # the watcher holds events this long after the first, then wakes Jarvis once; 0 = at once
-JARVIS_STALL_MIN=15      # a worker screen unchanged this long, with no handoff, wakes Jarvis
+JARVIS_STALL_MIN=15      # unchanged this long: nudge once, then wake after another interval
+JARVIS_FASTPATH="trust edit nudge"  # remove a word to disable it; empty = wake Jarvis as before
 JARVIS_BUDGET_MIN=90     # a worker's working minutes (watcher ticks its screen changed in)
 JARVIS_BUDGET_USD=15     # its API-equivalent estimate, subagents included
 JARVIS_BUDGET_CTX=300000 # its last turn's context
@@ -2257,13 +2258,147 @@ watch_running() { # a `jarvis watch` loop for this checkout is alive
     && ps -p "$p" -o command= 2>/dev/null | grep -q "jarvis watch"
 }
 
-# One "<UTC time>\t<woke|cleared|nojarvis>\t<reasons>\t<n events>" line per wake in
+# One "<UTC time>\t<woke|cleared|nojarvis|auto>\t<reasons>\t<n events>" line per wake/action in
 # watch.log; reasons are the sorted kinds from the tick's events (`jarvis usage` counts them).
-watch_log() { # $1 = woke | cleared | nojarvis, $2 = the kinds, one per event, space-separated
+watch_log() { # $1 = woke | cleared | nojarvis | auto, $2 = kinds, one per event/action
   local k
   k=$(printf '%s\n' $2 | sort -u | paste -sd, -)
   mkdir -p "$STATE" && printf '%s\t%s\t%s\t%s\n' \
     "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$1" "$k" "$(echo $2 | wc -w | tr -d ' ')" >> "$STATE/watch.log"
+}
+
+fastpath_on() { case " $JARVIS_FASTPATH " in *" $1 "*) return 0 ;; *) return 1 ;; esac; }
+
+# Return kind<TAB>key<TAB>path only for a fully recognized, allowlisted prompt.
+# Python supplies realpath (including missing files below symlinked parents). Missing
+# Python, malformed scope, truncated headers and unknown UI shapes all fail closed.
+watch_prompt_action() { # $1 run, $2 screen
+  local agent brief
+  agent=$(run_get "$1" agent); brief=$(run_get "$1" brief)
+  [ "$(run_get "$1" state)" = running ] && [ -f "$brief" ] && have python3 || return 1
+  case "$agent" in codex) fastpath_on trust ;; claude) fastpath_on edit ;; *) return 1 ;; esac || return 1
+  python3 - "$ROOTP" "$brief" "$agent" "$(run_get "$1" spawned)" "$2" <<'PY'
+import os, re, sys
+from pathlib import Path
+
+root, brief, agent, spawned, screen = sys.argv[1:]
+def deny():
+    sys.exit(1)
+
+# Do not interpret terminal escape/control sequences as a path or an approval.
+if any(ord(c) < 32 and c not in "\n\t" for c in screen):
+    deny()
+lines = [s.strip(" \t│┃") for s in screen.splitlines()]
+if agent == "codex":
+    trust = re.search(r"(?im)^\s*(?:Trust this folder\?|Do you trust (?:this folder|the files in this folder)\?|Allow Codex to work in this folder\?)", screen)
+    if not trust or re.search(r"(?i)would you like|do you want|bash command", screen[trust.end():]):
+        deny()
+    choices = re.findall(r"(?:^|[\s›❯])([1-9])\. Yes, continue(?=\s|$)", screen[trust.end():])
+    if len(choices) != 1:
+        deny()
+    print("trust\t%s,enter\ttrust" % choices[0])
+    sys.exit(0)
+
+prompts = [(i, re.fullmatch(r"Do you want to make this edit to ([^/?]+)\?", s)) for i, s in enumerate(lines)]
+prompts = [(i, m) for i, m in prompts if m]
+if len(prompts) != 1:
+    deny()
+idx, prompt = prompts[0]
+if not any(re.fullmatch(r"[❯›]?\s*1\. Yes", s) for s in lines[idx + 1:]):
+    deny()
+if any(re.search(r"(?i)would you like|do you want|bash command|allow once", s) for i, s in enumerate(lines) if i != idx):
+    deny()
+path = None
+for i, s in enumerate(lines[:idx]):
+    if s.startswith("⏺ "):
+        m = re.fullmatch(r"⏺ (?:Update|Write)\(([^()]+)\)", s)
+        path = m[1] if m else None
+    if s == "Edit file" or s.startswith("Edit file: "):
+        p = s[len("Edit file: "):] if s.startswith("Edit file: ") else None
+        if p is None:
+            p = next((v for v in lines[i + 1:idx] if v and not all(c in "╭╮╰╯─│ " for c in v)), None)
+        if path is not None and p != path:
+            deny()
+        path = p
+if not path or os.path.basename(path) != prompt[1]:
+    deny()
+
+def resolve(p):
+    if not re.fullmatch(r"[A-Za-z0-9_./@+ -]+", p) or ".." in p.split("/"):
+        deny()
+    lexical = os.path.abspath(os.path.join(root, p))
+    try:
+        real = str(Path(lexical).resolve())
+        # Even an intermediate symlink outside followed by one back inside is
+        # outside this allowlist. Check each prefix, including missing parents.
+        prefix = lexical
+        while prefix != root and os.path.commonpath([root, prefix]) == root:
+            if os.path.commonpath([root, str(Path(prefix).resolve())]) != root:
+                deny()
+            prefix = os.path.dirname(prefix)
+    except (OSError, RuntimeError):
+        deny()
+    if any(os.path.commonpath([root, x]) != root for x in (lexical, real)):
+        deny()
+    return lexical, real
+
+lexical, real = resolve(path)
+try:
+    content = Path(brief).read_text()
+    scopes = re.findall(r"(?ms)^## Scope\s*\n(.*?)(?=^## |\Z)", content)
+    if len(scopes) != 1:
+        deny()
+    def entries(label):
+        rows = re.findall(r"(?m)^- " + label + r":(.*)$", scopes[0])
+        if len(rows) > 1 or (label == "May touch" and not rows):
+            deny()
+        if not rows or rows[0].strip().lower() in ("", "none"):
+            return []
+        result = []
+        for entry in rows[0].split(","):
+            entry = entry.strip()
+            if entry.startswith("`") and entry.endswith("`"):
+                entry = entry[1:-1]
+            a, b = resolve(entry)
+            result.append((a, b, entry.endswith("/") or os.path.isdir(a)))
+        return result
+    allow, block = entries("May touch"), entries("Must not touch")
+    def matches(entry):
+        a, b, directory = entry
+        return any(x == y or (directory and x.startswith(y.rstrip("/") + "/"))
+                   for x in (lexical, real) for y in (a, b))
+    if not any(map(matches, allow)) or any(map(matches, block)):
+        deny()
+    for candidate in (lexical, real):
+        rel = os.path.relpath(candidate, root)
+        parts = rel.lower().split("/")
+        name = parts[-1]
+        if any(p in (".claude", ".git") for p in parts) or name.startswith(("settings", ".env")) or name.endswith((".pem", ".key")) or name == "jarvis.conf":
+            deny()
+        if parts[0] == "handoffs":
+            # Only an identifiable handoff from this run, explicitly listed as a
+            # file, can bypass the root handoffs exclusion. New/unknown ones wake.
+            if len(parts) != 2 or not name.endswith(".md") or not any(a == lexical and not d for a, b, d in allow):
+                deny()
+            handoff = Path(candidate)
+            owners = re.findall(r"(?m)^brief:\s*(\S+)\s*$", handoff.read_text())
+            if owners != [brief] or handoff.stat().st_mtime < int(spawned):
+                deny()
+    print("edit\t1,enter\t" + os.path.relpath(lexical, root))
+except (OSError, ValueError):
+    deny()
+PY
+}
+
+watch_auto_prompt() { # $1 run, $2 screen; send first, record only successful actions
+  local action kind keys path
+  action=$(watch_prompt_action "$1" "$2") || return 1
+  IFS="$TAB" read -r kind keys path <<EOF
+$action
+EOF
+  host send "$1" --keys "$keys" >/dev/null 2>&1 || return 1
+  watch_log auto "$kind"
+  audit "auto-$kind" "$1" "$(run_get "$1" brief)" "path=$path key=$keys" sent
 }
 
 # The batch the watcher holds before waking Jarvis: "opened: <epoch>" (when its first
@@ -2283,7 +2418,8 @@ pending_put() { # $1 = opened, $2 = kinds, $3 = events, $4 = nojarvis; written t
 }
 
 watch_tick() {
-  local seen="$STATE/watch.seen" events="" kinds="" ho key id tail_ idle term line brief sum scr stale b opened new
+  local seen="$STATE/watch.seen" events="" kinds="" ho key id tail_ idle term line brief sum scr stale b opened new nudged t read_lines=15
+  fastpath_on edit && read_lines=80   # include the path above a full edit diff; off keeps the old tail size
   touch "$seen"
   for ho in "$H"/*.md; do
     [ -f "$ho" ] || continue
@@ -2296,7 +2432,7 @@ watch_tick() {
   while IFS= read -r line; do
     id=$(printf '%s' "$line" | sed -n 's/.*term \([^ ]*\).*/\1/p')
     [ -n "$id" ] || continue
-    tail_=$(host read "$id" 15 2>/dev/null | sed -e 's/[[:space:]]*$//')
+    tail_=$(host read "$id" "$read_lines" 2>/dev/null | sed -e 's/[[:space:]]*$//')
     b=$(budget_tick "$id" "$tail_" </dev/null)
     [ -n "$b" ] && { events="$events$b"; kinds="$kinds budget"; }
     [ -n "$tail_" ] || continue
@@ -2306,6 +2442,11 @@ watch_tick() {
       grep -qxF "$key" "$seen" || { echo "$key" >> "$seen"; events="$events usage limit in worker $(short "$id");"; kinds="$kinds limit"; }
     elif printf '%s' "$tail_" | grep -Eiq "$PROMPT_RE"; then
       key="prompt $id $sum"
+      grep -qxF "auto $id $sum" "$seen" && continue
+      if ! grep -qxF "$key" "$seen" && watch_auto_prompt "$id" "$tail_"; then
+        echo "auto $id $sum" >> "$seen"
+        continue
+      fi
       grep -qxF "$key" "$seen" || { echo "$key" >> "$seen"; events="$events worker $(short "$id") is waiting at a prompt — read its terminal;"; kinds="$kinds prompt"; }
     else
       # a working agent's screen keeps changing (spinner, timer, output); a frozen one
@@ -2317,6 +2458,19 @@ watch_tick() {
         stale=$(( ($(now) - $(mtime "$scr")) / 60 ))
         brief=$(printf '%s' "$line" | grep -o "$H/briefs/[^ ]*\.md" | head -n 1)
         if [ "$stale" -ge "$JARVIS_STALL_MIN" ] && ! grep -lq "^brief:[[:space:]]*${brief:-@@none@@}" "$H"/*.md 2>/dev/null; then
+          if fastpath_on nudge && [ "$(run_get "$id" state)" = running ]; then
+            nudged=$(run_get "$id" nudged); t=$(now)
+            if [ -z "$nudged" ]; then
+              if host send "$id" "Finish the phase or write your handoff now." >/dev/null 2>&1; then
+                run_set "$id" nudged "$t"
+                watch_log auto nudge
+                audit auto-nudge "$id" "$(run_get "$id" brief)" "prompt=stall key=enter" sent
+                continue
+              fi
+            elif [ $(( t - nudged )) -lt $(( JARVIS_STALL_MIN * 60 )) ]; then
+              continue
+            fi
+          fi
           key="stall $id $sum"
           grep -qxF "$key" "$seen" || { echo "$key" >> "$seen"; events="$events worker $(short "$id")'s screen hasn't changed in ${stale} min and it has no handoff — read its terminal;"; kinds="$kinds stall"; }
         fi
@@ -2992,12 +3146,14 @@ cmd_usage() {
   if [ -f "$STATE/watch.log" ]; then
     wakes=$(awk -F'\t' -v t0="$(printf '%s' "$json" | jq -r '.period[0][0:19]')" \
       -v t1="$(printf '%s' "$json" | jq -r '.period[1][0:19]')" -v m="$merged" '
-      $2 == "nojarvis" { next }   # nothing was woken
       { t = substr($1, 1, 19) } t < t0 || t > t1 { next }
+      $2 == "auto" { a[$3]++; next }
+      $2 != "woke" && $2 != "cleared" { next }
       { n++; k = split($3, r, ","); for (i = 1; i <= k; i++) c[r[i]]++ }
       END {
         printf "wake-ups (this repo): %d · per merged handoff %s", n, (m > 0 ? sprintf("%.2f", n / m) : "n/a")
-        printf " · handoff %d, prompt %d, stall %d, limit %d, budget %d\n", c["handoff"], c["prompt"], c["stall"], c["limit"], c["budget"]
+        printf " · handoff %d, prompt %d, stall %d, limit %d, budget %d", c["handoff"], c["prompt"], c["stall"], c["limit"], c["budget"]
+        printf " · auto-handled: trust %d, edit %d, nudge %d\n", a["trust"], a["edit"], a["nudge"]
       }' "$STATE/watch.log")
   else
     wakes="wake-ups (this repo): no watcher log yet"

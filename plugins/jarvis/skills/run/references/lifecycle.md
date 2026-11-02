@@ -121,6 +121,18 @@ count), which `jarvis usage` counts. The watcher holds events for
 `JARVIS_BATCH_SEC` (60) after the first one and then sends them as one
 message, so a burst is one line and one Jarvis turn; `0` sends at once.
 
+`JARVIS_FASTPATH="trust edit nudge"` answers Codex folder trust and Claude's
+single-edit Yes only for an unambiguous path inside May touch and outside
+Must not touch, `.claude/`, `.git/`, root `handoffs/` (except an identified,
+explicitly listed handoff from this run), settings, env and credential files.
+Unknown or truncated paths and command approvals wake Jarvis. A frozen worker
+with no handoff gets one nudge after `JARVIS_STALL_MIN`, then wakes Jarvis if
+still frozen for another interval. Remove a word to disable it; `""` disables
+all three. Actions log `auto` with trust/edit/nudge in `watch.log` plus their
+run, brief and path/prompt and key in `audit.log`; they never enter the batch.
+`jarvis usage` counts only woke/cleared as wake-ups and reports auto-handled
+trust, edit and nudge totals separately.
+
 Every failure is on the merge line, never swallowed:
 
 ```

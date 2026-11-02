@@ -151,12 +151,15 @@ printf '%s' "$out" | grep -q '^    wake-ups (this repo): no watcher log yet$'; c
 in1=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 printf '2001-01-01T00:00:00Z\twoke\thandoff\t1\n%s\twoke\thandoff\t1\n%s\tcleared\tprompt,stall\t2\n' "$in1" "$in1" \
   > "$repo/handoffs/.jarvis/watch.log"
+printf '2001-01-01T00:00:00Z\tauto\ttrust\t1\n' >> "$repo/handoffs/.jarvis/watch.log"
+for kind in trust trust edit nudge; do printf '%s\tauto\t%s\t1\n' "$in1" "$kind"; done >> "$repo/handoffs/.jarvis/watch.log"
+printf '%s\tnojarvis\tlimit\t1\n%s\tunknown\tbudget\t1\n' "$in1" "$in1" >> "$repo/handoffs/.jarvis/watch.log"
 out=$(
   cd "$repo" || exit 1
   HOME="$home" handoffs/bin/jarvis usage --days 2 --top 2
 )
-printf '%s' "$out" | grep -q '^    wake-ups (this repo): 2 · per merged handoff [0-9.n/a]* · handoff 1, prompt 1, stall 1, limit 0, budget 0$'
-check "jarvis usage counts the window's wake-ups, once per reason" $?
+printf '%s' "$out" | grep -q '^    wake-ups (this repo): 2 · per merged handoff [0-9.n/a]* · handoff 1, prompt 1, stall 1, limit 0, budget 0 · auto-handled: trust 2, edit 1, nudge 1$'
+check "jarvis usage counts only woke/cleared, once per reason, and auto actions separately within the window" $?
 
 echo
 if [ "$fails" = 0 ]; then echo "usagetest: all passed"; else echo "usagetest: $fails failed"; exit 1; fi

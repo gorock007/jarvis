@@ -86,11 +86,14 @@ case "$1 $2" in
   "agents create") n=$(( $(cat "$FAKE_LOG.n" 2>/dev/null || echo 0) + 1 )); echo "$n" > "$FAKE_LOG.n"
     printf '{"kind":"terminal","sessionId":"term-%s"}\n' "$n" ;;
   "terminals close") [ -z "${FAKE_CLOSE_FAIL:-}" ] || { echo "Error: terminal $6 not found" >&2; exit 1; } ;;
-  "terminals read") printf '{"text":"%s"}\n' "${FAKE_SCREEN:-Working… esc to interrupt}" ;;
+  "terminals read") jq -n --arg t "${FAKE_SCREEN:-Working… esc to interrupt}" '{text: $t}' ;;
+  "terminals send") [ -z "${FAKE_SEND_FAIL:-}" ] || [ "$6" = jarvis-t ] ;;
   "terminals list") printf '{"sessions":[%s]}\n' "$(printf '%s' "${FAKE_OPEN:-}" | sed -E 's/([^ ]+)/{"terminalId":"\1","exited":false,"title":"shell-\1"}/g; s/ /,/g')" ;;
 esac
 EOT
   chmod +x "$tmp/fake/superset"
+  # Make env-bash shebangs (including jarvis) use this suite's interpreter too.
+  ln -s "$BASH" "$tmp/fake/bash"
   (
     cd "$sb" || exit 1
     export PATH="$tmp/fake:$PATH" FAKE_LOG="$tmp/fake.log" SUPERSET_WORKSPACE_ID=ws SUPERSET_TERMINAL_ID=jarvis-t
@@ -182,6 +185,7 @@ EOT
     grep -qxF "[projects.\"$(pwd -P)\"]" "$CODEX_HOME/config.toml"; check "Codex spawn pre-trusts the checkout in Codex's config" $?
     $J spawn handoffs/briefs/b6.md >/dev/null 2>&1
     [ "$(grep -c '^\[projects\.' "$CODEX_HOME/config.toml")" = 1 ]; check "…once, however many Codex workers follow" $?
+    echo 'JARVIS_FASTPATH=""' >> handoffs/jarvis.conf   # retain the legacy prompt/stall tests with all fast paths off
     : > "$FAKE_LOG"; FAKE_SCREEN="  Trust this folder? › 1. Yes, continue  2. No, quit" $J watch --once >/dev/null
     grep -q 'send .*waiting at a prompt' "$FAKE_LOG"; check "watch wakes Jarvis for a worker at a trust prompt" $?
     wl | grep -Eq '^(woke|cleared) prompt [1-9]'; check "…and logs the wake with reason prompt" $?
@@ -200,6 +204,161 @@ EOT
     rm -f handoffs/h8.md
     b4t=$(sed -n 's/.*terminal: //p' handoffs/briefs/b4.md)
     [ -n "$b4t" ] && ! grep -q "$b4t's screen" "$FAKE_LOG"; check "…but not for one that already handed off" $?
+
+    # Fast paths use a separate throwaway checkout and the fake host above. No
+    # real terminal is read or sent anything; each case has one synthetic run.
+    (
+      mkdir -p "$tmp/fastpaths" && cd "$tmp/fastpaths" || exit 1
+      git init -q; cp -R "$tpl/handoffs" .
+      mkdir -p src config .claude .git/info "$tmp/outside"
+      touch src/widget.py src/private.py config/settings.py
+      ln -s "$tmp/outside" src/escape
+      ln -s "$(pwd -P)/src" "$tmp/outside/back"
+      ln -s ../.claude src/hidden
+      ln -s ../config/settings.py src/alias.py
+      fp_setup() { # agent, May touch, Must not touch
+        rm -rf handoffs/.jarvis; rm -f handoffs/fp-handoff.md
+        mkdir -p handoffs/.jarvis/runs
+        printf 'JARVIS_BATCH_SEC=0\nJARVIS_STALL_MIN=1\nJARVIS_FASTPATH="trust edit nudge"\n' > handoffs/jarvis.conf
+        printf '# fast path\nworker: %s\n\n## Scope\n- May touch: %s\n- Must not touch: %s\n' "$1" "$2" "${3:-none}" > handoffs/briefs/fp.md
+        printf 'brief: handoffs/briefs/fp.md\nagent: %s\nspawned: %s\nstate: running\n' "$1" "$(date +%s)" > handoffs/.jarvis/runs/fp
+        printf '# Open\nJarvis session: jarvis-t\n## Running workers\n- now · %s/model · term fp · handoffs/briefs/fp.md\n' "$1" > handoffs/OPEN.md
+        : > "$FAKE_LOG"
+      }
+      fp_tick() { : > "$FAKE_LOG"; FAKE_SCREEN="$1" $J watch --once >/dev/null; }
+      fp_edit() { printf '⏺ Update(%s)\nDo you want to make this edit to %s?\n❯ 1. Yes\n  2. Yes, allow all edits during this session\n  3. No\n' "$1" "${2:-${1##*/}}"; }
+      fp_woke() { grep -q 'terminal jarvis-t --text .*waiting at a prompt' "$FAKE_LOG" && ! grep -q -- '--keys' "$FAKE_LOG"; }
+      fp_approved() { grep -q 'terminal fp --keys 1,enter' "$FAKE_LOG" && ! grep -q 'terminal jarvis-t --text' "$FAKE_LOG" && [ ! -f handoffs/.jarvis/watch.pending ]; }
+      fp_age() { touch -t "$(date -r "$1" +%Y%m%d%H%M.%S 2>/dev/null || date -d "@$1" +%Y%m%d%H%M.%S)" handoffs/.jarvis/screen-fp; }
+      fp_nudged() { sed -i.bak '/^nudged:/d' handoffs/.jarvis/runs/fp; rm -f handoffs/.jarvis/runs/fp.bak; printf 'nudged: %s\n' "$1" >> handoffs/.jarvis/runs/fp; }
+
+      fp_setup claude '`src/widget.py`, `config/settings.py`'
+      fp_tick "$(fp_edit src/widget.py)"
+      fp_approved && [ "$(wl)" = 'auto edit 1' ] && grep -q 'auto-edit run=fp brief=handoffs/briefs/fp.md path=src/widget.py key=1,enter result=sent' handoffs/.jarvis/audit.log
+      check "fast edit: in-scope file gets single-edit Yes, both logs, no wake or pending batch" $?
+      grep -q 'terminal fp --max-lines 80' "$FAKE_LOG"; check "fast edit: reads enough lines for the header above a full diff" $?
+      fp_tick "$(fp_edit src/widget.py)"
+      ! grep -q 'terminals send' "$FAKE_LOG" && [ "$(wc -l < handoffs/.jarvis/watch.log | tr -d ' ')" = 1 ]; check "fast edit: unchanged prompt is answered only once" $?
+
+      fp_setup claude '`src/`'
+      echo 'JARVIS_BATCH_SEC=600' >> handoffs/jarvis.conf
+      fp_tick "$(fp_edit src/new.py)"; fp_approved; check "fast edit: a new file inside a listed directory is approved immediately, outside batching" $?
+      for header in '⏺ Write(src/new.py)' 'Edit file: src/new.py' 'Edit file
+│ ╭────────────╮ │
+│ │ src/new.py │ │'; do
+        fp_setup claude '`src/`'
+        fp_tick "$(printf '%s\nDo you want to make this edit to new.py?\n❯ 1. Yes' "$header")"
+        fp_approved; check "fast edit: recognizes Write/Edit file headers ($header)" $?
+      done
+      fp_setup claude '`src/`'
+      fp_tick "$(fp_edit "$(pwd -P)/src/widget.py")"; fp_approved; check "fast edit: absolute path inside the checkout is allowed" $?
+      for path in other.py src/../src/widget.py .claude/rules.md .git/info/exclude config/settings.py config/settings.local.json config/.env.local config/server.pem config/server.key config/jarvis.conf handoffs/OPEN.md src/escape/new.py src/escape/back/widget.py src/hidden/new.py src/alias.py "$tmp/outside/new.py"; do
+        fp_setup claude '`src/`, `.claude/`, `.git/`, `config/`, `handoffs/`'
+        fp_tick "$(fp_edit "$path")"
+        fp_woke; check "fast edit: excluded or out-of-scope $path wakes Jarvis" $?
+      done
+      fp_setup claude '`src/`' '`src/widget.py`'
+      fp_tick "$(fp_edit src/widget.py)"; fp_woke; check "fast edit: exact Must not touch wins" $?
+      fp_setup claude '`src/`' '`src/`'
+      fp_tick "$(fp_edit src/widget.py)"; fp_woke; check "fast edit: directory Must not touch wins" $?
+      fp_setup claude '`src/widget.py`'
+      fp_tick "$(fp_edit src/widget.py other.py)"; fp_woke; check "fast edit: basename mismatch wakes Jarvis" $?
+      fp_setup claude '`src/widget.py`'
+      fp_tick 'Do you want to make this edit to widget.py?
+❯ 1. Yes'; fp_woke; check "fast edit: truncated path header wakes Jarvis" $?
+      fp_setup claude '`src/`'
+      fp_tick '⏺ Update(src/widget.py)
+Edit file: src/private.py
+Do you want to make this edit to private.py?
+❯ 1. Yes'; fp_woke; check "fast edit: conflicting headers wake Jarvis" $?
+      fp_setup claude '`src/`'
+      fp_tick '⏺ Update(src/widget.py)
+⏺ Bash(echo hello)
+Do you want to proceed?
+❯ 1. Yes'; fp_woke; check "fast edit: Bash approval wakes Jarvis" $?
+      for agent in codex opencode; do
+        fp_setup "$agent" '`src/`'; fp_tick "$(fp_edit src/widget.py)"; fp_woke; check "fast edit: never answers a $agent edit prompt" $?
+      done
+      fp_setup claude '`handoffs/fp-handoff.md`'
+      printf '# phase\nstatus: blocked\nbrief: handoffs/briefs/fp.md\n' > handoffs/fp-handoff.md
+      # Learn the handoff before presenting its edit prompt.
+      fp_tick working
+      fp_tick "$(fp_edit handoffs/fp-handoff.md)"; fp_approved; check "fast edit: explicitly listed, identified handoff from this run is allowed" $?
+      fp_setup claude '`src/`'
+      FAKE_SEND_FAIL=1 fp_tick "$(fp_edit src/widget.py)"
+      grep -q 'terminal jarvis-t --text .*waiting at a prompt' "$FAKE_LOG" && ! grep -q 'auto' handoffs/.jarvis/watch.log \
+        && [ ! -f handoffs/.jarvis/audit.log ]; check "fast edit: failed key send falls back to Jarvis without an auto log" $?
+      fp_setup claude '`src/`'
+      echo '- May touch: `src/`' >> handoffs/briefs/fp.md
+      fp_tick "$(fp_edit src/widget.py)"; fp_woke; check "fast edit: ambiguous scope lists fail closed" $?
+
+      trust='Trust this folder? › 1. Yes, continue  2. No, quit'
+      fp_setup codex '`src/`'; fp_tick "$trust"
+      fp_approved && [ "$(wl)" = 'auto trust 1' ] && grep -q 'auto-trust run=fp brief=handoffs/briefs/fp.md path=trust key=1,enter result=sent' handoffs/.jarvis/audit.log
+      check "fast trust: Codex gets Yes, continue, both logs, no Jarvis wake" $?
+      fp_tick "$trust"; ! grep -q 'terminals send' "$FAKE_LOG"; check "fast trust: unchanged prompt is not answered twice" $?
+      fp_setup codex '`src/`'; FAKE_SEND_FAIL=1 fp_tick "$trust"
+      grep -q 'terminal jarvis-t --text .*waiting at a prompt' "$FAKE_LOG" && [ "$(wl)" = 'woke prompt 1' ] \
+        && [ ! -f handoffs/.jarvis/audit.log ]; check "fast trust: failed send wakes Jarvis without logging auto" $?
+      fp_setup codex '`src/`'; fp_tick 'Trust this folder? Yes, continue'
+      fp_woke; check "fast trust: missing option key fails closed" $?
+      fp_setup codex '`src/`'; fp_tick "$trust
+Would you like to run the following command?
+1. Yes, proceed (y)"
+      fp_woke; check "fast trust: an old trust prompt above a command approval is never answered" $?
+      fp_setup codex '`src/`'; fp_tick 'Allow Codex to work in this folder?
+  2. Yes, continue
+  1. No, quit'
+      grep -q 'terminal fp --keys 2,enter' "$FAKE_LOG"; check "fast trust: sends the displayed Yes option key" $?
+      for agent in claude opencode; do
+        fp_setup "$agent" '`src/`'; fp_tick "$trust"; fp_woke; check "fast trust: never answers $agent folder trust" $?
+      done
+      fp_setup codex '`src/`'; echo 'JARVIS_FASTPATH="edit nudge"' >> handoffs/jarvis.conf
+      fp_tick "$trust"; fp_woke; check "fast paths: removing trust disables just trust" $?
+      fp_setup claude '`src/`'; echo 'JARVIS_FASTPATH="trust nudge"' >> handoffs/jarvis.conf
+      fp_tick "$(fp_edit src/widget.py)"; fp_woke; check "fast paths: removing edit disables just edit" $?
+      fp_setup codex '`src/`'; echo 'JARVIS_FASTPATH=""' >> handoffs/jarvis.conf
+      fp_tick "$trust"; fp_woke && grep -q 'terminal fp --max-lines 15' "$FAKE_LOG"; check "fast paths: empty restores prompt wake and the original tail size" $?
+      fp_tick frozen; fp_age $(( $(date +%s) - 120 )); fp_tick frozen
+      grep -q "terminal jarvis-t --text .*screen hasn't changed" "$FAKE_LOG" && ! grep -q '^nudged:' handoffs/.jarvis/runs/fp; check "fast paths: empty restores immediate stall wake" $?
+      fp_setup claude '`src/`'; echo 'JARVIS_FASTPATH="trust edit"' >> handoffs/jarvis.conf
+      fp_tick frozen; fp_age $(( $(date +%s) - 120 )); fp_tick frozen
+      grep -q "terminal jarvis-t --text .*screen hasn't changed" "$FAKE_LOG" && ! grep -q '^nudged:' handoffs/.jarvis/runs/fp; check "fast paths: removing nudge disables just nudge" $?
+
+      fp_setup codex '`src/`'; fp_tick frozen
+      fp_age $(( $(date +%s) - 120 )); fp_tick frozen
+      grep -q 'terminal fp --text Finish the phase or write your handoff now.' "$FAKE_LOG" && ! grep -q 'terminal jarvis-t --text' "$FAKE_LOG" \
+        && grep -Eq '^nudged: [0-9]+$' handoffs/.jarvis/runs/fp && [ "$(wl)" = 'auto nudge 1' ] \
+        && grep -q 'auto-nudge run=fp brief=handoffs/briefs/fp.md prompt=stall key=enter result=sent' handoffs/.jarvis/audit.log \
+        && [ ! -f handoffs/.jarvis/watch.pending ]; check "fast nudge: first stall nudges once, records the epoch and both logs, no batch" $?
+      fp_tick frozen; ! grep -q 'terminals send' "$FAKE_LOG"; check "fast nudge: no wake during the second interval" $?
+      fp_nudged $(( $(date +%s) - 120 )); fp_tick frozen
+      grep -q "terminal jarvis-t --text .*screen hasn't changed" "$FAKE_LOG" && [ "$(wl)" = 'woke stall 1' ]; check "fast nudge: still frozen after the second interval wakes Jarvis" $?
+      fp_tick frozen; ! grep -q 'terminals send' "$FAKE_LOG"; check "fast nudge: the same stall wake is deduplicated" $?
+      fp_tick 'new frozen screen'; fp_age $(( $(date +%s) - 120 )); fp_tick 'new frozen screen'
+      grep -q "terminal jarvis-t --text .*screen hasn't changed" "$FAKE_LOG" && [ "$(grep -c 'auto-nudge' handoffs/.jarvis/audit.log)" = 1 ]; check "fast nudge: a different frozen screen wakes without a second nudge" $?
+      fp_setup claude '`src/`'; fp_tick frozen; fp_age $(( $(date +%s) - 120 ))
+      FAKE_SEND_FAIL=1 fp_tick frozen
+      grep -q "terminal jarvis-t --text .*screen hasn't changed" "$FAKE_LOG" && ! grep -q '^nudged:' handoffs/.jarvis/runs/fp \
+        && [ "$(wl)" = 'woke stall 1' ]; check "fast nudge: failed send wakes Jarvis without recording a nudge" $?
+      fp_setup claude '`src/`'; fp_tick frozen; fp_age $(( $(date +%s) - 120 )); fp_tick frozen
+      printf '# phase\nstatus: done\nbrief: handoffs/briefs/fp.md\n' > handoffs/fp-handoff.md
+      fp_nudged $(( $(date +%s) - 120 )); fp_tick frozen
+      ! grep -q 'Finish the phase\|screen hasn' "$FAKE_LOG" && [ "$(wl)" = 'woke handoff 1' ]; check "fast nudge: handoff after the nudge suppresses the stall wake" $?
+
+      count=0
+      for fixture in "$here"/terminals/*.txt; do
+        name=${fixture##*/}
+        case "$name" in *-claude-*) agent=claude ;; *-codex-*) agent=codex ;; *-opencode-*) agent=opencode ;; *) bad "fixture has no agent label: $name"; continue ;; esac
+        fp_setup "$agent" '`src/`, `config/settings.py`, `app/`, `tests/`, `pages/`'
+        fp_tick "$(cat "$fixture")"
+        ! grep -q -- '--keys' "$FAKE_LOG" && ! grep -q 'auto' handoffs/.jarvis/watch.log 2>/dev/null
+        check "fast fixture: $name does not qualify for automatic approval" $?
+        case "$name" in 19-*|20-*|21-*|22-*|23-*|24-*) fp_woke; check "fast fixture: $name wakes Jarvis at its permission prompt" $? ;; esac
+        count=$((count + 1))
+      done
+      if [ "$count" = 40 ]; then ok "fast fixtures: replayed all 40 labelled terminal tails"; else bad "fast fixtures: expected 40 tails, got $count"; fi
+    )
 
     echo s > self.txt
     printf '# Self-listing\nstatus: done\nagent: codex gpt-5.6-sol\n## Files\n- self.txt — created\n- handoffs/h7.md — this handoff\n' > handoffs/h7.md
