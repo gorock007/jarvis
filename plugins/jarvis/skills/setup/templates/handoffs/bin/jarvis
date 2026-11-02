@@ -2277,7 +2277,7 @@ watch_prompt_action() { # $1 run, $2 screen
   agent=$(run_get "$1" agent); brief=$(run_get "$1" brief)
   [ "$(run_get "$1" state)" = running ] && [ -f "$brief" ] && have python3 || return 1
   case "$agent" in codex) fastpath_on trust ;; claude) fastpath_on edit ;; *) return 1 ;; esac || return 1
-  python3 - "$ROOTP" "$brief" "$agent" "$(run_get "$1" spawned)" "$2" <<'PY'
+  python3 -I - "$ROOTP" "$brief" "$agent" "$(run_get "$1" spawned)" "$2" <<'PY'
 import os, re, sys
 from pathlib import Path
 
@@ -2288,15 +2288,26 @@ def deny():
 # Do not interpret terminal escape/control sequences as a path or an approval.
 if any(ord(c) < 32 and c not in "\n\t" for c in screen):
     deny()
-lines = [s.strip(" \t│┃") for s in screen.splitlines()]
+raw_lines = screen.splitlines()
+lines = [s.strip(" \t│┃") for s in raw_lines]
 if agent == "codex":
-    trust = re.search(r"(?im)^\s*(?:Trust this folder\?|Do you trust (?:this folder|the files in this folder)\?|Allow Codex to work in this folder\?)", screen)
-    if not trust or re.search(r"(?i)would you like|do you want|bash command", screen[trust.end():]):
+    heading = r"(?:Trust this folder\?|Do you trust (?:this folder|the files in this folder)\?|Allow Codex to work in this folder\?)"
+    trusts = list(re.finditer(r"(?im)^\s*" + heading, screen))
+    if len(trusts) != 1:
         deny()
-    choices = re.findall(r"(?:^|[\s›❯])([1-9])\. Yes, continue(?=\s|$)", screen[trust.end():])
-    if len(choices) != 1:
+    trust = trusts[0]
+    # Accept only a complete final menu, never a trust-looking transcript above
+    # another prompt or arbitrary output. Unknown footer wording fails closed.
+    # The real prompt comes before any transcript (• / └ rows), so command output can't stage it.
+    if re.search(r"(?im)\?|would you like|do you want|bash command|allow once|^\s*[•└]", screen[:trust.start()]):
         deny()
-    print("trust\t%s,enter\ttrust" % choices[0])
+    menu = re.fullmatch(
+        r"\s*([›❯]?)\s*([1-9])\. Yes, continue\s+([›❯]?)\s*([1-9])\. No, quit"
+        r"\s*(?:Press enter to continue\.?\s*)?", screen[trust.end():])
+    if not menu or menu[2] == menu[4] or (menu[1] and menu[3]):
+        deny()
+    # A single key cannot spill a trailing Enter into the next queued prompt.
+    print("trust\t%s\ttrust" % ("enter" if menu[1] else menu[2]))
     sys.exit(0)
 
 prompts = [(i, re.fullmatch(r"Do you want to make this edit to ([^/?]+)\?", s)) for i, s in enumerate(lines)]
@@ -2304,22 +2315,66 @@ prompts = [(i, m) for i, m in prompts if m]
 if len(prompts) != 1:
     deny()
 idx, prompt = prompts[0]
-if not any(re.fullmatch(r"[❯›]?\s*1\. Yes", s) for s in lines[idx + 1:]):
-    deny()
 if any(re.search(r"(?i)would you like|do you want|bash command|allow once", s) for i, s in enumerate(lines) if i != idx):
     deny()
-path = None
-for i, s in enumerate(lines[:idx]):
-    if s.startswith("⏺ "):
-        m = re.fullmatch(r"⏺ (?:Update|Write)\(([^()]+)\)", s)
-        path = m[1] if m else None
-    if s == "Edit file" or s.startswith("Edit file: "):
-        p = s[len("Edit file: "):] if s.startswith("Edit file: ") else None
-        if p is None:
-            p = next((v for v in lines[i + 1:idx] if v and not all(c in "╭╮╰╯─│ " for c in v)), None)
-        if path is not None and p != path:
+# The prompt must sit in one intact Edit-file dialog that ends the screen:
+#   ╭─╮ │Edit file│ │╭─╮│ ││<path>││ <diff rows> │╰─╯│ │Do you want…?│ │❯ 1. Yes│ … ╰─╯
+# Only the first inner row names the file; every other inner row is untrusted
+# diff. A row without the dialog's gutter (a wrapped or injected line), a
+# dialog inside another box, or anything below the dialog fails closed.
+frame = re.fullmatch(r"(\s*)│.*│", raw_lines[idx])
+if not frame:
+    deny()
+indent = frame[1]
+def row(i):
+    s = raw_lines[i]
+    if len(s) < len(indent) + 2 or not s.startswith(indent + "│") or not s.endswith("│"):
+        deny()
+    return s[len(indent) + 1:-1].strip()
+def corner(i, a, b):
+    return re.fullmatch(re.escape(indent) + a + "─+" + b, raw_lines[i]) is not None
+top = idx - 1
+while top >= 0 and not corner(top, "╭", "╮"):
+    row(top)
+    top -= 1
+bottom = idx + 1
+while bottom < len(raw_lines) and not corner(bottom, "╰", "╯"):
+    row(bottom)
+    bottom += 1
+if top < 0 or bottom >= len(raw_lines) or len(raw_lines[top]) != len(raw_lines[bottom]) \
+        or any(s.strip() for s in raw_lines[bottom + 1:]) or row(idx + 1) != "❯ 1. Yes":
+    deny()
+body = [row(i) for i in range(top + 1, idx)]
+if len(body) < 4 or body[0] != "Edit file" or not re.fullmatch(r"╭─+╮", body[1]):
+    deny()
+def cell(s):
+    m = re.fullmatch(r"│(.*)│", s)
+    if not m or re.search(r"⏺|╭|╰|Edit file", m[1]):
+        deny()
+    return m[1].strip()
+path = cell(body[2])
+end = next((k for k in range(3, len(body)) if re.fullmatch(r"╰─+╯", body[k])), None)
+if end is None or any(body[end + 1:]):
+    deny()
+for s in body[3:end]:
+    cell(s)
+# Above the dialog: every box at its indent or less is closed, and the nearest
+# line, when there is one, is the matching tool header, which is not itself
+# under another pending edit header.
+depth = 0
+for s in raw_lines[:top]:
+    t = s.lstrip()
+    if len(s) - len(t) <= len(indent) and t[:1] in ("╭", "╰", "│"):
+        depth += {"╭": 1, "╰": -1}.get(t[0], 0)
+        if depth < 0 or (t[0] == "│" and depth == 0):
             deny()
-        path = p
+if depth:
+    deny()
+above = [s.strip() for s in raw_lines[:top] if s.strip()]
+if above:
+    head = re.fullmatch(r"⏺ (?:Update|Write)\(([^()]+)\)", above[-1])
+    if not head or head[1] != path or (len(above) > 1 and re.match(r"⏺ (?:Update|Write)\(", above[-2])):
+        deny()
 if not path or os.path.basename(path) != prompt[1]:
     deny()
 
@@ -2363,11 +2418,27 @@ try:
             result.append((a, b, entry.endswith("/") or os.path.isdir(a)))
         return result
     allow, block = entries("May touch"), entries("Must not touch")
-    def matches(entry):
+    def matches(entry, folded=False):
         a, b, directory = entry
+        xs, ys = (lexical, real), (a, b)
+        if folded:
+            xs, ys = [x.casefold() for x in xs], [y.casefold() for y in ys]
         return any(x == y or (directory and x.startswith(y.rstrip("/") + "/"))
-                   for x in (lexical, real) for y in (a, b))
-    if not any(map(matches, allow)) or any(map(matches, block)):
+                   for x in xs for y in ys)
+    def same(entry):  # the file, or a folder above it, is an existing exclusion
+        a, b, directory = entry
+        p = real
+        while os.path.commonpath([root, p]) == root:
+            if os.path.exists(p) and os.path.exists(b) and os.path.samefile(p, b):
+                return True
+            if not directory or p == root:
+                return False
+            p = os.path.dirname(p)
+        return False
+    # Be conservative on every filesystem: case variants of an exclusion stay
+    # excluded, and an allow entry with different casing never grants access.
+    if (not any(map(matches, allow)) or any(matches(e, True) for e in block)
+            or any(map(same, block)) or any(matches(e, True) and not matches(e) for e in allow)):
         deny()
     for candidate in (lexical, real):
         rel = os.path.relpath(candidate, root)
@@ -2384,7 +2455,7 @@ try:
             owners = re.findall(r"(?m)^brief:\s*(\S+)\s*$", handoff.read_text())
             if owners != [brief] or handoff.stat().st_mtime < int(spawned):
                 deny()
-    print("edit\t1,enter\t" + os.path.relpath(lexical, root))
+    print("edit\tenter\t" + os.path.relpath(lexical, root))
 except (OSError, ValueError):
     deny()
 PY
@@ -2442,12 +2513,14 @@ watch_tick() {
       grep -qxF "$key" "$seen" || { echo "$key" >> "$seen"; events="$events usage limit in worker $(short "$id");"; kinds="$kinds limit"; }
     elif printf '%s' "$tail_" | grep -Eiq "$PROMPT_RE"; then
       key="prompt $id $sum"
-      grep -qxF "auto $id $sum" "$seen" && continue
-      if ! grep -qxF "$key" "$seen" && watch_auto_prompt "$id" "$tail_"; then
+      # A successful send is not proof the UI accepted it. If this screen is
+      # observed again, raise the normal deduplicated prompt event, never retry.
+      if ! grep -qxF "auto $id $sum" "$seen" && ! grep -qxF "$key" "$seen" && watch_auto_prompt "$id" "$tail_"; then
         echo "auto $id $sum" >> "$seen"
         continue
       fi
-      grep -qxF "$key" "$seen" || { echo "$key" >> "$seen"; events="$events worker $(short "$id") is waiting at a prompt — read its terminal;"; kinds="$kinds prompt"; }
+      t=""; grep -qxF "auto $id $sum" "$seen" && t=" (the automatic answer did not take)"
+      grep -qxF "$key" "$seen" || { echo "$key" >> "$seen"; events="$events worker $(short "$id") is waiting at a prompt$t — read its terminal;"; kinds="$kinds prompt"; }
     else
       # a working agent's screen keeps changing (spinner, timer, output); a frozen one
       # with no handoff is stuck at something the patterns above don't know
