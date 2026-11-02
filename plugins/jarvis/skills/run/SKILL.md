@@ -162,7 +162,8 @@ again in a few minutes" turns. `jarvis watch` runs in its own plain terminal
 and wakes you with a `[jarvis watch]` message when a handoff lands, a
 worker hits a usage limit, a worker sits at a trust or approval prompt, or a
 worker's screen hasn't changed for `JARVIS_STALL_MIN` minutes with no
-handoff. If you've been idle past `JARVIS_IDLE_MIN`, it `/clear`s you first.
+handoff. Events within `JARVIS_BATCH_SEC` (60 s) of the first come as one
+message. If you've been idle past `JARVIS_IDLE_MIN`, it `/clear`s you first.
 `jarvis spawn` also marks the checkout as trusted in Codex's config before a
 Codex worker starts, so Codex's first-run "Trust this folder?" prompt doesn't
 hold it. So when there's nothing to decide, update `OPEN.md` and

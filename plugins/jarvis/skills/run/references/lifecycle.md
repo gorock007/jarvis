@@ -117,7 +117,9 @@ its OPEN.md entry. Then, for each run:
 checks|scope|logic|other` as `merge_reason`) to each of those runs, with one
 `merge-outcome` line in `audit.log`. Each watcher wake-up is one line in
 `handoffs/.jarvis/watch.log` (time, woke|cleared|nojarvis, reasons, event
-count), which `jarvis usage` counts.
+count), which `jarvis usage` counts. The watcher holds events for
+`JARVIS_BATCH_SEC` (60) after the first one and then sends them as one
+message, so a burst is one line and one Jarvis turn; `0` sends at once.
 
 Every failure is on the merge line, never swallowed:
 

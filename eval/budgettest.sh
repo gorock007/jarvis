@@ -49,7 +49,7 @@ repo="$tmp/repo"
 mkdir -p "$repo" && cd "$repo" || exit 1
 git init -q && cp -R "$tpl/handoffs" . \
   && sed -e 's/{{MAX_CLAUDE}}/50/' -e 's/{{AMBER}}/50/' -e 's/{{RED}}/75/' "$tpl/handoffs/jarvis.conf" > handoffs/jarvis.conf \
-  && printf 'JARVIS_MAX_CLAUDE_GLOBAL=50 JARVIS_MAX_OPUS=50 JARVIS_AMBER_GLOBAL=50 JARVIS_AMBER_OPUS=50\n' >> handoffs/jarvis.conf \
+  && printf 'JARVIS_MAX_CLAUDE_GLOBAL=50 JARVIS_MAX_OPUS=50 JARVIS_AMBER_GLOBAL=50 JARVIS_AMBER_OPUS=50 JARVIS_BATCH_SEC=0\n' >> handoffs/jarvis.conf \
   && git add -A && git commit -qm init && handoffs/bin/jarvis start >/dev/null 2>&1
 now=$(date +%s)
 echo "{\"five_hour\":{\"used_percentage\":10,\"resets_at\":$((now + 4 * 3600))},\"ts\":$now}" > "$JARVIS_HOME/usage.json"

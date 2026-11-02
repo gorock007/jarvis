@@ -100,6 +100,7 @@ JARVIS_BURN_AMBER=15     # points per JARVIS_BURN_MIN that turn the band amber w
 JARVIS_IDLE_MIN=55       # minutes idle after which a big context is cheaper to clear than reload
 JARVIS_GUARD_TOKENS=100000
 JARVIS_WATCH_SEC=60
+JARVIS_BATCH_SEC=60      # the watcher holds events this long after the first, then wakes Jarvis once; 0 = at once
 JARVIS_STALL_MIN=15      # a worker screen unchanged this long, with no handoff, wakes Jarvis
 JARVIS_BUDGET_MIN=90     # a worker's working minutes (watcher ticks its screen changed in)
 JARVIS_BUDGET_USD=15     # its API-equivalent estimate, subagents included
@@ -2265,8 +2266,24 @@ watch_log() { # $1 = woke | cleared | nojarvis, $2 = the kinds, one per event, s
     "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$1" "$k" "$(echo $2 | wc -w | tr -d ' ')" >> "$STATE/watch.log"
 }
 
+# The batch the watcher holds before waking Jarvis: "opened: <epoch>" (when its first
+# event arrived), "kinds: ...", "events: ..." and "nojarvis: 1" once that's logged.
+PENDING="$STATE/watch.pending"
+
+pending_get() { # $1 = key
+  [ -f "$PENDING" ] || return 0
+  awk -v k="$1" 'index($0, k ": ") == 1 {print substr($0, length(k) + 3); exit}' "$PENDING"
+}
+
+pending_put() { # $1 = opened, $2 = kinds, $3 = events, $4 = nojarvis; written to a temp file, then moved
+  local tmp
+  mkdir -p "$STATE" && tmp=$(mktemp "$STATE/.pending.XXXXXX") || return 1
+  printf 'opened: %s\nkinds: %s\nevents: %s\nnojarvis: %s\n' "$1" "$2" "$(printf '%s' "$3" | tr '\n' ' ')" "$4" > "$tmp" \
+    && mv "$tmp" "$PENDING"
+}
+
 watch_tick() {
-  local seen="$STATE/watch.seen" events="" kinds="" ho key id tail_ idle term line brief sum scr stale b
+  local seen="$STATE/watch.seen" events="" kinds="" ho key id tail_ idle term line brief sum scr stale b opened new
   touch "$seen"
   for ho in "$H"/*.md; do
     [ -f "$ho" ] || continue
@@ -2308,10 +2325,33 @@ watch_tick() {
   done <<EOF
 $(running_lines)
 EOF
-  [ -n "$events" ] || return 0
+  # this tick's events join the pending batch; the batch goes out as one message on the
+  # first tick JARVIS_BATCH_SEC after it opened, so a burst costs Jarvis one turn
+  new=$events
+  opened=$(pending_get opened)
+  [ -f "$PENDING" ] && case "$opened" in ""|*[!0-9]*) opened=0 ;; esac   # unreadable: send what's there now
+  if [ -n "$new" ]; then
+    [ -n "$opened" ] || opened=$(now)
+    pending_put "$opened" "$(pending_get kinds)$kinds" "$(pending_get events)$new" "$(pending_get nojarvis)"
+  fi
+  [ -n "$opened" ] || return 0
+  if [ $(( $(now) - opened )) -lt "$JARVIS_BATCH_SEC" ]; then
+    [ -z "$new" ] || echo "$(date +%H:%M) holding for the batch (due in $(( opened + JARVIS_BATCH_SEC - $(now) ))s):$new"
+    return 0
+  fi
+  events=$(pending_get events); kinds=$(pending_get kinds)
+  [ -n "$events" ] || { rm -f "$PENDING"; return 0; }
 
   term=$(jarvis_terminal)
-  [ -n "$term" ] || { watch_log nojarvis "$kinds"; echo "$(date +%H:%M) events but no Jarvis session in $OPEN:$events"; return 0; }
+  if [ -z "$term" ]; then # the batch waits for a Jarvis session; nojarvis is logged once per batch
+    if [ -z "$(pending_get nojarvis)" ]; then
+      watch_log nojarvis "$kinds"; pending_put "$opened" "$kinds" "$events" 1
+      echo "$(date +%H:%M) events but no Jarvis session in $OPEN:$events"
+    elif [ -n "$new" ]; then
+      echo "$(date +%H:%M) events but no Jarvis session in $OPEN:$new"
+    fi
+    return 0
+  fi
   idle=$(jarvis_idle_min)
   if [ -n "$idle" ] && [ "$idle" -ge "$JARVIS_IDLE_MIN" ]; then
     if type "${HOST}_clear" >/dev/null 2>&1; then host clear "$term" && sleep 5
@@ -2325,6 +2365,7 @@ EOF
     watch_log woke "$kinds"
     echo "$(date +%H:%M) woke Jarvis:$events"
   fi
+  rm -f "$PENDING"
 }
 
 cmd_watch() {
@@ -2342,7 +2383,7 @@ cmd_watch() {
   for ho in "$H"/*.md; do
     [ -f "$ho" ] && echo "$ho $(mtime "$ho") $(field status "$ho")" >> "$STATE/watch.seen"
   done
-  echo "jarvis watch: every ${JARVIS_WATCH_SEC}s (handoffs, limits, prompts, workers frozen ${JARVIS_STALL_MIN}+ min); clears Jarvis first after ${JARVIS_IDLE_MIN} min idle. Ctrl-C to stop."
+  echo "jarvis watch: every ${JARVIS_WATCH_SEC}s (handoffs, limits, prompts, workers frozen ${JARVIS_STALL_MIN}+ min); $( [ "$JARVIS_BATCH_SEC" -gt 0 ] 2>/dev/null && echo "batches events for ${JARVIS_BATCH_SEC}s, then wakes Jarvis once" || echo "wakes Jarvis at once"); clears Jarvis first after ${JARVIS_IDLE_MIN} min idle. Ctrl-C to stop."
   while :; do sleep "$JARVIS_WATCH_SEC"; watch_tick; done
 }
 

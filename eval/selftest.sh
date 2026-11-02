@@ -97,6 +97,7 @@ EOT
     unset TYPESAFE_API_KEY
     git init -q && git remote add origin "$tmp/origin.git"
     cp -R "$tpl/handoffs" . && sed -e 's/{{MAX_CLAUDE}}/3/' -e 's/{{AMBER}}/50/' -e 's/{{RED}}/75/' "$tpl/handoffs/jarvis.conf" > handoffs/jarvis.conf
+    echo 'JARVIS_BATCH_SEC=0' >> handoffs/jarvis.conf   # the watcher tests below expect a send on the tick; the batch tests set their own
     echo a > app.txt && git add -A && git commit -qm init && git push -q -u origin HEAD 2>/dev/null
     J=handoffs/bin/jarvis
     mk() { printf '# %s\nworker: %s\nmodel: %s\neffort: %s\nstarted: <x> · terminal: <x>\n\n## Goal\nx\n' "$1" "$2" "$3" "$4" > "handoffs/briefs/$1.md"; }
@@ -154,6 +155,27 @@ EOT
       && tail -n 1 handoffs/.jarvis/watch.log | grep -Eq '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:]{8}Z'$'\t'; check "…and logs one watch.log line: UTC time, cleared, handoff, 1 event" $?
     : > "$FAKE_LOG"; $J watch --once >/dev/null; ! grep -q 'terminals send' "$FAKE_LOG"; check "watch stays quiet when nothing changed" $?
     [ "$(wc -l < handoffs/.jarvis/watch.log | tr -d ' ')" = 1 ]; check "…and a quiet tick logs nothing" $?
+
+    # batching: events wait JARVIS_BATCH_SEC after the first, then go out as one message
+    echo 'JARVIS_BATCH_SEC=600' >> handoffs/jarvis.conf
+    pend=handoffs/.jarvis/watch.pending; wn() { wc -l < handoffs/.jarvis/watch.log | tr -d ' '; }
+    printf '# a\nstatus: done\n## Files\n- x\n' > handoffs/hba.md
+    : > "$FAKE_LOG"; $J watch --once >/dev/null
+    ! grep -q 'terminals send' "$FAKE_LOG" && grep -q 'hba.md' "$pend" && [ "$(wn)" = 1 ]; check "batch: a handoff tick sends nothing, logs nothing, leaves a pending batch" $?
+    printf '# b\nstatus: blocked\n## Files\n- x\n' > handoffs/hbb.md
+    $J watch --once >/dev/null
+    ! grep -q 'terminals send' "$FAKE_LOG" && grep -q 'hba.md.*hbb.md' "$pend" && grep -qx 'kinds:  handoff handoff' "$pend"; check "batch: a second handoff on the next tick joins it" $?
+    $J watch --once >/dev/null; [ "$(grep -o 'hba.md' "$pend" | wc -l | tr -d ' ')" = 1 ]; check "batch: an event already pending isn't added twice" $?
+    sed -i.bak 's/^opened: .*/opened: 1000/' "$pend" && rm -f "$pend.bak"
+    cp handoffs/OPEN.md "$tmp/OPEN.keep"; sed -i.bak '/^Jarvis session:/d' handoffs/OPEN.md && rm -f handoffs/OPEN.md.bak
+    $J watch --once >/dev/null; $J watch --once >/dev/null
+    ! grep -q 'terminals send' "$FAKE_LOG" && [ -f "$pend" ] && [ "$(wn)" = 2 ] && [ "$(wl)" = "nojarvis handoff 2" ]; check "batch: with no Jarvis session it survives, nojarvis logged once" $?
+    cp "$tmp/OPEN.keep" handoffs/OPEN.md
+    $J watch --once >/dev/null
+    [ "$(grep -c 'send .*hba.md' "$FAKE_LOG")" = 1 ] && grep 'send .*hba.md' "$FAKE_LOG" | grep -q 'hbb.md' && [ ! -e "$pend" ]; check "batch: past the window one message names both handoffs, the batch is gone" $?
+    [ "$(wn)" = 3 ] && wl | grep -Eqx '(woke|cleared) handoff 2'; check "…and one watch.log line: handoff, 2 events" $?
+    : > "$FAKE_LOG"; $J watch --once >/dev/null; ! grep -q 'terminals send' "$FAKE_LOG" && [ "$(wn)" = 3 ]; check "…and the next quiet tick sends nothing" $?
+    rm -f handoffs/hba.md handoffs/hbb.md; echo 'JARVIS_BATCH_SEC=0' >> handoffs/jarvis.conf
 
     export CODEX_HOME="$tmp/codex"; mk b6 codex gpt-5.6-sol high
     $J spawn handoffs/briefs/b6.md >/dev/null 2>&1; check "spawns a Codex worker" $?
@@ -450,7 +472,7 @@ if command -v tmux >/dev/null 2>&1 && command -v jq >/dev/null 2>&1; then
     cp -R "$tpl/handoffs" . && sed -e 's/{{MAX_CLAUDE}}/3/' -e 's/{{AMBER}}/50/' -e 's/{{RED}}/75/' "$tpl/handoffs/jarvis.conf" > handoffs/jarvis.conf
     rm -f handoffs/bin/jev.sh
     # shellcheck disable=SC2016
-    printf '%s\n' 'JARVIS_PUSH=0' \
+    printf '%s\n' 'JARVIS_PUSH=0' 'JARVIS_BATCH_SEC=0' \
       'JARVIS_AGENT_fake='"'"'echo "fake model=$JARVIS_MODEL effort=$JARVIS_EFFORT"; echo "prompt=$JARVIS_PROMPT"; while read -r l; do echo "got: $l"; done'"'" \
       >> handoffs/jarvis.conf
     printf '# t\nworker: fake\nmodel: m1\neffort: low\nstarted: <x>\n' > handoffs/briefs/2026-10-20-1200-tw.md
@@ -502,7 +524,7 @@ if [ -n "$ub" ] && command -v jq >/dev/null 2>&1; then
     cd "$ux/repo" || exit 1
     git init -q && git commit -q --allow-empty -m init
     cp -R "$tpl/handoffs" . && sed -e 's/{{MAX_CLAUDE}}/3/' -e 's/{{AMBER}}/50/' -e 's/{{RED}}/75/' "$tpl/handoffs/jarvis.conf" > handoffs/jarvis.conf
-    rm -f handoffs/bin/jev.sh; echo 'JARVIS_PUSH=0' >> handoffs/jarvis.conf
+    rm -f handoffs/bin/jev.sh; printf '%s\n' 'JARVIS_PUSH=0' 'JARVIS_BATCH_SEC=0' >> handoffs/jarvis.conf
     printf '# u\nworker: claude\nmodel: claude-haiku-5-5\neffort: low\nstarted: <x>\n' > handoffs/briefs/2026-10-20-1200-uw.md
     git add -A && git commit -q -m setup
     ultron daemon run > "$ux/daemon.log" 2>&1 &
