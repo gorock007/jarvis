@@ -7,6 +7,10 @@
 #
 #   eval/selftest.sh
 set -u
+# One brace group ending in exit, so bash reads the whole file before running any of it:
+# it reads a script as it goes, and an edit made mid-run (another worker's, in a shared
+# checkout) resumes it at a stale offset, in the caller's directory, outside every `cd`.
+{
 here=$(cd "$(dirname "$0")" && pwd)
 jev="$here/../plugins/jarvis/skills/setup/templates/handoffs/bin/jev.sh"
 brief="$here/briefs/$(ls "$here/briefs" | head -n 1)"
@@ -780,20 +784,21 @@ if command -v tmux >/dev/null 2>&1 && command -v jq >/dev/null 2>&1; then
     env -u SUPERSET_WORKSPACE_ID -u SUPERSET_TERMINAL_ID -u TMUX -u TMUX_PANE tmux -L "$sock" new-session -d -c "$tb" -x 160 -y 40
     tenv=$(tmux -L "$sock" display-message -p '#{socket_path},#{pid},0')
     T() { env -u SUPERSET_WORKSPACE_ID -u SUPERSET_TERMINAL_ID TMUX="$tenv" TMUX_PANE=%0 handoffs/bin/jarvis "$@"; }
+    shows() { T read %1 "$1" | grep -q -- "$2"; } # the worker's last $1 lines match $2
+    poll() { for _ in $(seq 40); do "$@" && return 0; sleep 0.25; done; return 1; } # up to 10 s, not a fixed sleep
 
     T start >/dev/null && grep -qx 'Jarvis session: %0' handoffs/OPEN.md; check "start records the tmux pane" $?
     echo hi > note.txt
     T spawn handoffs/briefs/2026-10-20-1200-tw.md --attach note.txt | grep -q '^spawned %1 fake/m1 low'; check "spawn opens a window for any configured agent" $?
     [ "$(tmux -L "$sock" display-message -p -t %1 '#{window_name} #{@jarvis}')" = "tw tw" ]; check "…named after the brief and tagged" $?
     grep -q '^started:.*terminal: %1' handoffs/briefs/2026-10-20-1200-tw.md && grep -q '· term %1 ·' handoffs/OPEN.md; check "…and recorded in the brief and OPEN.md" $?
-    sleep 1
-    T read %1 10 | grep -q '^fake model=m1 effort=low'; check "read shows the screen; model and effort reach the agent" $?
-    T read %1 10 | grep -q 'Read this attached file first: note.txt'; check "--attach names the file in the prompt" $?
+    poll shows 10 '^fake model=m1 effort=low'; check "read shows the screen; model and effort reach the agent" $?
+    poll shows 10 'Read this attached file first: note.txt'; check "--attach names the file in the prompt" $?
     T send %1 "Answers: 1. yes
-2. no" && sleep 1 && T read %1 5 | grep -qx 'got: Answers: 1. yes 2. no'; check "send types one line and presses Enter" $?
-    T send %1 --keys "a,b,enter" && sleep 1 && T read %1 5 | grep -qx 'got: ab'; check "send --keys presses keys" $?
+2. no" && poll shows 5 '^got: Answers: 1\. yes 2\. no$'; check "send types one line and presses Enter" $?
+    T send %1 --keys "a,b,enter" && poll shows 5 '^got: ab$'; check "send --keys presses keys" $?
     T close %0 >/dev/null 2>&1; [ $? = 1 ] && tmux -L "$sock" list-panes -a -F '#{pane_id}' | grep -qx %0; check "close refuses a pane Jarvis didn't open" $?
-    T send %1 --keys ctrl+d && sleep 1 && T read %1 3 | grep -q 'exited (0)'; check "an agent that exits leaves its window up" $?
+    T send %1 --keys ctrl+d && poll shows 3 'exited (0)'; check "an agent that exits leaves its window up" $?
     printf '# done\nstatus: done\nbrief: handoffs/briefs/2026-10-20-1200-tw.md\nagent: fake m1\n\n## Files\n- note.txt\n' > handoffs/htw.md
     T watch --once | grep -q 'woke Jarvis: handoff handoffs/htw.md'; check "the watcher wakes Jarvis's pane" $?
     T merge handoffs/htw.md --no-push | grep -q 'closed %1' && ! tmux -L "$sock" list-panes -a -F '#{pane_id}' | grep -qx %1; check "merge closes the worker's window" $?
@@ -865,3 +870,5 @@ echo "worker budgets (eval/budgettest.sh)"; "$BASH" "$here/budgettest.sh" 2>&1 |
 echo "jarvis usage (eval/usagetest.sh)"; "$BASH" "$here/usagetest.sh" 2>&1 | tee "$tmp/usage.out"; grep -q '^usagetest: all passed' "$tmp/usage.out" || { n=$(grep -c '^  FAIL' "$tmp/usage.out"); fails=$((fails + (n > 0 ? n : 1))); }
 rm -rf "$tmp"
 echo; [ "$fails" = 0 ] && echo "selftest: all passed" || { echo "selftest: $fails failed"; exit 1; }
+exit # inside the group: bash never reads past it
+}
