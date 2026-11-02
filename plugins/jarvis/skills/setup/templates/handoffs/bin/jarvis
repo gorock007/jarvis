@@ -142,7 +142,7 @@ die() { echo "jarvis: $*" >&2; exit 1; }
 have() { command -v "$1" >/dev/null 2>&1; }
 now() { date +%s; }
 short() { printf '%s' "$1" | cut -c1-8; }
-mtime() { stat -f %m "$1" 2>/dev/null || stat -c %Y "$1" 2>/dev/null || echo 0; }
+mtime() { stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null || echo 0; } # GNU first: GNU stat -f is a filesystem stat and succeeds
 
 # ---------------------------------------------------------------- hosts
 
@@ -2736,7 +2736,7 @@ fable_backstop() {
     { if [ -f "$f" ]; then cat "$f"; else echo '{}'; fi; } | jq --argjson a "$FABLE_ALLOWED" '
       ((.availableModels // []) | if type == "array" then map(select(tostring | ascii_downcase | test("fable") | not)) else [] end) as $k
       | .availableModels = (if ($k | length) > 0 then $k else $a end)' > "$tmp" || { rm -f "$tmp"; die "jq failed: $f left as it is"; }
-    if [ -f "$f" ]; then mode=$(stat -f %Lp "$f" 2>/dev/null || stat -c %a "$f" 2>/dev/null); [ -n "$mode" ] && chmod "$mode" "$tmp"; fi
+    if [ -f "$f" ]; then mode=$(stat -c %a "$f" 2>/dev/null || stat -f %Lp "$f" 2>/dev/null); [ -n "$mode" ] && chmod "$mode" "$tmp"; fi
     mv "$tmp" "$f" || { rm -f "$tmp"; die "can't replace $f"; }
     fable_log backstop - - - "applied to $f"
     echo "applied: $f availableModels $(jq -c .availableModels "$f")${bak:+ (backup: $bak)}"

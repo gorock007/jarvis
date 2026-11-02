@@ -129,7 +129,7 @@ EOT
     sed -i.bak '/gone.txt/d' handoffs/h1.md && rm -f handoffs/h1.md.bak
     $J merge handoffs/h1.md --check | grep -q 'other.txt'; check "merge --check lists changes outside the handoff" $?
     $J merge handoffs/h1.md >/dev/null; check "merge succeeds" $?
-    [ "$(git show --name-only --format= HEAD | sort | tr '\n' ' ')" = "app.txt handoffs/OPEN.md handoffs/briefs/b1.md handoffs/merged/h1.md src/new.txt " ]; check "commit holds exactly the listed files, the handoff, the brief and OPEN.md" $?
+    [ "$(git show --name-only --format= HEAD | LC_ALL=C sort | tr '\n' ' ')" = "app.txt handoffs/OPEN.md handoffs/briefs/b1.md handoffs/merged/h1.md src/new.txt " ]; check "commit holds exactly the listed files, the handoff, the brief and OPEN.md" $?
     git log -1 --format=%B | grep -q 'Co-Authored-By: Claude Code <claude-opus-5-5> worker'; check "worker trailer" $?
     git status --porcelain | grep -q 'other.txt'; check "another worker's file is left alone" $?
     [ "$(git rev-parse HEAD)" = "$(git -C "$tmp/origin.git" rev-parse HEAD)" ]; check "merge pushes" $?

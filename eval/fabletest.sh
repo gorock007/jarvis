@@ -158,7 +158,7 @@ if [ $havepty = 1 ]; then
   out=$(pty work "$J" fable allow "$fb"); rc=$?
   [ $rc = 0 ] && printf '%s' "$out" | grep -q 'Type its slug to confirm: work' && printf '%s' "$out" | grep -q 'authorized'; check "the slug typed at a terminal authorizes" $?
   rec=$(ls "$FD"/pending/* 2>/dev/null | head -n 1)
-  [ -n "$rec" ] && [ "$(stat -f %Lp "$rec" 2>/dev/null || stat -c %a "$rec")" = 600 ] && [ "$(stat -f %Lp "$FD" 2>/dev/null || stat -c %a "$FD")" = 700 ]; check "record 0600, dir 0700" $?
+  [ -n "$rec" ] && [ "$(stat -c %a "$rec" 2>/dev/null || stat -f %Lp "$rec")" = 600 ] && [ "$(stat -c %a "$FD" 2>/dev/null || stat -f %Lp "$FD")" = 700 ]; check "record 0600, dir 0700" $?
   grep -q ' allow root=.* brief=handoffs/briefs/2026-10-30-1200-work.md hash=[0-9a-f]\{64\} run=- ' "$FD/audit.log"; check "audit: allow line with root, brief, hash" $?
   $J fable revoke "$fb" | grep -q 'revoked 1' && [ -z "$(ls "$FD"/pending/ 2>/dev/null)" ] && grep -q ' revoke ' "$FD/audit.log"; check "revoke drops it and logs it" $?
   out=$(pty wrong "$J" fable allow "$fb"); rc=$?
