@@ -77,6 +77,74 @@ config. One pass over all 48 fixtures is 144 calls, about **$15**, and
 first. Most of it is Fable. `--configs opus55-high:claude-opus-5-5:high,…`
 runs a subset.
 
+## Result (3 Nov 2026, Sonnet vs a fresh Opus 5.5, `--repeat 3`, 288 calls, $20.91)
+
+`opus55-high` was re-run because the plugin's reference docs changed since
+1 Oct, so its old records have a different prompt hash. 288 records: 2
+configs × 48 fixtures × 3, none missing. Run with
+`--configs sonnet-high:sonnet:high,opus55-high:claude-opus-5-5:high`.
+
+| config | routing tier ok | too low | too high | agent ok | review verdict ok | defect recall | false alarms | $/task | $ per correct | total $ |
+|---|---|---|---|---|---|---|---|---|---|---|
+| `sonnet-high` | 94% (113/120) | 4 | 3 | 98% (117/120) | 100% (24/24) | 100% (18/18) | 0 | $0.048 | $0.051 | $6.93 |
+| `opus55-high` | 95% (114/120) | 3 | 3 | 98% (117/120) | 100% (24/24) | 100% (18/18) | 0 | $0.097 | $0.101 | $13.98 |
+
+**Verdict for `sonnet-high` against the v0.8 pass bar: PASS on all four.**
+
+| criterion | bar | `sonnet-high` | |
+|---|---|---|---|
+| routing tier accuracy | ≥ 93% | 94.2% (113/120) | PASS, by one run: a single further miss would make it 93.3%, two would fail |
+| "too low" on a top-tier brief | none | 0 (all 30 answers on the 10 top-tier briefs were `top`) | PASS |
+| defect recall | 100% | 100% (18/18) | PASS |
+| false alarms | ≤ 1 | 0 | PASS |
+
+**Misses (`sonnet-high`).** Fixture, what it answered, what the label wants:
+
+- `22-default-page-size-50`, 3 of 3 repeats: `trivial`/OpenCode, label `light`.
+  Same miss as `opus55-high` in all 3 repeats, and as all three configs on
+  1 Oct. Both tiers go to OpenCode, so it costs nothing in practice.
+- `15-weekly-report-dst-bug`, repeat 3 only: `light`/Claude `sonnet` medium,
+  label `workhorse`. **This is the only miss that is Sonnet's own**: it is
+  the 4th "too low", against 3 for Opus. A DST bug sent to a lighter worker
+  is the kind of miss that costs a respawn. Repeats 1 and 2 were right.
+- `38-dependency-vulnerability-review`, 3 of 3: `workhorse` on Codex
+  `gpt-5.6-sol`, label `light`. Same as `opus55-high` and as 1 Oct. The
+  routing guide sends security work to Sol, so the label is the likelier
+  mistake (see 1 Oct).
+- `40-upload-pipeline-security-audit`, 3 of 3 (agent only): tier `top` is
+  right, but the answer was Codex `gpt-6-astra` where the scorer wants
+  `gpt-5.6-sol` (the security rule wins over the top-tier rule). Same for
+  `opus55-high`.
+
+**Routing held and review didn't slip.** There is no split to act on:
+
+- Review: Sonnet got 24/24 verdicts, caught all 18 planted defects (kind
+  and file) and raised no false alarm, the same as Opus. On the git-violation
+  fixture (06) it flagged the violation in all 3 repeats and sent back each
+  time.
+- Routing: Sonnet and Opus missed the same fixtures, `22` and `38` in all
+  3 repeats each. Sonnet's one extra miss is `15` repeat 3.
+- So on these fixtures there is no sign that Jarvis would need to keep an
+  Opus `diff-reviewer` if it ran on Sonnet. The caveat is the thin margin on
+  tier accuracy and the one real "too low" on a workhorse brief; 3 repeats
+  can't tell a 1-in-3 flake on one fixture from noise.
+- Cost: $0.048 per call against $0.097, about half. The gap is smaller than
+  Fable vs Opus because both are cheap at this prompt size. In real Jarvis
+  sessions (~216k of context) the per-token price gap applies to every cache
+  write.
+
+**Scorer change.** `score.py` still required top-tier briefs to go to
+`claude`, which has been wrong since 0.7.0 (top tier is Codex `gpt-6-astra`
+unless Fable is allowed). Before the fix, "agent ok" read 78% (93/120) for
+both configs, all of it that stale rule. I changed `expected_route` so top
+tier expects Codex `gpt-6-astra`; tier, review and cost numbers are
+unaffected. Not checked: the 1 Oct numbers were not re-scored with the new
+rule.
+
+What this doesn't show is the same as 1 Oct: long multi-turn coordination
+and how sharp Jarvis's own briefs are. The model choice is the user's to
+rule on; nothing here changes it.
+
 ## Result (1 Oct 2026, `--repeat 3`, 432 calls, $53.51)
 
 **Jarvis now runs on `claude-opus-5-5` at `high`.**

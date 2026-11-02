@@ -39,6 +39,8 @@ def expected_route(lab):
         return {"codex"}, "gpt-6-astra"
     if lab.get("security"):
         return {"codex"}, "gpt-5.6-sol"
+    if lab["tier"] == "top":
+        return {"codex"}, "gpt-6-astra"  # since 0.7.0 top tier is astra unless Fable is allowed
     ok = {"claude"}
     if lab["tier"] in ("light", "trivial") and not lab.get("touches_secrets"):
         ok.add("opencode")
