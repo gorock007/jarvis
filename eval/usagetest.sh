@@ -145,6 +145,18 @@ printf '%s' "$out" | grep -q '^API-equivalent estimate at list prices (not your 
   && printf '%s' "$out" | grep -q '^subscription usage: 5h 42% · 7d 61%' \
   && printf '%s' "$out" | grep -q 'Most expensive briefs:' \
   && printf '%s' "$out" | grep -q 'failed test runs (workers with 3+): alpha 3'; check "jarvis usage is the labelled one-screen report" $?
+printf '%s' "$out" | grep -q '^    wake-ups (this repo): no watcher log yet$'; check "jarvis usage says when there is no watcher log" $?
+
+# two wakes in the window (one with two reasons), one older than the window
+in1=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+printf '2001-01-01T00:00:00Z\twoke\thandoff\t1\n%s\twoke\thandoff\t1\n%s\tcleared\tprompt,stall\t2\n' "$in1" "$in1" \
+  > "$repo/handoffs/.jarvis/watch.log"
+out=$(
+  cd "$repo" || exit 1
+  HOME="$home" handoffs/bin/jarvis usage --days 2 --top 2
+)
+printf '%s' "$out" | grep -q '^    wake-ups (this repo): 2 · per merged handoff [0-9.n/a]* · handoff 1, prompt 1, stall 1, limit 0, budget 0$'
+check "jarvis usage counts the window's wake-ups, once per reason" $?
 
 echo
 if [ "$fails" = 0 ]; then echo "usagetest: all passed"; else echo "usagetest: $fails failed"; exit 1; fi

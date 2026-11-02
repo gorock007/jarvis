@@ -149,7 +149,11 @@ EOT
     printf '# t\nstatus: done\nbrief: handoffs/briefs/b4.md\n## Files\n- other.txt — created\n' > handoffs/h4.md
     $J watch --once >/dev/null
     grep -q 'send .*--text /clear' "$FAKE_LOG" && grep -q 'send .*Fresh session.*h4.md' "$FAKE_LOG"; check "watch clears an idle Jarvis, then wakes it with the handoff" $?
+    wl() { tail -n 1 handoffs/.jarvis/watch.log | awk -F'\t' '{print $2 " " $3 " " $4}'; } # the last wake: how, reasons, events
+    [ "$(wc -l < handoffs/.jarvis/watch.log | tr -d ' ')" = 1 ] && [ "$(wl)" = "cleared handoff 1" ] \
+      && tail -n 1 handoffs/.jarvis/watch.log | grep -Eq '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:]{8}Z'$'\t'; check "…and logs one watch.log line: UTC time, cleared, handoff, 1 event" $?
     : > "$FAKE_LOG"; $J watch --once >/dev/null; ! grep -q 'terminals send' "$FAKE_LOG"; check "watch stays quiet when nothing changed" $?
+    [ "$(wc -l < handoffs/.jarvis/watch.log | tr -d ' ')" = 1 ]; check "…and a quiet tick logs nothing" $?
 
     export CODEX_HOME="$tmp/codex"; mk b6 codex gpt-5.6-sol high
     $J spawn handoffs/briefs/b6.md >/dev/null 2>&1; check "spawns a Codex worker" $?
@@ -158,11 +162,20 @@ EOT
     [ "$(grep -c '^\[projects\.' "$CODEX_HOME/config.toml")" = 1 ]; check "…once, however many Codex workers follow" $?
     : > "$FAKE_LOG"; FAKE_SCREEN="  Trust this folder? › 1. Yes, continue  2. No, quit" $J watch --once >/dev/null
     grep -q 'send .*waiting at a prompt' "$FAKE_LOG"; check "watch wakes Jarvis for a worker at a trust prompt" $?
+    wl | grep -Eq '^(woke|cleared) prompt [1-9]'; check "…and logs the wake with reason prompt" $?
     : > "$FAKE_LOG"; FAKE_SCREEN="  Trust this folder? › 1. Yes, continue  2. No, quit" $J watch --once >/dev/null
     ! grep -q 'terminals send' "$FAKE_LOG"; check "…once per prompt" $?
     echo 'JARVIS_STALL_MIN=0' >> handoffs/jarvis.conf
     FAKE_SCREEN="frozen" $J watch --once >/dev/null; : > "$FAKE_LOG"; FAKE_SCREEN="frozen" $J watch --once >/dev/null
     grep -q "send .*screen hasn't changed" "$FAKE_LOG"; check "watch wakes Jarvis for a frozen worker with no handoff" $?
+    wl | grep -Eq '^(woke|cleared) stall [1-9]'; check "…and logs the wake with reason stall" $?
+    # one fake screen for every worker, so prompt and stall can't share a tick: a new
+    # handoff's tick logs handoff alone, the next tick (same screen) logs stall
+    printf '# t8\nstatus: done\n## Files\n- x\n' > handoffs/h8.md
+    : > "$FAKE_LOG"; FAKE_SCREEN="frozen again" $J watch --once >/dev/null; FAKE_SCREEN="frozen again" $J watch --once >/dev/null
+    tail -n 2 handoffs/.jarvis/watch.log | awk -F'\t' '{print $3}' | grep -qx 'handoff' \
+      && wl | grep -Eq '^(woke|cleared) stall [1-9]'; check "…a handoff alone logs handoff, the next frozen tick stall" $?
+    rm -f handoffs/h8.md
     b4t=$(sed -n 's/.*terminal: //p' handoffs/briefs/b4.md)
     [ -n "$b4t" ] && ! grep -q "$b4t's screen" "$FAKE_LOG"; check "…but not for one that already handed off" $?
 
@@ -170,6 +183,20 @@ EOT
     printf '# Self-listing\nstatus: done\nagent: codex gpt-5.6-sol\n## Files\n- self.txt — created\n- handoffs/h7.md — this handoff\n' > handoffs/h7.md
     $J merge handoffs/h7.md --no-push >/dev/null 2>&1; check "merge takes a handoff that lists itself" $?
     git show --name-only --format= HEAD | grep -qx 'handoffs/merged/h7.md' && [ ! -e handoffs/h7.md ]; check "…and commits it at its merged path only" $?
+
+    mk b7 opencode "" ""; $J spawn handoffs/briefs/b7.md >/dev/null 2>&1
+    b7t=$(sed -n 's/.*terminal: //p' handoffs/briefs/b7.md)
+    echo c > corr.txt
+    printf '# Corrected\nstatus: done\nagent: opencode x\nbrief: handoffs/briefs/b7.md\n## Files\n- corr.txt — created\n' > handoffs/h9.md
+    head=$(git rev-parse HEAD)
+    $J merge handoffs/h9.md --no-push --outcome corrected >/dev/null 2>&1; [ $? != 0 ] && [ -f handoffs/h9.md ] && [ "$(git rev-parse HEAD)" = "$head" ]
+    check "merge --outcome corrected without --reason is refused, nothing merged" $?
+    $J merge handoffs/h9.md --no-push --outcome bogus >/dev/null 2>&1; [ $? != 0 ] && [ -f handoffs/h9.md ]; check "merge --outcome bogus is refused" $?
+    $J merge handoffs/h9.md --no-push --outcome clean --reason checks >/dev/null 2>&1; [ $? != 0 ] && [ -f handoffs/h9.md ]; check "merge --reason with an outcome other than corrected is refused" $?
+    $J merge handoffs/h9.md --no-push --outcome corrected --reason checks >/dev/null 2>&1 \
+      && grep -qx 'merge_outcome: corrected' "handoffs/.jarvis/runs/$b7t" && grep -qx 'merge_reason: checks' "handoffs/.jarvis/runs/$b7t"
+    check "merge --outcome corrected --reason checks records both on the run" $?
+    grep -q "merge-outcome run=$b7t brief=handoffs/briefs/b7.md outcome=corrected reason=checks result=" handoffs/.jarvis/audit.log; check "…and one audit line" $?
 
     echo "bin/jarvis leftovers (real processes, fake Claude config)"
     uid=$(id -u); proj=$(git rev-parse --show-toplevel | sed 's#[^A-Za-z0-9]#-#g')

@@ -112,6 +112,13 @@ its OPEN.md entry. Then, for each run:
    signal. With `JARVIS_REAP=0` it is only named, with the `kill` to run.
 5. It writes `state`, `ended`, `reason` and `outcome` to the run record.
 
+`merge --outcome clean|corrected|escalated|respawned` also writes
+`merge_outcome` (and, for `corrected`, the required `--reason
+checks|scope|logic|other` as `merge_reason`) to each of those runs, with one
+`merge-outcome` line in `audit.log`. Each watcher wake-up is one line in
+`handoffs/.jarvis/watch.log` (time, woke|cleared|nojarvis, reasons, event
+count), which `jarvis usage` counts.
+
 Every failure is on the merge line, never swallowed:
 
 ```

@@ -19,10 +19,12 @@
 #                                      a worker's budget use; with values, set that run's limits
 #                                      and re-arm its ask and pause (logged)
 #   jarvis merge <handoff.md> --check  file list vs git status, diff stat; changes nothing
-#   jarvis merge <handoff.md> [-m <msg>] [--outcome <o>] [--no-push] [--keep-open] [--force]
+#   jarvis merge <handoff.md> [-m <msg>] [--outcome <o> [--reason <r>]] [--no-push] [--keep-open] [--force]
 #                                      commit exactly the listed files + the handoff move,
 #                                      push, close the worker, update OPEN.md, stop what the
-#                                      worker left running
+#                                      worker left running; --outcome clean|corrected|escalated|
+#                                      respawned goes on the run record (corrected needs --reason
+#                                      checks|scope|logic|other)
 #   jarvis leftovers [<brief.md>] [--stop [--force]]
 #                                      processes workers started that outlived them (their
 #                                      scratch folder on the command line); --stop ends them
@@ -1569,20 +1571,27 @@ changed_paths() { # every changed/untracked path, renames as their new path
 }
 
 cmd_merge() {
-  local ho="" check=0 msg="" outcome="" push="$JARVIS_PUSH" keep=0 force=0
-  local status brief agent files f bad=0 other title dest trailer sha runs r frag note old_tracked=0 closed line
+  local ho="" check=0 msg="" outcome="" reason="" push="$JARVIS_PUSH" keep=0 force=0
+  local status brief agent files f bad=0 other title dest trailer sha runs r frag note old_tracked=0 closed line rec
   while [ $# -gt 0 ]; do
     case "$1" in
       --check) check=1; shift ;;
       -m) msg="${2:-}"; shift 2 ;;
       --outcome) outcome="${2:-}"; shift 2 ;;
+      --reason) reason="${2:-}"; shift 2 ;;
       --no-push) push=0; shift ;;
       --keep-open) keep=1; shift ;;
       --force) force=1; shift ;;
       *) ho="$1"; shift ;;
     esac
   done
-  [ -f "$ho" ] || die "usage: jarvis merge <handoffs/file.md> [--check] [-m msg] [--outcome clean|corrected|escalated|respawned] [--no-push] [--keep-open]"
+  [ -f "$ho" ] || die "usage: jarvis merge <handoffs/file.md> [--check] [-m msg] [--outcome clean|corrected|escalated|respawned [--reason checks|scope|logic|other]] [--no-push] [--keep-open]"
+  case "$outcome" in ""|clean|corrected|escalated|respawned) ;;
+    *) die "--outcome $outcome: give clean, corrected, escalated or respawned" ;; esac
+  case "$reason" in ""|checks|scope|logic|other) ;;
+    *) die "--reason $reason: give checks, scope, logic or other" ;; esac
+  [ "$outcome" = corrected ] && [ -z "$reason" ] && die "--outcome corrected needs --reason checks|scope|logic|other"
+  [ -n "$reason" ] && [ "$outcome" != corrected ] && die "--reason goes only with --outcome corrected"
   status=$(field status "$ho" | awk '{print $1}')
   brief=$(field brief "$ho" | awk '{print $1}')
   agent=$(field agent "$ho")
@@ -1660,8 +1669,18 @@ cmd_merge() {
       line="$line · $frag"
     done
   fi
-  if [ -n "$outcome" ] && [ -x "$BIN/jev.sh" ] && [ -n "$brief" ]; then
-    "$BIN/jev.sh" outcome "$brief" "$outcome" >/dev/null 2>&1
+  if [ -n "$outcome" ]; then
+    rec=""
+    for r in $runs; do
+      [ -f "$RUNS/$r" ] || continue
+      if [ -n "$reason" ]; then run_set "$r" merge_outcome "$outcome" merge_reason "$reason"
+      else run_set "$r" merge_outcome "$outcome"; fi
+      rec="$rec${rec:+,}$r"
+    done
+    audit merge-outcome "${rec:--}" "$brief" "outcome=$outcome reason=${reason:--}" "$sha"
+    if [ -x "$BIN/jev.sh" ] && [ -n "$brief" ]; then
+      "$BIN/jev.sh" outcome "$brief" "$outcome" ${reason:+"$reason"} >/dev/null 2>&1
+    fi
   fi
   echo "$line · OPEN.md updated in the same commit"
   [ -n "$note" ] && echo "$note"
@@ -2237,8 +2256,17 @@ watch_running() { # a `jarvis watch` loop for this checkout is alive
     && ps -p "$p" -o command= 2>/dev/null | grep -q "jarvis watch"
 }
 
+# One "<UTC time>\t<woke|cleared|nojarvis>\t<reasons>\t<n events>" line per wake in
+# watch.log; reasons are the sorted kinds from the tick's events (`jarvis usage` counts them).
+watch_log() { # $1 = woke | cleared | nojarvis, $2 = the kinds, one per event, space-separated
+  local k
+  k=$(printf '%s\n' $2 | sort -u | paste -sd, -)
+  mkdir -p "$STATE" && printf '%s\t%s\t%s\t%s\n' \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$1" "$k" "$(echo $2 | wc -w | tr -d ' ')" >> "$STATE/watch.log"
+}
+
 watch_tick() {
-  local seen="$STATE/watch.seen" events="" ho key id tail_ idle term line brief sum scr stale
+  local seen="$STATE/watch.seen" events="" kinds="" ho key id tail_ idle term line brief sum scr stale b
   touch "$seen"
   for ho in "$H"/*.md; do
     [ -f "$ho" ] || continue
@@ -2246,21 +2274,22 @@ watch_tick() {
     key="$ho $(mtime "$ho") $(field status "$ho")"
     grep -qxF "$key" "$seen" && continue
     echo "$key" >> "$seen"
-    events="$events handoff $ho ($(field status "$ho"));"
+    events="$events handoff $ho ($(field status "$ho"));"; kinds="$kinds handoff"
   done
   while IFS= read -r line; do
     id=$(printf '%s' "$line" | sed -n 's/.*term \([^ ]*\).*/\1/p')
     [ -n "$id" ] || continue
     tail_=$(host read "$id" 15 2>/dev/null | sed -e 's/[[:space:]]*$//')
-    events="$events$(budget_tick "$id" "$tail_" </dev/null)"
+    b=$(budget_tick "$id" "$tail_" </dev/null)
+    [ -n "$b" ] && { events="$events$b"; kinds="$kinds budget"; }
     [ -n "$tail_" ] || continue
     sum=$(printf '%s' "$tail_" | cksum | cut -d' ' -f1)
     if printf '%s' "$tail_" | grep -Eiq "$LIMIT_RE"; then
       key="limit $id $(date +%Y%m%d%H)"
-      grep -qxF "$key" "$seen" || { echo "$key" >> "$seen"; events="$events usage limit in worker $(short "$id");"; }
+      grep -qxF "$key" "$seen" || { echo "$key" >> "$seen"; events="$events usage limit in worker $(short "$id");"; kinds="$kinds limit"; }
     elif printf '%s' "$tail_" | grep -Eiq "$PROMPT_RE"; then
       key="prompt $id $sum"
-      grep -qxF "$key" "$seen" || { echo "$key" >> "$seen"; events="$events worker $(short "$id") is waiting at a prompt — read its terminal;"; }
+      grep -qxF "$key" "$seen" || { echo "$key" >> "$seen"; events="$events worker $(short "$id") is waiting at a prompt — read its terminal;"; kinds="$kinds prompt"; }
     else
       # a working agent's screen keeps changing (spinner, timer, output); a frozen one
       # with no handoff is stuck at something the patterns above don't know
@@ -2272,7 +2301,7 @@ watch_tick() {
         brief=$(printf '%s' "$line" | grep -o "$H/briefs/[^ ]*\.md" | head -n 1)
         if [ "$stale" -ge "$JARVIS_STALL_MIN" ] && ! grep -lq "^brief:[[:space:]]*${brief:-@@none@@}" "$H"/*.md 2>/dev/null; then
           key="stall $id $sum"
-          grep -qxF "$key" "$seen" || { echo "$key" >> "$seen"; events="$events worker $(short "$id")'s screen hasn't changed in ${stale} min and it has no handoff — read its terminal;"; }
+          grep -qxF "$key" "$seen" || { echo "$key" >> "$seen"; events="$events worker $(short "$id")'s screen hasn't changed in ${stale} min and it has no handoff — read its terminal;"; kinds="$kinds stall"; }
         fi
       fi
     fi
@@ -2282,16 +2311,18 @@ EOF
   [ -n "$events" ] || return 0
 
   term=$(jarvis_terminal)
-  [ -n "$term" ] || { echo "$(date +%H:%M) events but no Jarvis session in $OPEN:$events"; return 0; }
+  [ -n "$term" ] || { watch_log nojarvis "$kinds"; echo "$(date +%H:%M) events but no Jarvis session in $OPEN:$events"; return 0; }
   idle=$(jarvis_idle_min)
   if [ -n "$idle" ] && [ "$idle" -ge "$JARVIS_IDLE_MIN" ]; then
     if type "${HOST}_clear" >/dev/null 2>&1; then host clear "$term" && sleep 5
     else send_jarvis "/clear"; sleep 3
     fi
     send_jarvis "[jarvis watch] Fresh session: Jarvis was idle ${idle} min, so its cache had expired. You are Jarvis — use the jarvis:run skill, read handoffs/JARVIS.md and handoffs/OPEN.md, run handoffs/bin/jarvis status, then handle:$events"
+    watch_log cleared "$kinds"
     echo "$(date +%H:%M) cleared Jarvis (idle ${idle} min) and woke it:$events"
   else
     send_jarvis "[jarvis watch]$events"
+    watch_log woke "$kinds"
     echo "$(date +%H:%M) woke Jarvis:$events"
   fi
 }
@@ -2898,7 +2929,7 @@ usage_hist() { # $1 = the reading
 # ---------------------------------------------------------------- usage
 
 cmd_usage() {
-  local audit since_arg json merged over r
+  local audit since_arg json merged over r wakes
   have python3 || die "python3 is needed for jarvis usage"
   have jq || die "jq is needed for jarvis usage"
   audit="$(cd "$(dirname "$0")" && pwd)/cc_usage_audit.py"
@@ -2916,7 +2947,21 @@ cmd_usage() {
     [ -f "$r" ] && r=${r##*/} && [ -n "$(run_get "$r" budget)$(run_get "$r" budget_was)" ] || continue
     printf '{"t":%s,"p":%s}\n' "$(run_get "$r" spawned | grep -Ex '[0-9]+' || echo 0)" "$([ -n "$(run_get "$r" paused)" ] && echo true || echo false)"
   done | jq -s -c . 2>/dev/null)
-  printf '%s' "$json" | jq -r --argjson merged "$merged" --argjson over "${over:-[]}" '
+  # watcher wake-ups in the report's window, from watch.log (UTC times compare as text)
+  if [ -f "$STATE/watch.log" ]; then
+    wakes=$(awk -F'\t' -v t0="$(printf '%s' "$json" | jq -r '.period[0][0:19]')" \
+      -v t1="$(printf '%s' "$json" | jq -r '.period[1][0:19]')" -v m="$merged" '
+      $2 == "nojarvis" { next }   # nothing was woken
+      { t = substr($1, 1, 19) } t < t0 || t > t1 { next }
+      { n++; k = split($3, r, ","); for (i = 1; i <= k; i++) c[r[i]]++ }
+      END {
+        printf "wake-ups (this repo): %d · per merged handoff %s", n, (m > 0 ? sprintf("%.2f", n / m) : "n/a")
+        printf " · handoff %d, prompt %d, stall %d, limit %d, budget %d\n", c["handoff"], c["prompt"], c["stall"], c["limit"], c["budget"]
+      }' "$STATE/watch.log")
+  else
+    wakes="wake-ups (this repo): no watcher log yet"
+  fi
+  printf '%s' "$json" | jq -r --argjson merged "$merged" --argjson over "${over:-[]}" --arg wakes "$wakes" '
     def usd: "$" + ((. * 100 | round) / 100 | tostring);
     def age:
       if . < 3600 then ((. / 60 | floor | tostring) + "m")
@@ -2949,6 +2994,7 @@ cmd_usage() {
       "    repeated attempts: \(.repeated_attempts.briefs) briefs · \(.repeated_attempts.extra_sessions) extra sessions · \(.repeated_attempts.extra_usd | usd) extra",
       ((.period[0] | sub("\\.[0-9]+"; "") | sub("\\+00:00$"; "Z") | fromdateiso8601? // 0) as $t0 | [$over[] | select(.t >= $t0)]
         | "    over budget (this repo): \(length) run\(if length == 1 then "" else "s" end) asked for a partial handoff · \([.[] | select(.p)] | length) paused"),
+      "    \($wakes)",
       "    failed test runs (workers with 3+): \(if (.failed_test_runs | length) == 0 then "none" else [.failed_test_runs[] | "\(.brief) \(.count)"] | join(", ") end)",
       "    stale open >8h and idle >1h: \(if (.stale_open_sessions | length) == 0 then "none" else [.stale_open_sessions[].name] | join(", ") end)",
       "    worker cost above 150k context: \((.context_growth.worker_usd_above_150k_share * 100) | round)% · peak p50 \(((.context_growth.peak_ctx_p50 // 0) / 1000) | round)k · p90 \(((.context_growth.peak_ctx_p90 // 0) / 1000) | round)k",

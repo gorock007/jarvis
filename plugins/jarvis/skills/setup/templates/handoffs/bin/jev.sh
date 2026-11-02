@@ -3,7 +3,7 @@
 #
 #   jev.sh brief <brief.md>            lint the brief; log a shadow routing verdict
 #   jev.sh triage <terminalId>...      one status line per worker terminal
-#   jev.sh outcome <brief.md> <clean|corrected|escalated|respawned>
+#   jev.sh outcome <brief.md> <clean|corrected|escalated|respawned> [<checks|scope|logic|other>]
 #   jev.sh report                      summarise handoffs/.jev/log.jsonl
 #   --dry-run (anywhere)               print the request payload, send nothing
 #
@@ -296,11 +296,13 @@ cmd_triage() {
 # ---------------------------------------------------------------- outcome / report
 
 cmd_outcome() {
-  local f="${1:-}" o="${2:-}"
+  local f="${1:-}" o="${2:-}" r="${3:-}"
   case "$o" in clean|corrected|escalated|respawned) ;;
-    *) echo "usage: jev.sh outcome <brief.md> <clean|corrected|escalated|respawned>" >&2; exit 2 ;; esac
+    *) echo "usage: jev.sh outcome <brief.md> <clean|corrected|escalated|respawned> [<checks|scope|logic|other>]" >&2; exit 2 ;; esac
+  case "$r" in ""|checks|scope|logic|other) ;;
+    *) echo "usage: jev.sh outcome <brief.md> <clean|corrected|escalated|respawned> [<checks|scope|logic|other>]" >&2; exit 2 ;; esac
   command -v jq >/dev/null 2>&1 || skip "jq not installed"
-  log_row "$(jq -nc --arg ts "$(now)" --arg brief "$f" --arg o "$o" '{ts: $ts, kind: "outcome", brief: $brief, outcome: $o}')"
+  log_row "$(jq -nc --arg ts "$(now)" --arg brief "$f" --arg o "$o" --arg r "$r" '{ts: $ts, kind: "outcome", brief: $brief, outcome: $o} + (if $r == "" then {} else {reason: $r} end)')"
   echo "jev: outcome recorded ($o)"
 }
 
