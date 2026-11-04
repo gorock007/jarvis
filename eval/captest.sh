@@ -13,6 +13,10 @@
 # `[ … ]; check "…" $?` reads the test's own status.
 # shellcheck disable=SC2319,SC2012,SC2013
 set -u
+# One brace group ending in exit, so bash reads the whole file before running any of it:
+# it reads a script as it goes, and an edit made mid-run (another worker's, in a shared
+# checkout) resumes it at a stale offset, in the caller's directory, outside every `cd`.
+{
 here=$(cd "$(dirname "$0")" && pwd)
 tpl="$here/../plugins/jarvis/skills/setup/templates"
 tmp=$(cd "$(mktemp -d "${TMPDIR:-/tmp}/jarvis-captest.XXXXXX")" && pwd -P)
@@ -295,3 +299,5 @@ for p in $(cat "$procs"); do total=$((total + 1)); kill -0 "$p" 2>/dev/null && [
 [ "$alive" = "$total" ] && [ "$total" -gt 20 ]; check "every fake session process is still alive ($alive of $total)" $?
 
 echo; [ "$fails" = 0 ] && echo "captest: all passed" || { echo "captest: $fails failed"; exit 1; }
+exit # inside the group: bash never reads past it
+}

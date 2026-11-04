@@ -13,6 +13,10 @@
 # `[ … ]; check "…" $?` reads the test's own status.
 # shellcheck disable=SC2319,SC2154,SC2016  # $p is the trap's own loop variable; the $s in single quotes are regex
 set -u
+# One brace group ending in exit, so bash reads the whole file before running any of it:
+# it reads a script as it goes, and an edit made mid-run (another worker's, in a shared
+# checkout) resumes it at a stale offset, in the caller's directory, outside every `cd`.
+{
 here=$(cd "$(dirname "$0")" && pwd)
 tpl="$here/../plugins/jarvis/skills/setup/templates"
 tmp=$(cd "$(mktemp -d "${TMPDIR:-/tmp}/jarvis-budgettest.XXXXXX")" && pwd -P)
@@ -286,3 +290,5 @@ kill -0 "$agentpid" 2>/dev/null; check "the fake agent process is still alive" $
 ! grep -Eq 'reap|signal|kill|TERM' handoffs/.jarvis/audit.log; check "the audit log records no signal" $?
 
 echo; [ "$fails" = 0 ] && echo "budgettest: all passed" || { echo "budgettest: $fails failed"; exit 1; }
+exit # inside the group: bash never reads past it
+}

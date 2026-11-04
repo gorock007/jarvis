@@ -11,6 +11,10 @@
 # expand in the shell they're written for, not this one.
 # shellcheck disable=SC2016,SC2319,SC2012
 set -u
+# One brace group ending in exit, so bash reads the whole file before running any of it:
+# it reads a script as it goes, and an edit made mid-run (another worker's, in a shared
+# checkout) resumes it at a stale offset, in the caller's directory, outside every `cd`.
+{
 here=$(cd "$(dirname "$0")" && pwd)
 tpl="$here/../plugins/jarvis/skills/setup/templates"
 tmp=$(cd "$(mktemp -d "${TMPDIR:-/tmp}/jarvis-fgate.XXXXXX")" && pwd -P)
@@ -447,3 +451,5 @@ js=$(jq -nc --arg f "$tmp/acct/settings.json" --arg c '{"availableModels":["fabl
 hk "$js" | grep -q deny; check "the hook guards that account's settings.json too" $?
 
 echo; [ "$fails" = 0 ] && echo "fabletest: all passed" || { echo "fabletest: $fails failed"; exit 1; }
+exit # inside the group: bash never reads past it
+}

@@ -10,6 +10,10 @@
 # expand in the shell they're written for, not this one.
 # shellcheck disable=SC2016,SC2154,SC2319
 set -u
+# One brace group ending in exit, so bash reads the whole file before running any of it:
+# it reads a script as it goes, and an edit made mid-run (another worker's, in a shared
+# checkout) resumes it at a stale offset, in the caller's directory, outside every `cd`.
+{
 here=$(cd "$(dirname "$0")" && pwd)
 tpl="$here/../plugins/jarvis/skills/setup/templates"
 tmp=$(cd "$(mktemp -d "${TMPDIR:-/tmp}/jarvis-locktest.XXXXXX")" && pwd -P)
@@ -164,3 +168,5 @@ nr="$tmp/plain"; mkdir -p "$nr"
 rm -f "$nr/handoffs/bin/jarvis-lock.pl"; out=$(cd "$nr" && handoffs/bin/jarvis lock docker -- touch "$nr/ran" 2>&1); [ $? = 2 ] && [ ! -e "$nr/ran" ] && printf '%s' "$out" | grep -q 'jarvis:setup'; check "without bin/jarvis-lock.pl: exit 2, command not run" $?
 
 echo; [ "$fails" = 0 ] && echo "locktest: all passed" || { echo "locktest: $fails failed"; exit 1; }
+exit # inside the group: bash never reads past it
+}
