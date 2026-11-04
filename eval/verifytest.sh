@@ -156,8 +156,10 @@ check "--verify refuses the same mismatch before running anything (exit $rc)" $?
 
 echo "3. options"
 handoffs/bin/jarvis merge handoffs/hA.md --verify >/dev/null 2>&1; [ $? = 2 ]; check "--verify without --check: exit 2" $?
-out=$(handoffs/bin/jarvis merge handoffs/hA.md --check --verify --reuse 2>&1); [ $? = 2 ] && printf '%s' "$out" | grep -q "isn't built yet"
-check "--reuse: exit 2, not built yet" $?
+out=$(handoffs/bin/jarvis merge handoffs/hA.md --check --reuse 2>&1); [ $? = 2 ] && printf '%s' "$out" | grep -q "goes with --check --verify"
+check "--reuse without --verify: exit 2" $?
+out=$(JARVIS_REUSE_MAX_AGE=soon handoffs/bin/jarvis merge handoffs/hA.md --check --verify --reuse 2>&1); [ $? = 2 ] && printf '%s' "$out" | grep -q "JARVIS_REUSE_MAX_AGE takes whole seconds"
+check "a malformed JARVIS_REUSE_MAX_AGE: exit 2" $?
 handoffs/bin/jarvis merge handoffs/hA.md --check --verify -m x >/dev/null 2>&1; [ $? = 2 ]; check "-m with --verify: exit 2" $?
 handoffs/bin/jarvis merge handoffs/hA.md --check --verify --no-push >/dev/null 2>&1; [ $? = 2 ]; check "--no-push with --verify: exit 2" $?
 handoff hBl bA blocked 'src/a.sh — modified'
@@ -353,6 +355,11 @@ out=$(V handoffs/hX.md 2>&1); [ $? = 2 ] && printf '%s' "$out" | grep -q 'leaves
 rm src/link; ln -s a.sh src/link
 V handoffs/hX.md >/dev/null 2>&1; check "a relative symlink inside it is copied as a link" $?
 rm src/link
+ln -s y/y/../.. src/x; ln -s . src/y   # x leaves only once y is placed after it
+handoff hX bA done 'src/x — created' 'src/y — created'
+out=$(V handoffs/hX.md 2>&1); [ $? = 2 ] && printf '%s' "$out" | grep -q 'src/x is a symlink that leaves the checkout'
+check "a link that leaves through a link listed after it: exit 2" $?
+rm src/x src/y
 git mv -k src/old.txt src/renamed.txt
 handoff hX bF done 'src/old.txt — deleted' 'src/renamed.txt — created' 'handoffs/hX.md — created'
 brief bF <<'EOF'
@@ -439,7 +446,97 @@ V handoffs/hL.md >/dev/null 2>&1; check "its own tracked jarvis honours the cont
 leftover; check "…and nothing is left" $?
 cd "$r" || exit 1
 
-echo "12. every process this test started has exited"
+echo "12. --reuse, the run record and the verify lease"
+VR() { handoffs/bin/jarvis merge "$1" --check --verify --reuse; } # $1 = handoff
+brief bR <<EOF
+\`\`\`bash verify class=light timeout=2
+echo ran >> "$tmp/ran-R"
+if [ -e "$tmp/fail-R" ]; then exit 4; fi
+if [ -e "$tmp/slow-R" ]; then sleep 30; fi
+\`\`\`
+EOF
+handoff hR bR done 'src/a.sh — modified'
+mkdir -p handoffs/.jarvis/runs
+printf 'run: term-R\nbrief: handoffs/briefs/bR.md\nagent: claude test\nspawned: 100\nstate: running\ncustom: kept\n' > handoffs/.jarvis/runs/term-R
+ran() { cat "$tmp/ran-R" 2>/dev/null | wc -l | tr -d ' '; }
+rk() { sed -n "s/^$1: //p" handoffs/.jarvis/runs/term-R; } # $1 = key of the run record
+res() { sed -n "s/^$2: //p" "handoffs/.jarvis/verify-results/$1/result"; } # $1 = attempt, $2 = key
+out=$(VR handoffs/hR.md 2>&1); rc=$?
+[ $rc = 0 ] && [ "$(ran)" = 1 ] && printf '%s' "$out" | grep -q 'not reusing: no earlier attempt on this exact candidate; running the checks'
+check "--reuse with no earlier pass runs the checks (exit $rc)" $?
+[ "$(rk verify_status)" = passed ] && [ "$(rk verify_reused)" = 0 ] && [ "$(rk verify_exit)" = 0 ] && [ "$(rk verify_check)" = 1 ] \
+  && rk verify_key | grep -qx '[0-9a-f]\{64\}' && rk verify_tree | grep -qx '[0-9a-f]\{40\}' && [ "$(rk verify_head)" = "$(git rev-parse HEAD)" ] \
+  && [ -f "$(rk verify_log)" ] && [ "$(rk state)" = running ] && [ "$(rk custom)" = kept ] && [ "$(rk spawned)" = 100 ]
+check "the run record gets the verify_* keys and keeps its own" $?
+first=$(rk verify_attempt); first_done=$(rk verify_finished)
+[ "$(res "$first" key)" = "$(rk verify_key)" ]; check "…and the result keeps the same verify_key" $?
+out=$(VR handoffs/hR.md 2>&1); rc=$?
+[ $rc = 0 ] && [ "$(ran)" = 1 ] && printf '%s' "$out" | grep -q "^verify: reused pass from .* · tree [0-9a-f]\{7\} · handoffs/.jarvis/verify-results/$first$"
+check "the same candidate again: the pass is reused, not re-run (exit $rc)" $?
+[ "$(rk verify_reused)" = 1 ] && [ "$(rk verify_finished)" = "$first_done" ] && [ "$(rk verify_status)" = passed ]
+check "…recorded as reused, with the pass's own finish time" $?
+VR handoffs/hR.md >/dev/null 2>&1
+[ "$(ran)" = 1 ] && [ "$(res "$(rk verify_attempt)" reused_from)" = "$first" ] && [ "$(res "$(rk verify_attempt)" status)" = reused ]
+check "…and a reuse of a reuse still points at the pass: reusing never extends it" $?
+V handoffs/hR.md >/dev/null 2>&1; [ "$(ran)" = 2 ]; check "without --reuse the checks run" $?
+printf 'started: 2026-11-04 21:15\n' >> handoffs/briefs/bR.md
+VR handoffs/hR.md >/dev/null 2>&1; [ "$(ran)" = 2 ]; check "a brief's started: line doesn't count" $?
+printf 'More prose.\n' >> handoffs/briefs/bR.md
+VR handoffs/hR.md >/dev/null 2>&1; [ "$(ran)" = 3 ]; check "a brief edit: no reuse" $?
+printf 'a() { echo AA; }\n' > src/a.sh
+VR handoffs/hR.md >/dev/null 2>&1; [ "$(ran)" = 4 ]; check "a listed-file edit: no reuse" $?
+printf 'a() { echo A; }\n' > src/a.sh
+printf 'other\n' > src/unrelated.txt
+VR handoffs/hR.md >/dev/null 2>&1; [ "$(ran)" = 4 ]; check "…back to the passed bytes, with an unrelated dirty file: reused" $?
+rm src/unrelated.txt
+git commit -q --allow-empty -m 'head moves'
+VR handoffs/hR.md >/dev/null 2>&1; [ "$(ran)" = 5 ]; check "a HEAD change: no reuse" $?
+JARVIS_REUSE_ENV=VERIFYTEST_X VERIFYTEST_X=1 VR handoffs/hR.md >/dev/null 2>&1; [ "$(ran)" = 6 ]; check "a JARVIS_REUSE_ENV value: no reuse" $?
+touch "$tmp/fail-R"; V handoffs/hR.md >/dev/null 2>&1; rc=$?; rm -f "$tmp/fail-R"
+out=$(VR handoffs/hR.md 2>&1); [ $rc = 1 ] && [ "$(ran)" = 8 ] && printf '%s' "$out" | grep -q 'latest attempt on this exact candidate ended failed'
+check "after a failed attempt on the same candidate: no reuse of the older pass" $?
+touch "$tmp/slow-R"; V handoffs/hR.md >/dev/null 2>&1; rc=$?; rm -f "$tmp/slow-R"
+out=$(VR handoffs/hR.md 2>&1); [ $rc = 124 ] && [ "$(ran)" = 10 ] && printf '%s' "$out" | grep -q 'ended timeout'
+check "after a timed-out attempt: no reuse" $?
+att=$(rk verify_attempt)
+perl -pi -e 's/^finished: \d+/"finished: " . (time - 8000)/e' "handoffs/.jarvis/verify-results/$att/result"
+out=$(VR handoffs/hR.md 2>&1); [ "$(ran)" = 11 ] && printf '%s' "$out" | grep -q 'JARVIS_REUSE_MAX_AGE=7200'
+check "a pass older than JARVIS_REUSE_MAX_AGE: no reuse" $?
+att=$(rk verify_attempt)
+perl -pi -e 's/^finished: \d+/"finished: " . (time + 3600)/e' "handoffs/.jarvis/verify-results/$att/result"
+out=$(VR handoffs/hR.md 2>&1); [ "$(ran)" = 12 ] && printf '%s' "$out" | grep -q 'in the future'
+check "a pass stamped in the future: no reuse" $?
+JARVIS_REUSE_MAX_AGE=0 VR handoffs/hR.md >/dev/null 2>&1; [ "$(ran)" = 13 ]; check "JARVIS_REUSE_MAX_AGE=0: no reuse" $?
+brief bR <<EOF
+\`\`\`bash verify class=light timeout=5 reuse=never
+echo ran >> "$tmp/ran-R"
+\`\`\`
+EOF
+VR handoffs/hR.md >/dev/null 2>&1; out=$(VR handoffs/hR.md 2>&1); [ "$(ran)" = 15 ] && printf '%s' "$out" | grep -q 'says reuse=never'
+check "a reuse=never block: never reused" $?
+VR handoffs/hA.md >/dev/null 2>&1; out=$(VR handoffs/hA.md 2>&1)
+[ $? = 0 ] && printf '%s' "$out" | grep -q '^verify: reused pass from' && printf '%s' "$out" | grep -q 'no run record'
+check "a standalone handoff's pass is reused too" $?
+for i in 1 2 3 4 5 6 7 8 9 10 11 12; do handoffs/bin/jarvis _run-set term-R "k$i" "v$i" & done; wait
+n=0; for i in 1 2 3 4 5 6 7 8 9 10 11 12; do [ "$(rk "k$i")" = "v$i" ] && n=$((n + 1)); done
+[ $n = 12 ] && [ "$(rk state)" = running ] && [ "$(rk custom)" = kept ] && [ "$(rk verify_status)" = passed ]
+check "twelve writers at once: no update lost, lifecycle keys kept ($n/12)" $?
+[ -e handoffs/.jarvis/run-locks/term-R.write-lock ] && [ ! -e handoffs/.jarvis/runs/term-R.write-lock ] \
+  && [ -z "$(ls -A handoffs/.jarvis/runs | grep -v '^term-R$')" ]; check "…its lock lives outside runs/, and no temp file is left" $?
+handoffs/bin/jarvis _run-set --if verify_attempt nosuch term-R verify_status failed; rc=$?
+[ $rc = 3 ] && [ "$(rk verify_status)" = passed ]; check "an older attempt's final write is refused (exit $rc)" $?
+handoffs/bin/jarvis _run-set nosuch k v; [ $? = 4 ] && [ ! -e handoffs/.jarvis/runs/nosuch ]; check "_run-set never creates a record" $?
+rm -f "$tmp/running-S" "$tmp/kid-S"
+bg_in "$r" sh -c 'exec handoffs/bin/jarvis merge "$1" --check --verify > "$2" 2>&1' _ handoffs/hS.md "$tmp/out-lease"; sup=$bgpid
+waitfor 10 test -e "$tmp/running-S"
+out=$(JARVIS_LOCK_WAIT=1 V handoffs/hA.md 2>&1); rc=$?
+[ $rc = 75 ] && printf '%s' "$out" | grep -q 'another verification of this checkout held the verify lease'
+check "one verification at a time per checkout: a second one waits, then exits 75 (exit $rc)" $?
+kill -TERM "$sup"; wait "$sup" 2>/dev/null
+waitfor 10 leftover; check "…and nothing is left" $?
+V handoffs/hA.md >/dev/null 2>&1; check "…and the lease is free again once it ends" $?
+
+echo "13. every process this test started has exited"
 none_left() { ! ps -A -o command= | grep -F "$tmp/" | grep -v grep >/dev/null; }
 waitfor 5 none_left; check "none left" $?
 

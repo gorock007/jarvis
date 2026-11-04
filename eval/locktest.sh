@@ -69,7 +69,9 @@ J=handoffs/bin/jarvis
 
 echo "1. FIFO on one machine-wide slot"
 L="$tmp/t1.log"; pids=""
-for i in 1 2 3 4; do bg_in "$r1" "$J" lock docker -- "$tmp/job" "j$i" 0.4 "$L"; pids="$pids $bgpid"; sleep 0.2; done
+# in line: a ticket queued or a run started, so a slow start can't reorder them (a fixed sleep did, cold)
+inline() { [ $(( $(ls "$JARVIS_LOCK_DIR/docker.q" 2>/dev/null | grep -c '^[0-9]*\.[0-9]*$') + $(cat "$L" 2>/dev/null | grep -c ' start ') )) -ge "$1" ]; }
+for i in 1 2 3 4; do bg_in "$r1" "$J" lock docker -- "$tmp/job" "j$i" 0.4 "$L"; pids="$pids $bgpid"; waitfor 5 inline "$i"; done
 for p in $pids; do wait "$p"; done
 [ "$(awk '$2 == "start" {print $3, $1}' "$L" | sort -n | awk '{printf "%s ", $2}')" = "j1 j2 j3 j4 " ]; check "four waiters run in the order they started" $?
 awk '{t[$1 " " $2] = $3} END {for (i = 2; i <= 4; i++) if (t["j" i " start"] < t["j" (i - 1) " end"]) exit 1; if (NR != 8) exit 1}' "$L"; check "…and their runs never overlap" $?

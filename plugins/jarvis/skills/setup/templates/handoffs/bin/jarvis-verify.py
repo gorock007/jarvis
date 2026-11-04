@@ -5,6 +5,7 @@ nothing else should call it.
 
   jarvis-verify.py run --root <checkout> --handoff <file> --runner <bin/jarvis>
                        --bash <path> [--max-sec N] [--lock-wait N] [--grace N]
+                       [--reuse=0|1] [--max-age N] [--reuse-env "NAMES"] [--lock-dir DIR]
 
 It runs the brief's ```bash verify``` blocks under ## Checks against HEAD plus
 exactly the handoff's listed changes, in a detached worktree of its own:
@@ -24,14 +25,32 @@ once the lease is held. One cleanup path, for pass, failure, timeout, INT, TERM
 and HUP, stops what is left of the check's group and removes the worktree; a
 watchdog in its own session does the same if this process dies without it.
 
+One attempt at a time per checkout: the internal `verify` lease (checkout 1, the
+slot format of jarvis-lock.pl, so `jarvis resources` shows it). Each attempt's
+verify_key is a SHA-256 over HEAD, the candidate tree, the checked-out bytes, the
+listed changes, the brief without started:, the blocks, inputs, dependencies, the
+runner/helper/shim bytes, lock settings, bash, OS and an environment digest. With
+--reuse, a pass is reported instead of re-run only when the newest finished attempt
+with that key, for the same run (or standalone handoff), passed and cleaned up,
+under --max-age seconds ago, and no block says reuse=never. The selected run record
+gets verify_* keys through `bin/jarvis _run-set`, under that record's write lock.
+
 Exit 0 passed · 1 file list mismatch, missing input or a failed check · 2 bad
 brief/handoff/config or setup/cleanup failure · 75 lease wait ran out or the
 inputs moved · 124 a check timed out · 129/130/143 HUP/INT/TERM.
 Python 3.8+, standard library only.
 """
-import argparse, hashlib, json, os, re, shutil, signal, stat, subprocess, sys, time
+import argparse, fcntl, hashlib, json, os, re, shutil, signal, stat, subprocess, sys, time
 
 SCHEMA = "jarvis-verify-1"
+KEY_SCHEMA = "jarvis-verify-key-1"
+SKEW = 60                  # a result stamped further in the future than this is never reused
+# environment values that count toward a verify_key, with $JARVIS_REUSE_ENV and every LC_*;
+# only their digest is kept
+KEY_ENV = ("PATH", "HOME", "SHELL", "LANG", "TZ", "CI", "NODE_ENV", "NODE_OPTIONS", "PYTHONHASHSEED",
+           "PYTHONUTF8", "PYTHONDONTWRITEBYTECODE", "PERL5LIB", "PERL5OPT", "RUBYOPT", "RUBYLIB", "GEM_HOME",
+           "GEM_PATH", "JAVA_HOME", "CLASSPATH", "GOPATH", "GOFLAGS", "CARGO_HOME", "RUSTUP_TOOLCHAIN",
+           "LD_LIBRARY_PATH", "DYLD_LIBRARY_PATH", "DYLD_FALLBACK_LIBRARY_PATH")
 TAIL = 40
 ACTIONS = ("created", "modified", "deleted")
 STATE_DIR = "handoffs/.jarvis"
@@ -410,6 +429,8 @@ class Verify:
         self.cleaned = False
         self.sig = None
         self.result = {}
+        self.run = self.lease = self.key = self.reused = None
+        self.class_specs = {}
 
     # ---- signals: one cleanup path
 
@@ -465,12 +486,16 @@ class Verify:
             raise Fail(2, "the checkout has unmerged paths; resolve them first")
         self.run = self.pick_run()
 
+        if self.run and not shutil.which("perl"):
+            raise Fail(2, "no perl on PATH, so run %s's record can't be updated under its lock (nothing run)" % self.run)
         heavy = sorted({b["class"] for b in self.blocks if b["class"] != "light"})
+        self.class_specs = {}
         for c in heavy:
             p = subprocess.run([a.runner, "_verify-class", c], cwd=self.root, stdout=subprocess.PIPE,
                                stderr=subprocess.PIPE)
             if p.returncode:
                 raise Fail(2, p.stderr.decode("utf-8", "replace").strip() or "lock class %s doesn't resolve" % c)
+            self.class_specs[c] = p.stdout.decode("utf-8", "replace").strip()
         self.lock_pl = os.path.join(os.path.dirname(a.runner), "jarvis-lock.pl")
         if heavy and not os.path.isfile(self.lock_pl):
             raise Fail(2, "no %s beside bin/jarvis for the %s lease — re-run jarvis:setup"
@@ -633,6 +658,62 @@ class Verify:
 
     # ---- side effects start here
 
+    def take_lease(self):
+        """The checkout's verify lease, held until this process (and its watchdog) exits."""
+        d = self.a.lock_dir
+        os.makedirs(d, 0o700, exist_ok=True)
+        key = "verify@" + hashlib.sha1(self.root.encode()).hexdigest()[:12]
+        where = os.path.join(d, key + ".where")
+        try:
+            cur = open(where).read()
+        except OSError:
+            cur = ""
+        if cur != self.root + "\n":
+            write_atomic(where, self.root + "\n")
+        slot = os.path.join(d, key + ".slot0")
+        fd = os.open(slot, os.O_RDWR | os.O_CREAT, 0o600)
+        deadline, told = time.time() + self.a.lock_wait, False
+        while True:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except OSError:
+                pass
+            if time.time() >= deadline:
+                os.close(fd)
+                raise Fail(75, "another verification of this checkout held the verify lease for %ds "
+                               "(JARVIS_LOCK_WAIT); rerun later" % self.a.lock_wait)
+            if not told:
+                h = read_rec(slot)
+                say("verify: waiting — another verification of this checkout is running%s" %
+                    (" (pid %s)" % h["pid"] if h.get("pid") else ""))
+                told = True
+            time.sleep(0.1)
+        rec = {"pid": os.getpid(), "start": int(time.time()), "cmd": "jarvis merge %s --check --verify" % self.handoff_rel,
+               "cwd": self.root, "root": self.root,
+               "term": os.environ.get("SUPERSET_TERMINAL_ID") or os.environ.get("TMUX_PANE")
+               or os.environ.get("ULTRON_SESSION_ID") or "",
+               "session": os.environ.get("CLAUDE_CODE_SESSION_ID", ""), "wrapper": os.getpid()}
+        os.ftruncate(fd, 0)
+        os.lseek(fd, 0, 0)
+        os.write(fd, rec_text(rec).encode())
+        self.lease = fd
+
+    def record(self, final, kv):
+        """Write verify_* keys to the run record through bin/jarvis _run-set, under its lock; a final
+        write only while the record still names this attempt. 0 written, 3 a newer attempt's, else failed."""
+        if not self.run:
+            return 0
+        argv = [self.a.runner, "_run-set"] + (["--if", "verify_attempt", self.attempt_id] if final else []) + [self.run]
+        for k, v in kv:
+            argv += [k, str(v)]
+        env = {k: v for k, v in os.environ.items() if k != "JARVIS_VERIFY_CONTEXT"}
+        try:
+            return subprocess.run(argv, cwd=self.root, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                  stderr=subprocess.DEVNULL).returncode
+        except OSError:
+            return 2
+
     def start(self):
         a = self.a
         key = self.run or ("standalone-" + re.sub(r"[^A-Za-z0-9_.-]", "_",
@@ -663,6 +744,12 @@ class Verify:
                        "bash": a.bash, "bash_version": self.bash_version()}
         self.save_result()
         self.start_watchdog()
+        if self.record(False, [("verify_status", "running"), ("verify_attempt", self.attempt_id),
+                               ("verify_head", self.head), ("verify_started", self.result["started"]),
+                               ("verify_finished", ""), ("verify_exit", ""), ("verify_check", ""),
+                               ("verify_tree", ""), ("verify_key", ""), ("verify_reused", "0"),
+                               ("verify_log", self.results_rel)]):
+            raise Fail(2, "can't write verify_status to run %s's record (handoffs/.jarvis/runs/%s)" % (self.run, self.run))
 
     def common_dir(self):
         c = git(self.root, "rev-parse", "--git-common-dir").stdout.decode().strip()
@@ -710,8 +797,9 @@ class Verify:
                     self.owner = read_rec(os.path.join(self.attempt, "owner")) or self.owner
                     self.stop_group(self.owner.get("pgid"), self.owner.get("pgid_start"), self.a.grace, direct=False)
                     self.remove_attempt()
-                    self.save_result(status="interrupted", finished=int(time.time()),
+                    self.save_result(status="interrupted", finished=int(time.time()), ended_ns=time.time_ns(),
                                      note="the verifier died; its watchdog cleaned up")
+                    self.record(True, [("verify_status", "interrupted"), ("verify_finished", int(time.time()))])
             finally:
                 os._exit(0)
         os.close(r)
@@ -767,6 +855,7 @@ class Verify:
                 self.prune_empty(os.path.dirname(p))
         for s in self.snaps:
             self.place(s)
+        self.baseline = self.baseline_digest()
         self.copies = {}
         for p in self.inputs["copy"]:
             data, mode, _ = self.read_stable(os.path.join(self.root, p), p)
@@ -780,11 +869,101 @@ class Verify:
         self.dep_digests = {}
         for d in self.inputs["dependencies"]:
             self.dep_digests[d["path"]] = self.copy_dependency(d)
+        for s in self.snaps:   # again with everything placed: a link may leave through one placed after it
+            if s["link"]:
+                self.link_inside(s["path"])
         self.controls()
         self.tree_id = self.write_tree()
-        self.save_result(tree=self.tree_id, sources=len(self.entries),
+        self.key = self.verify_key()
+        self.save_result(tree=self.tree_id, key=self.key, sources=len(self.entries),
                          inputs=len(self.inputs["copy"]) + len(self.inputs["requires"]),
                          dependencies=len(self.inputs["dependencies"]))
+
+    def baseline_digest(self):
+        """The candidate's bytes as checked out (checkout filters and line endings included), before
+        inputs, dependencies and controls go in."""
+        h = hashlib.sha256()
+        for dirpath, dirs, files in os.walk(self.tree, followlinks=False):
+            rel = os.path.relpath(dirpath, self.tree)
+            if rel == ".":
+                dirs[:] = [x for x in dirs if x != ".git"]
+                files = [x for x in files if x != ".git"]
+            dirs.sort()
+            for name in sorted(files + [x for x in dirs if os.path.islink(os.path.join(dirpath, x))]):
+                full = os.path.join(dirpath, name)
+                rp = os.fsencode(os.path.normpath(os.path.join(rel, name)))
+                st = os.lstat(full)
+                if stat.S_ISLNK(st.st_mode):
+                    h.update(b"L\0" + rp + b"\0" + os.fsencode(os.readlink(full)) + b"\0")
+                elif stat.S_ISREG(st.st_mode):
+                    with open(full, "rb") as f:
+                        h.update(b"F\0" + rp + b"\0" + oct(st.st_mode & 0o777).encode() + b"\0"
+                                 + hashlib.sha256(f.read()).digest())
+            dirs[:] = [x for x in dirs if not os.path.islink(os.path.join(dirpath, x))]
+        return h.hexdigest()
+
+    def verify_key(self):
+        a = self.a
+
+        def fsha(path):
+            try:
+                with open(path, "rb") as f:
+                    return sha(f.read())
+            except OSError:
+                return None
+        env = self.check_env()
+        names = sorted(set(a.reuse_env.split()) | set(KEY_ENV) | {k for k in env if k.startswith("LC_")})
+        u = os.uname()
+        m = {
+            "schema": KEY_SCHEMA, "head": self.head, "tree": self.tree_id, "baseline": self.baseline,
+            "sources": [[s["path"], s["mode"], s["sha"]] for s in self.snaps],
+            "actions": [[p, act] for p, act in self.entries],
+            "brief": sha(b"".join(x for x in self.bbytes.splitlines(True) if not x.startswith(b"started:"))),
+            "blocks": [[b["n"], b["class"], b["timeout"], b["reuse"], b["body"]] for b in self.blocks],
+            "inputs": self.inputs, "copies": self.copies, "dependencies": self.dep_digests,
+            "runner": fsha(a.runner), "helper": fsha(os.path.abspath(__file__)), "lock_helper": fsha(self.lock_pl),
+            "shim": self.shim, "classes": self.class_specs, "lock_wait": a.lock_wait, "grace": a.grace,
+            "bash": [os.path.realpath(a.bash), self.result.get("bash_version", "")],
+            "os": [u.sysname, u.release, u.machine], "cwd": ".",
+            "env": sha(json.dumps([[n, env.get(n)] for n in names]).encode()), "env_policy": ["scrub-1"] + list(SCRUB),
+        }
+        return sha(json.dumps(m, sort_keys=True, separators=(",", ":")).encode())
+
+    def find_pass(self):
+        """(attempt id, its result) of a reusable pass of this exact candidate, or (None, why not)."""
+        a = self.a
+        if a.max_age <= 0:
+            return None, "JARVIS_REUSE_MAX_AGE=0"
+        never = [b["n"] for b in self.blocks if b["reuse"] == "never"]
+        if never:
+            return None, "check %d says reuse=never" % never[0]
+        base = os.path.join(self.root, STATE_DIR, "verify-results")
+        now = time.time()
+        newest = None
+        for n in sorted(os.listdir(base)):
+            if n == self.attempt_id:
+                continue
+            r = read_rec(os.path.join(base, n, "result"))
+            if r.get("key") != self.key or r.get("status") == "reused":
+                continue
+            if r.get("run") != (self.run or "-") or (not self.run and r.get("handoff") != self.handoff_rel):
+                continue
+            stamps = [int(r[k]) for k in ("started", "finished") if r.get(k, "").isdigit()]
+            if not stamps or max(stamps) > now + SKEW:
+                return None, "attempt %s has no time or one in the future" % n
+            order = (int(r["ended_ns"]) if r.get("ended_ns", "").isdigit() else max(stamps) * 10 ** 9, n)
+            if newest is None or order > newest[0]:
+                newest = (order, n, r)
+        if newest is None:
+            return None, "no earlier attempt on this exact candidate"
+        _, n, r = newest
+        if r.get("status") != "passed" or r.get("exit") != "0" or r.get("cleanup") != "ok" \
+                or not r.get("finished", "").isdigit():
+            return None, "the latest attempt on this exact candidate ended %s (%s)" % (r.get("status") or "unfinished", n)
+        age = now - int(r["finished"])
+        if age >= a.max_age:
+            return None, "its pass is %ds old (JARVIS_REUSE_MAX_AGE=%d)" % (age, a.max_age)
+        return (n, r), None
 
     def read_stable(self, full, p):
         for _ in range(2):
@@ -842,13 +1021,16 @@ class Verify:
                 raise Fail(2, "## Files: %s is a symlink to an absolute path; only relative links inside the "
                               "checkout are verified" % s["path"])
             os.symlink(target, dest)
-            tree = os.path.realpath(self.tree)
-            real = os.path.realpath(dest)
-            if real != tree and not real.startswith(tree + os.sep):
-                raise Fail(2, "## Files: %s is a symlink that leaves the checkout" % s["path"])
+            self.link_inside(s["path"])
         else:
             shutil.copyfile(s["file"], dest)
             os.chmod(dest, s["perm"])
+
+    def link_inside(self, p):
+        tree = os.path.realpath(self.tree)
+        real = os.path.realpath(os.path.join(self.tree, p))
+        if real != tree and not real.startswith(tree + os.sep):
+            raise Fail(2, "## Files: %s is a symlink that leaves the checkout" % p)
 
     def prune_empty(self, d):
         while d:
@@ -937,11 +1119,11 @@ class Verify:
                 "case \"${1:-}\" in\n  lock) shift; exec %s _verify-lock \"$@\" ;;\n"
                 "  resources) exec %s \"$@\" ;;\n"
                 "  *) echo \"jarvis: only lock and resources work in a verification worktree, not '${1:-}'\" >&2; "
-                "exit 2 ;;\nesac\n") % (shq(self.ctl_runner), shq(self.ctl_runner))
+                "exit 2 ;;\nesac\n")
         with open(shim, "w") as f:
-            f.write(text)
+            f.write(text % (shq(self.ctl_runner), shq(self.ctl_runner)))
         os.chmod(shim, 0o755)
-        self.shim = sha(text.encode())
+        self.shim = sha(text.encode())    # its bytes but the attempt's own path
 
     def write_tree(self):
         """The tree object of HEAD plus the listed changes, through a private index."""
@@ -1207,6 +1389,15 @@ class Verify:
         return ok
 
 
+def ago(s):
+    s = max(0, int(s))
+    if s < 60:
+        return "%ds" % s
+    if s < 3600:
+        return "%dm%02ds" % (s // 60, s % 60)
+    return "%dh%02dm" % (s // 3600, (s % 3600) // 60)
+
+
 def shq(s):
     return "'" + s.replace("'", "'\\''") + "'"
 
@@ -1221,6 +1412,10 @@ def main():
     ap.add_argument("--max-sec", type=int, default=7200)
     ap.add_argument("--lock-wait", type=int, default=3600)
     ap.add_argument("--grace", type=int, default=10)
+    ap.add_argument("--reuse", choices=["0", "1"], default="0")
+    ap.add_argument("--max-age", type=int, default=7200)
+    ap.add_argument("--reuse-env", default="")
+    ap.add_argument("--lock-dir", default=os.path.join(os.path.expanduser("~"), ".jarvis", "locks"))
     a = ap.parse_args()
     v = Verify(a)
     for s in SIGCODE:
@@ -1228,6 +1423,7 @@ def main():
     code, msg = 0, ""
     try:
         v.preflight()
+        v.take_lease()
         v.start()
         v.materialize()
         v.requires()
@@ -1237,8 +1433,15 @@ def main():
             "" if len(v.inputs["copy"]) + len(v.inputs["requires"]) == 1 else "s",
             len(v.inputs["dependencies"]), "y" if len(v.inputs["dependencies"]) == 1 else "ies",
             "run " + v.run if v.run else "no run record; result stored separately"))
-        v.run_checks()
-        v.recheck()
+        if a.reuse == "1":
+            v.reused, why = v.find_pass()
+            if not v.reused:
+                say("verify: not reusing: %s; running the checks" % why)
+        if v.reused:
+            v.recheck()
+        else:
+            v.run_checks()
+            v.recheck()
     except Fail as e:
         code, msg = e.code, e.msg
     except Interrupted:
@@ -1255,11 +1458,41 @@ def main():
         if code in (0, 1, 75, 124):
             code, msg = 2, msg or "cleanup failed"
     status = {0: "passed", 1: "failed", 124: "timeout", 75: "error"}.get(code, "interrupted" if code in SIGCODE.values() else "error")
+    reused = v.reused if code == 0 else None
     if v.results and os.path.isdir(v.results):
-        v.save_result(status=status, exit=code, finished=int(time.time()), cleanup="ok" if clean else "failed",
-                      message=msg.split("\n")[0])
+        n = v.result.get("check")
+        if reused:
+            orig, r = reused
+            kv = [("verify_status", "passed"), ("verify_finished", r["finished"]), ("verify_exit", 0),
+                  ("verify_check", r.get("check", "")), ("verify_reused", "1"),
+                  ("verify_log", os.path.join(STATE_DIR, "verify-results", orig, "check-%s.log" % r.get("check", "1")))]
+        else:
+            log = os.path.join(v.results_rel, "check-%s.log" % n) if n else v.results_rel
+            kv = [("verify_status", status), ("verify_finished", int(time.time())), ("verify_exit", code),
+                  ("verify_check", n or ""), ("verify_reused", "0"), ("verify_log", log)]
+        kv += [("verify_tree", getattr(v, "tree_id", "")), ("verify_key", v.key or "")]
+        rc = v.record(True, kv)
+        if rc == 3:
+            say("verify: a newer attempt has started on run %s; its record is left as it is" % v.run)
+        elif rc:
+            say("verify: can't write the result to run %s's record (handoffs/.jarvis/runs/%s)" % (v.run, v.run))
+            if code == 0:
+                code, status, reused, msg = 2, "error", None, "the pass couldn't be recorded"
+        extra = {"reused_from": reused[0], "pass_finished": reused[1]["finished"]} if reused else {}
+        v.save_result(status="reused" if reused else status, exit=code, finished=int(time.time()),
+                      ended_ns=time.time_ns(), cleanup="ok" if clean else "failed", message=msg.split("\n")[0], **extra)
     where = (" · " + v.results_rel) if v.results else ""
-    if code == 0:
+    if reused:
+        orig, r = reused
+        t = int(r["finished"])
+        say("verify: reused pass from %s (%s ago) · tree %s · %s" % (
+            time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(t)), ago(time.time() - t), v.tree_id[:7],
+            os.path.join(STATE_DIR, "verify-results", orig)))
+        say("  not re-run: HEAD, the listed changes, the brief, inputs, runner and environment are the same as "
+            "that pass's; run without --reuse to run the checks again")
+        if v.status == "partial":
+            say("  the handoff says partial: checked, not done")
+    elif code == 0:
         say("verify: passed %d/%d checks at HEAD %s · tree %s · isolated listed changes%s" % (
             len(v.blocks), len(v.blocks), v.head[:7], v.tree_id[:7], where))
         if v.status == "partial":

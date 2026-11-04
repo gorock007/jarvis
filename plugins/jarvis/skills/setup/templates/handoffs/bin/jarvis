@@ -19,10 +19,11 @@
 #                                      a worker's budget use; with values, set that run's limits
 #                                      and re-arm its ask and pause (logged)
 #   jarvis merge <handoff.md> --check  file list vs git status, diff stat; changes nothing
-#   jarvis merge <handoff.md> --check --verify
+#   jarvis merge <handoff.md> --check --verify [--reuse]
 #                                      also run the brief's ```bash verify``` Checks blocks on
 #                                      HEAD plus only the listed changes, in a throwaway worktree
-#                                      (jarvis-verify.py); commits nothing
+#                                      (jarvis-verify.py); commits nothing. --reuse: report a
+#                                      recent pass of exactly this candidate instead of re-running
 #   jarvis merge <handoff.md> [-m <msg>] [--outcome <o> [--reason <r>]] [--no-push] [--keep-open] [--force]
 #                                      commit exactly the listed files + the handoff move,
 #                                      push, close the worker, update OPEN.md, stop what the
@@ -1349,10 +1350,47 @@ RUNS="$STATE/runs"
 
 run_ok() { case "$1" in ""|.|..|*[!A-Za-z0-9_%.-]*) return 1 ;; esac; }
 
-run_set() { # $1 = run, then <key> <value> pairs; written to a temp file beside it, then moved
+# Every update is read, merged and moved into place under a kernel flock on the
+# record's own lock file, handoffs/.jarvis/run-locks/<run>.write-lock (outside runs/,
+# so runs_of never reads one), so merge --verify, watch and close writing at once
+# don't lose each other's keys. jarvis-verify.py writes through _run-set, the same lock.
+RUN_SET_PL='
+use strict; use warnings; use Fcntl qw(:DEFAULT :flock);
+my ($lk, $f, $ck, $cv, @kv) = @ARGV;
+sysopen(my $l, $lk, O_RDWR | O_CREAT, 0600) or die "jarvis: cannot open $lk: $!\n";
+flock($l, LOCK_EX) or die "jarvis: cannot lock $lk: $!\n";
+my @r;
+if (open(my $in, "<", $f)) { @r = <$in>; close $in; chomp @r }
+if (length $ck) { my ($v) = map { substr($_, length($ck) + 2) } grep { index($_, "$ck: ") == 0 } @r; exit 3 if ($v // "") ne $cv }
+while (@kv >= 2) {
+  my ($k, $v) = splice @kv, 0, 2;
+  $v =~ s/\n/ /g;
+  my ($done, @o) = (0);
+  for (@r) { if (index($_, "$k: ") == 0 || $_ eq "$k:") { push @o, "$k: $v" unless $done++; next } push @o, $_ }
+  push @o, "$k: $v" unless $done;
+  @r = @o;
+}
+(my $tmp = $f) =~ s{([^/]*)$}{.tmp.$1.$$};
+sysopen(my $o, $tmp, O_WRONLY | O_CREAT | O_TRUNC, 0600) or die "jarvis: cannot write $tmp: $!\n";
+print $o map { "$_\n" } @r;
+close $o or die "jarvis: cannot write $tmp: $!\n";
+rename $tmp, $f or do { unlink $tmp; die "jarvis: cannot replace $f: $!\n" };
+'
+
+run_write() { # $1 = run, $2 $3 = write only while key $2 is $3 (else exit 3; "" = always), then <key> <value> pairs
+  local lk="$STATE/run-locks"
+  [ "$RUNS" = "$STATE/runs" ] || lk="$lk/${RUNS##*/}"
+  mkdir -p "$RUNS" "$lk" || return 1
+  perl -e "$RUN_SET_PL" "$lk/$1.write-lock" "$RUNS/$1" "$2" "$3" "${@:4}"
+}
+
+run_set() { # $1 = run, then <key> <value> pairs
   local run=$1 f tmp
   run_ok "$run" || return 1
   shift
+  if have perl; then run_write "$run" "" "" "$@"; return; fi
+  [ -n "${RUN_SET_WARNED:-}" ] || echo "jarvis: no perl here, so run records are written without their lock; an update made at the same moment can be lost" >&2
+  RUN_SET_WARNED=1
   mkdir -p "$RUNS" && tmp=$(mktemp "$RUNS/.tmp.XXXXXX") || return 1
   f="$RUNS/$run"
   [ -f "$f" ] && cat "$f" > "$tmp"
@@ -1368,6 +1406,16 @@ run_set() { # $1 = run, then <key> <value> pairs; written to a temp file beside 
 run_get() { # $1 = run, $2 = key
   run_ok "$1" && [ -f "$RUNS/$1" ] || return 0
   awk -v k="$2" 'index($0, k ": ") == 1 {print substr($0, length(k) + 3); exit}' "$RUNS/$1"
+}
+
+cmd_run_set() { # merge --verify's record writes: _run-set [--if <key> <value>] <run> <key> <value>…; never creates a record
+  local ck="" cv="" run
+  if [ "${1:-}" = --if ]; then ck=${2:-}; cv=${3:-}; shift 3 || exit 2; fi
+  run=${1:-}
+  run_ok "$run" && [ -f "$RUNS/$run" ] || exit 4
+  have perl || { echo "jarvis _run-set: needs perl for the record's lock" >&2; exit 2; }
+  shift
+  run_write "$run" "$ck" "$cv" "$@"
 }
 
 runs_of() { # $1 = brief, $2 = only runs in this state: the runs spawned from that brief, oldest first
@@ -1606,15 +1654,18 @@ changed_paths() { # every changed/untracked path, renames as their new path
 
 verify_die() { echo "jarvis merge: $*" >&2; exit 2; }
 
-verify_exec() { # $1 = handoff: its brief's verify blocks on HEAD + its listed changes, in a worktree of their own
-  local d
+verify_exec() { # $1 = handoff, $2 = 1 for --reuse: its brief's verify blocks on HEAD + its listed changes, in a worktree of their own
+  local d age="${JARVIS_REUSE_MAX_AGE:-7200}"
   have python3 || verify_die "--verify needs python3, and there's none on PATH (nothing run)"
+  case "$age" in ""|*[!0-9]*) verify_die "JARVIS_REUSE_MAX_AGE takes whole seconds (0 = never reuse), not '$age'" ;; esac
   d=$(dirname "$0")
   case "$d" in /*) ;; *) d="$JARVIS_CALLER_PWD/$d" ;; esac
   [ -f "$d/jarvis-verify.py" ] || verify_die "no $d/jarvis-verify.py — re-run jarvis:setup (nothing run)"
+  set -- "$1" "--reuse=$2"
   exec python3 -I "$d/jarvis-verify.py" run --root "$ROOT" --handoff "$1" --runner "$d/$(basename "$0")" \
     --bash "$BASH" --max-sec "${JARVIS_VERIFY_MAX_SEC:-7200}" --lock-wait "${JARVIS_LOCK_WAIT:-3600}" \
-    --grace "$JARVIS_STOP_GRACE"
+    --grace "$JARVIS_STOP_GRACE" "$2" --max-age "$age" --reuse-env "${JARVIS_REUSE_ENV:-}" \
+    --lock-dir "${JARVIS_LOCK_DIR:-$HOME/.jarvis/locks}"
 }
 
 cmd_merge() {
@@ -1635,8 +1686,8 @@ cmd_merge() {
     esac
   done
   if [ $verify = 1 ] || [ $reuse = 1 ]; then
-    [ $reuse = 1 ] && verify_die "--reuse isn't built yet; run --check --verify without it"
     [ $check = 1 ] || verify_die "--verify goes with --check: jarvis merge <handoff> --check --verify"
+    [ $verify = 1 ] || verify_die "--reuse goes with --check --verify: jarvis merge <handoff> --check --verify --reuse"
     [ -z "$copt" ] || verify_die "$copt is for a merge; --check --verify commits nothing"
     [ -f "$ho" ] || verify_die "usage: jarvis merge <handoffs/file.md> --check --verify"
   fi
@@ -1669,7 +1720,7 @@ cmd_merge() {
   for f in $files; do
     git ls-files --error-unmatch -- "$f" >/dev/null 2>&1 || [ ! -f "$f" ] || echo "   new: $f ($(wc -l < "$f" | tr -d ' ') lines)"
   done
-  [ $verify = 1 ] && verify_exec "$ho"
+  [ $verify = 1 ] && verify_exec "$ho" $reuse
   [ $check = 1 ] && exit $bad
 
   [ "$status" = blocked ] && die "status is blocked — answer its questions first"
@@ -3449,7 +3500,8 @@ case "$cmd" in
   leftovers) cmd_leftovers "$@" ;;
   lock) cmd_lock "$@" ;;
   _verify-lock) cmd_lock "$@" ;; # merge --verify's lock: the original checkout's lease (verify_ctx set ROOT)
-  _verify-class) lock_class "${1:-}" ;; # merge --verify's preflight: does this lock class resolve?
+  _verify-class) lock_class "${1:-}" && echo "$scope $cap" ;; # merge --verify's preflight: the lock class resolved
+  _run-set) cmd_run_set "$@" ;; # merge --verify's run-record writes, under the record's lock
   resources) cmd_resources "$@" ;;
   doctor) cmd_doctor "$@" ;;
   watch) cmd_watch "$@" ;;
