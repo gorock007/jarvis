@@ -23,13 +23,19 @@ file:
 - `handoffs/jarvis.conf`: the Claude caps (per checkout, machine-wide, Opus),
   the band thresholds and burn-rate limits, worker budgets, the Fable
   authorization lifetime, the idle limit, and whether merge stops what a
-  worker left running. Most keys are commented defaults.
+  worker left running, plus spawn's overlap mode and the `--verify` timeout cap. Most
+  keys are commented defaults.
 - `handoffs/bin/jarvis`: `start`, `status`, `spawn`, `merge`, `close`,
   `doctor`, `leftovers`, `lock`, `resources`, `watch`, `band`, `usage`,
   `sessions`, `budget`, `fable`, plus the prompt-guard and PreToolUse hooks
-  and the statusline tap. It needs `jq` and, for `usage`, `python3`.
+  and the statusline tap. It needs `jq` and, for `usage`, `merge --verify`
+  and the overlap check, `python3`.
 - `handoffs/bin/jarvis-lock.pl`: the lease behind `jarvis lock` and
   `jarvis resources`. It needs `perl`, which macOS ships.
+- `handoffs/bin/jarvis-verify.py`: the engine behind `jarvis merge --check
+  --verify` and doctor's verification block. It needs `python3`.
+- `handoffs/bin/jarvis-scope.py`: spawn's May-touch overlap check. It needs
+  `python3`; without it spawn warns "unknown overlap".
 - `handoffs/bin/cc_usage_audit.py`: the transcript analyser behind
   `jarvis usage`.
 - `handoffs/bin/jev.sh`: optional brief lint and terminal triage. It does
@@ -174,13 +180,16 @@ their defaults: `JARVIS_MAX_CLAUDE_GLOBAL`, `JARVIS_MAX_OPUS`,
 `JARVIS_AMBER_GLOBAL`/`_OPUS`, `JARVIS_RED_GLOBAL`/`_OPUS`,
 `JARVIS_ACTIVE_MIN`, `JARVIS_PENDING_SEC`, `JARVIS_STALE_MIN`,
 `JARVIS_BURN_MIN`, `JARVIS_BURN_AMBER`, the `JARVIS_BUDGET_*` limits,
-`JARVIS_FABLE_TTL_MIN` and `JARVIS_FABLE_SUPERSET_AGENT`. When upgrading an
-existing `jarvis.conf`, append the ones it lacks.
+`JARVIS_FABLE_TTL_MIN`, `JARVIS_FABLE_SUPERSET_AGENT`, `JARVIS_SPAWN_WAIT`,
+`JARVIS_OVERLAP` and `JARVIS_VERIFY_MAX_SEC`. When upgrading an existing
+`jarvis.conf`, append the ones it lacks.
 
 Then:
 
-- Copy `templates/handoffs/` to `<repo>/handoffs/`, keeping the `.gitkeep`s,
-  and `chmod +x handoffs/bin/jarvis handoffs/bin/jarvis-lock.pl handoffs/bin/jev.sh`.
+- Copy `templates/handoffs/` to `<repo>/handoffs/`, keeping the `.gitkeep`s
+  (this includes `handoffs/bin/jarvis-verify.py` and
+  `handoffs/bin/jarvis-scope.py`, which run through `python3` and need no
+  `chmod`), and `chmod +x handoffs/bin/jarvis handoffs/bin/jarvis-lock.pl handoffs/bin/jev.sh`.
   Skip `jev.sh` if the user said no to Jev.
 - Apply the heavy-suite wrappers the user said yes to in question 13, and
   any `JARVIS_LOCK_<class>` lines to `jarvis.conf`.
@@ -301,7 +310,8 @@ loaded too. Move it without losing anything project-specific:
 0.4 runs on tmux (and since 0.5, Ultron) as well as Superset, with any agent CLI
 as a worker.
 
-1. Copy the new `handoffs/bin/jarvis`, `handoffs/bin/jarvis-lock.pl` and
+1. Copy the new `handoffs/bin/jarvis`, `handoffs/bin/jarvis-lock.pl`,
+   `handoffs/bin/jarvis-verify.py`, `handoffs/bin/jarvis-scope.py` and
    `handoffs/bin/jev.sh` over the old ones.
 2. Append the `JARVIS_HOST` and `JARVIS_AGENT_*` block from the template
    `jarvis.conf` (commented out, it changes nothing; the defaults are in
@@ -316,8 +326,9 @@ This release adds the run registry, verified close, `jarvis doctor` and
 `jarvis lock`. See the `jarvis:run` skill's `references/lifecycle.md`.
 
 1. Copy the new `handoffs/bin/jarvis` **and `handoffs/bin/jarvis-lock.pl`**
-   (new; `chmod +x` it), plus `jev.sh`. Without the `.pl` file, `jarvis
-   lock` exits 2 and says to re-run jarvis:setup.
+   (new; `chmod +x` it), plus `jarvis-verify.py`, `jarvis-scope.py` and
+   `jev.sh`. Without the `.pl` file, `jarvis lock` exits 2 and says to re-run
+   jarvis:setup.
 2. Append the `JARVIS_STOP_GRACE` block and the `jarvis lock` comment block
    from the template `jarvis.conf`. Both change nothing until edited.
 3. Add the "Run heavy suites only through their lock" rule to `AGENTS.md`,
@@ -335,8 +346,9 @@ This release adds the run registry, verified close, `jarvis doctor` and
 This release makes Fable opt-in, counts Claude sessions machine-wide, makes
 the band fail closed, adds worker budgets and extends `jarvis usage`.
 
-1. Copy the new `handoffs/bin/jarvis`, `handoffs/bin/cc_usage_audit.py` and
-   `handoffs/bin/jev.sh`.
+1. Copy the new `handoffs/bin/jarvis`, `handoffs/bin/cc_usage_audit.py`,
+   `handoffs/bin/jarvis-lock.pl`, `handoffs/bin/jarvis-verify.py`,
+   `handoffs/bin/jarvis-scope.py` and `handoffs/bin/jev.sh`.
 2. Append the cap, band, budget and Fable blocks from the template
    `jarvis.conf` (commented, so nothing changes until edited). An existing
    `JARVIS_MAX_CLAUDE` stays as it is.
@@ -353,6 +365,33 @@ the band fail closed, adds worker budgets and extends `jarvis usage`.
    allow <brief>` themselves; spawns are refused past 4 Claude sessions on the
    machine, 3 here or 2 on Opus; workers are asked for a partial handoff past
    a budget; and `jarvis usage` now shows per-worker cost.
+
+## 9. Upgrading a repo set up with jarvis 0.7
+
+This release adds `jarvis merge --check --verify [--reuse]`, which runs a
+brief's checks on HEAD plus only the listed changes in a throwaway worktree,
+and spawn's May-touch overlap warning. See the `jarvis:run` skill's
+`references/lifecycle.md`.
+
+1. Copy the new `handoffs/bin/jarvis` and `handoffs/bin/jarvis-lock.pl`,
+   plus the two new helpers `handoffs/bin/jarvis-verify.py` and
+   `handoffs/bin/jarvis-scope.py` (run through `python3`, no `chmod`
+   needed). Without `jarvis-verify.py`, `--verify` exits 2; without
+   `jarvis-scope.py`, spawn warns "unknown overlap … re-run jarvis:setup".
+2. Append the `JARVIS_SPAWN_WAIT`/`JARVIS_OVERLAP` block and the
+   `JARVIS_VERIFY_MAX_SEC` lines from the template `jarvis.conf`
+   (commented, so nothing changes). If the repo's conf defines a lock class
+   named `verify` or `spawn`, rename it: both are now reserved.
+3. Update `handoffs/briefs/TEMPLATE.md` (the `- May touch:` row and the
+   `bash verify` example under **Checks**) and `handoffs/JARVIS.md` (the
+   merge gate, the `--verify` loop line and the **Overlap** rule). Keep the
+   project's own rules. Existing briefs need no change.
+4. Tell the user: spawn now warns when a new brief's May-touch row meets a
+   running worker's, and warns "unknown" for a row with prose around its
+   paths (`JARVIS_OVERLAP=refuse` makes both a refusal); a brief can mark
+   commands as ```` ```bash verify class=light timeout=300 ```` blocks for
+   `merge --check --verify`, and a pass there is a pre-merge observation,
+   not an approval.
 
 ## Notes
 

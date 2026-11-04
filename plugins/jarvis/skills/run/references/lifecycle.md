@@ -25,6 +25,7 @@ handoffs/bin/jarvis doctor [--apply | --quiet]     # what's alive in this checko
 handoffs/bin/jarvis budget <terminal> [usd=N ...]  # a worker's budget use; with values, raise its limits
 handoffs/bin/jarvis lock <class> [--wait <sec>] [--reuse] -- <command…>
 handoffs/bin/jarvis resources [--json]             # who holds each lease, who's queued
+handoffs/bin/jarvis merge <handoff> --check --verify [--reuse]  # run the brief's verify blocks, isolated
 ```
 
 ## Who owns what
@@ -252,7 +253,9 @@ leftovers:
   none
 locks:
   none held or queued here or machine-wide
-act on the FINISHED and lost ones (nothing else is touched): handoffs/bin/jarvis doctor --apply
+verification worktrees:
+  handoffs/.jarvis/verify/t5/… · run t5 · ORPHANED: its verifier (pid 4242) and watchdog are gone · a registered worktree
+act on the FINISHED, lost and ORPHANED ones (nothing else is touched): handoffs/bin/jarvis doctor --apply
 ```
 
 - **Agent processes** are Jarvis, `worker, running`, `worker, FINISHED` (its
@@ -271,6 +274,13 @@ act on the FINISHED and lost ones (nothing else is touched): handoffs/bin/jarvis
 - **Leftovers** is `jarvis leftovers`' report. **Locks** is `jarvis
   resources`, cut down to held slots and waiting queues of this checkout's
   classes and the machine-wide ones.
+- **Verification worktrees** are `merge --verify` attempts under
+  `handoffs/.jarvis/verify/`: `running … (left alone)`, `ORPHANED` (its
+  verifier and its watchdog are both gone, checked by PID and start time),
+  or `left alone — look, then remove it yourself` when the ownership
+  manifest can't be trusted or a process of it can't be accounted for. A run
+  record stuck at `verify_status: running` with nothing alive is `stale`.
+  The block is skipped, at no cost, when there is no verification state.
 
 `--apply` acts on three things, in this order, and prints and audits each:
 
@@ -281,6 +291,11 @@ act on the FINISHED and lost ones (nothing else is touched): handoffs/bin/jarvis
    explicit request. It skips a busy agent, and does nothing when the host
    can't be asked.
 3. A lost run: checked again, then marked `state: lost`.
+4. An orphaned verification, under this checkout's `verify` lease (taken
+   without waiting; while a verification runs, it reclaims nothing and says
+   so): it stops that attempt's own check group, removes only its registered
+   worktree, marks the result `interrupted` and the run `verify_status:
+   stale`. Audited as `verify-orphan` or `verify-stale`.
 
 ```
 doctor: closed t3 (2026-10-27-0100-b, finished)
@@ -290,7 +305,8 @@ doctor: marked run t4 lost (2026-10-27-0100-c): its terminal is gone and no agen
 Nothing else is ever touched. Unknown terminals and non-worker sessions are
 reported, not acted on, and they don't count in the one-liner.
 
-`--quiet` prints that one-liner, or nothing when there's nothing to act on:
+`--quiet` prints that one-liner, or nothing when there's nothing to act on
+(it also counts orphaned verification worktrees and stale verify records):
 
 ```
 doctor: 1 finished terminal open — handoffs/bin/jarvis doctor
@@ -422,6 +438,109 @@ the checkout, somewhere not gitignored, changes the tree it's keyed on. So
 the next run never matches. Write logs outside the checkout, or into an
 ignored folder. (Jarvis hit exactly this in its own test.)
 
+## merge --check --verify
+
+```bash
+handoffs/bin/jarvis merge <handoff> --check --verify [--reuse]
+```
+
+Plain `--check` compares the file list with `git status`. `--verify` also
+runs the brief's ```` ```bash verify ```` blocks (format:
+`references/handoffs.md`) on **HEAD plus exactly the handoff's listed
+changes**, in a detached worktree of its own. Other workers' dirty edits are
+not in it, so they can't make a check pass or fail. It commits, moves and
+closes nothing. It needs `python3` and `handoffs/bin/jarvis-verify.py`, and
+perl when the brief has a run record (to write it safely).
+
+- **Before anything runs** it reads `## Files` strictly: `- path — created |
+  modified | deleted`, one path per line, no globs, folders, `..` or
+  absolute paths. A listed path that doesn't match the checkout is exit 1. A
+  brief with no verify blocks is exit 2 ("no executable Checks blocks").
+- **Each block** runs in a fresh `bash --noprofile --norc -e -o pipefail`
+  in its own process group. A class other than `light` runs under that
+  class's lease of the original checkout, so a worktree check still queues
+  behind the checkout's own `suite`. One verification runs per checkout at a
+  time (the internal `verify` lease).
+- **Output:** `verify: passed 2/2 checks at HEAD <short> · tree <short> ·
+  isolated listed changes`, or the failing block, its exit and its last 40
+  lines, with the full log under `handoffs/.jarvis/verify-results/`.
+- **Exit codes:** `0` passed (or a pass reused) · `1` file-list mismatch, a
+  required input missing, or a check failed · `2` bad brief, handoff or
+  config, or a setup or cleanup failure · `75` a lease wait ran out, or HEAD,
+  a listed file or an input changed while it ran (run it again) · `124` a
+  check hit its `timeout=` · `129`/`130`/`143` HUP/INT/TERM, after cleanup.
+- **Every exit** stops what is left of the check's group and removes the
+  worktree. A watchdog in its own session does the same if the verifier dies.
+  If both die, `jarvis doctor` finds the attempt.
+- **The run record** of the brief's newest run gets `verify_status`
+  (`running`, `passed`, `failed`, `error`, `timeout`, `interrupted`,
+  `stale`), `verify_head`, `verify_tree`, `verify_key`, `verify_started`,
+  `verify_finished`, `verify_exit`, `verify_check`, `verify_attempt`,
+  `verify_log` and `verify_reused`. Lifecycle keys (`state`, `ended`) are
+  left alone. Every record update now runs under a per-run lock in
+  `handoffs/.jarvis/run-locks/`.
+
+**A pass is an observation before merging, not an approval.** Nothing makes
+an ordinary merge wait for one. Verify again after any relevant edit.
+
+The checks are trusted code. The worktree keeps their normal writes away
+from the shared checkout, but it isn't a sandbox: a check can still reach
+outside it on purpose. Checks must not run git commands that change
+branches or HEAD, write outside the worktree, or leave daemons running.
+
+**`--reuse`** reports an earlier pass instead of running again when the
+newest finished attempt with the same `verify_key`, for the same run, passed
+and cleaned up less than `JARVIS_REUSE_MAX_AGE` seconds ago (0 = never), and
+no block says `reuse=never`. The key covers HEAD, the candidate tree and
+checked-out bytes, the listed changes, the brief (without `started:`), the
+blocks and inputs, the runner and helper bytes, the lock settings, bash, the
+OS and a digest of the environment (`PATH`, locale, `NODE_ENV` and friends,
+plus the variables in `JARVIS_REUSE_ENV`; values are never stored). A later
+failure blocks an older pass, and a reuse never extends a pass's life:
+
+```
+verify: reused pass from 18:12 (4m ago) · tree 3f2a9c1 · handoffs/.jarvis/verify-results/…
+```
+
+`--reuse` trusts this checkout's own `handoffs/.jarvis/` state. Anyone who
+can write to the checkout, a worker included, could forge a stored pass. So
+it is an opt-in convenience for Jarvis, not a gate.
+
+## Spawn overlap
+
+`jarvis spawn` compares the new brief's `- May touch:` row (grammar:
+`references/handoffs.md`) with each running worker's. Running means a
+registry record in `state: running`, or an `OPEN.md` running line with no
+record. Merged, closed and lost runs don't count. It needs `python3` and
+`handoffs/bin/jarvis-scope.py`. With nothing running it asks neither.
+
+```
+jarvis spawn: overlap: <new> [src/lib/] with running <other> [src/lib/x.py] — queue <new> under To-do until <other> is handed off, or narrow the scopes.
+jarvis spawn: possible overlap: …        (globs or case that might meet)
+jarvis spawn: overlap: <brief> is already running (term T) — close that worker first (handoffs/bin/jarvis close T), or wait for its handoff.
+jarvis spawn: unknown overlap: <new>'s scope can't be read (<reason>), so it can't be compared with running … — give it a '- May touch:' row of paths, or queue it under To-do until they are handed off.
+jarvis spawn: unknown overlap: no python3 on PATH | no handoffs/bin/jarvis-scope.py (re-run jarvis:setup) | jarvis-scope.py failed (exit N), …
+```
+
+- `JARVIS_OVERLAP=warn` (the default) prints these and spawns, adding
+  `spawning anyway (JARVIS_OVERLAP=warn)` after an unknown one.
+- `JARVIS_OVERLAP=refuse` prints `refused (JARVIS_OVERLAP=refuse): …` and
+  spawns nothing. `--force` doesn't pass it. Any other value exits 2.
+- **An unknown scope counts as overlapping.** Most older briefs have prose
+  in their May-touch row, so they warn "unknown", and under `refuse` they
+  are refused until the row is rewritten as paths.
+- Must-not-touch rows aren't subtracted. This is a collision warning, not a
+  permission check: it reserves nothing, and a worker can still edit any
+  file.
+
+The check, the launch and the run record happen under a per-checkout
+`spawn` lease, so two spawns can't both pass the check and then both
+launch. A spawn waits up to `JARVIS_SPAWN_WAIT` seconds (120) for it, then
+says "another spawn in this checkout has held its spawn lease…". Any other
+failure to take it is "can't take the spawn lease of this checkout…: spawn
+refused". The host's processes don't inherit the lease. Without perl, warn
+mode says `overlap check not atomic` and spawns, while refuse mode refuses.
+
 ## jarvis resources
 
 ```
@@ -459,6 +578,19 @@ All in `handoffs/jarvis.conf`:
 | `JARVIS_LOCK_DIR` | `~/.jarvis/locks` | Where the leases live. Per user, so two users don't share leases. |
 | `JARVIS_REUSE_MAX_AGE` | `7200` | How old a stored pass may be and still be reused |
 | `JARVIS_REUSE_ENV` | empty | Variables whose values count toward "identical", e.g. `"NODE_ENV"` |
+| `JARVIS_VERIFY_MAX_SEC` | `7200` | The largest `timeout=` a `bash verify` block may ask for |
+| `JARVIS_OVERLAP` | `warn` | Spawn's scope check: `warn` and spawn, or `refuse` |
+| `JARVIS_SPAWN_WAIT` | `120` | Seconds a spawn waits for another spawn's lease |
+
+The two `JARVIS_REUSE_*` settings apply to `jarvis lock --reuse` and `merge
+--verify --reuse` alike. `verify` and `spawn` are reserved lock class names:
+they are Jarvis's own leases (one verification and one spawn at a time per
+checkout), and `jarvis lock` refuses them.
+
+State lives under `handoffs/.jarvis/`, which is ignored: `runs/` (the
+registry), `run-locks/` (one write lock per run record), `verify/` (live
+verification attempts, removed when each ends) and `verify-results/` (each
+attempt's result and logs, kept).
 
 `JARVIS_REAP` and `JARVIS_STOP_GRACE` are set in the script and in
 `jarvis.conf`, so an exported variable doesn't change them: edit the conf.

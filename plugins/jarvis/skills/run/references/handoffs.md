@@ -28,6 +28,54 @@ Good briefs are disjoint: no two running briefs list the same "may touch"
 file. If they must overlap, name the shared file in both and tell the second
 worker to read the first's handoff before editing it.
 
+**The `- May touch:` row** is what `jarvis spawn` compares with every running
+worker's (`references/lifecycle.md`). Write it as paths only:
+
+```markdown
+- May touch: `src/parse.py`, `src/lib/` (new helpers go here), `test/test_*.py`
+```
+
+- Comma-separated. Each path is bare or in backticks (backticks allow spaces).
+- A trailing `/` is a folder and covers everything under it. A bare path
+  without one is a file, unless that folder already exists.
+- Globs: `*`, `?` and `[…]` within a name, `**` as a whole name.
+- `none` means the brief edits nothing.
+- A note goes in parentheses after its path. Prose around a path ("in
+  `jarvis`: `watch_tick`, …") makes the scope unknown, which spawn treats as
+  overlapping. So do braces, `$`, `!`, absolute paths and `..`.
+
+**Checks `merge --check --verify` can run** go in fenced blocks under
+`## Checks`. Only these run; prose and inline backticks around them are for
+the reviewer:
+
+````markdown
+```bash verify class=light timeout=300
+bash -n src/tool.sh
+```
+
+```bash verify class=suite timeout=1200 reuse=never
+npm ci && npm test 2>&1 | tail -40
+```
+
+```json verify-inputs
+{"requires":["test/fixtures/sample.json"],"copy":[],"dependencies":[]}
+```
+````
+
+- `class=` and `timeout=` (seconds, at most `JARVIS_VERIFY_MAX_SEC`) are
+  required. `light` runs at once. Any other class runs under that class's
+  `jarvis lock` lease of the checkout, and its timer starts once the lease is
+  held. A heavy check marked `light` is a brief defect.
+- `reuse=never` keeps `--reuse` from reporting an earlier pass, for checks
+  that install things or depend on a network service.
+- Each block runs in a fresh `bash -e -o pipefail` at the worktree root, in
+  order, stopping at the first failure. A `cd` lasts for its own block only.
+- `verify-inputs` (one at most) lists what the checks need besides the
+  source: `requires`, paths that must exist; `copy`, ignored or untracked
+  files to copy in; `dependencies`, e.g.
+  `{"path":"node_modules","kind":"node","lockfiles":["package-lock.json"],"manifests":["package.json"]}`.
+  A virtualenv is never copied: create it in a first block.
+
 ## Handoff — worker → Jarvis
 
 `handoffs/YYYY-MM-DD-HHMM-<slug>.md`, from `handoffs/TEMPLATE.md`.
@@ -68,7 +116,9 @@ brief: handoffs/briefs/<file>.md
    for a summary. Look for edits to shared files that weren't named.
 3. **Checks.** If **Checks run** is thin or says "not run", run them: the
    targeted ones here; heavy suites belong to the merge gate, under the lock
-   (`references/lifecycle.md`).
+   (`references/lifecycle.md`). When the brief has `bash verify` blocks,
+   `jarvis merge <handoff> --check --verify` runs them on HEAD plus only the
+   listed changes, so another worker's edits can't make them pass or fail.
 4. **Notes for Jarvis.** Do the Jarvis-only items (migration, release,
    lockfile). Note anything deferred in `OPEN.md`.
 5. **Merge.** `jarvis merge <handoff> -m "<msg>" --outcome <o>` commits the

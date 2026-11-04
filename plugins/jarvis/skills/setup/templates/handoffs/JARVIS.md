@@ -15,7 +15,11 @@ Where the two disagree, this file wins.
   after merging a wave, or before merging a handoff that touches what they
   cover. Run them through the repo's wrapped scripts or
   `handoffs/bin/jarvis lock <class> --reuse -- <command>`, and put the result
-  in the merge message or `OPEN.md`.
+  in the merge message or `OPEN.md`. A brief whose `## Checks` has
+  ```` ```bash verify ```` blocks can be checked first with `merge --check
+  --verify`: its blocks run on HEAD plus only the listed changes, in a
+  throwaway worktree. A pass is what you saw before merging, not an approval:
+  verify again after any edit.
 - **Also only Jarvis:** {{JARVIS_ONLY}}
 - **Verification:** {{VERIFY}}
 - **Shared files** workers must edit minimally and name in the handoff:
@@ -27,8 +31,9 @@ Where the two disagree, this file wins.
 ```bash
 handoffs/bin/jarvis start                    # claim this terminal, then status
 handoffs/bin/jarvis status                   # band, workers, new handoffs, git: one screen
-handoffs/bin/jarvis spawn handoffs/briefs/<file>.md   # lint, band + cap checks, spawn, record
+handoffs/bin/jarvis spawn handoffs/briefs/<file>.md   # lint, band + cap + overlap checks, spawn, record
 handoffs/bin/jarvis merge handoffs/<file>.md --check  # file list vs git status, diff stat
+handoffs/bin/jarvis merge handoffs/<file>.md --check --verify [--reuse]  # also run its verify blocks, isolated
 handoffs/bin/jarvis merge handoffs/<file>.md --outcome clean
 handoffs/bin/jarvis close <terminal>         # cancel a worker: close, verify, record
 handoffs/bin/jarvis doctor                   # every live agent and terminal here, and why
@@ -70,6 +75,10 @@ you stop, make sure `OPEN.md` says everything the next session needs to know.
   or on a limit message. `jarvis spawn` enforces both: amber lowers the caps
   to 3 machine-wide and 2 Opus, and red to 2 and 0 Opus, with new top and
   workhorse work going to Codex.
+- **Overlap:** `jarvis spawn` warns when the new brief's `- May touch:` row
+  meets a running worker's, or can't be read (`JARVIS_OVERLAP=refuse` makes
+  that a refusal). Queue the brief under **To-do** or narrow the scopes. Write
+  the row as paths only, with any note in parentheses after its path.
 - **Budgets:** each worker has 90 working minutes, $15 est., 300k context,
   6 failed test runs and 2 attempts per brief (`jarvis.conf`; a brief's
   `budget:` line overrides them). Past one, the watcher asks it once for a

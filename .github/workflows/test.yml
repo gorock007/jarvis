@@ -27,10 +27,21 @@ jobs:
         run: |
           shellcheck -S error \
             plugins/jarvis/skills/setup/templates/handoffs/bin/jarvis \
-            plugins/jarvis/skills/setup/templates/handoffs/bin/jev.sh
+            plugins/jarvis/skills/setup/templates/handoffs/bin/jev.sh \
+            eval/verifytest.sh
+      - name: python helpers compile
+        if: ${{ !cancelled() }}
+        # -I ignores PYTHONPYCACHEPREFIX; -X pycache_prefix keeps __pycache__ out of the tree
+        run: |
+          python3 -I -X pycache_prefix="$RUNNER_TEMP/pycache" -m py_compile \
+            plugins/jarvis/skills/setup/templates/handoffs/bin/jarvis-verify.py \
+            plugins/jarvis/skills/setup/templates/handoffs/bin/jarvis-scope.py
       - name: selftest
         if: ${{ !cancelled() }}
         run: eval/selftest.sh
+      - name: verifytest on stock bash 3.2 (macOS)
+        if: ${{ !cancelled() && runner.os == 'macOS' }}
+        run: /bin/bash eval/verifytest.sh
       - name: locktest
         if: ${{ !cancelled() }}
         run: eval/locktest.sh
