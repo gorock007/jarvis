@@ -19,6 +19,10 @@
 #                                      a worker's budget use; with values, set that run's limits
 #                                      and re-arm its ask and pause (logged)
 #   jarvis merge <handoff.md> --check  file list vs git status, diff stat; changes nothing
+#   jarvis merge <handoff.md> --check --verify
+#                                      also run the brief's ```bash verify``` Checks blocks on
+#                                      HEAD plus only the listed changes, in a throwaway worktree
+#                                      (jarvis-verify.py); commits nothing
 #   jarvis merge <handoff.md> [-m <msg>] [--outcome <o> [--reason <r>]] [--no-push] [--keep-open] [--force]
 #                                      commit exactly the listed files + the handoff move,
 #                                      push, close the worker, update OPEN.md, stop what the
@@ -77,6 +81,34 @@ fi
 
 ROOT=$(git rev-parse --show-toplevel 2>/dev/null) || ROOT="${CLAUDE_PROJECT_DIR:-$PWD}"
 JARVIS_CALLER_PWD=$PWD   # `lock` runs its command where it was called from
+# In `merge --verify`'s worktree a lock is the original checkout's lease, not the
+# worktree's: the verifier's ownership manifest ($JARVIS_VERIFY_CONTEXT) names that
+# checkout, honoured only while the verifier that wrote it is alive.
+verify_ctx() { # prints the original checkout; 3 = called from outside the worktree, 1 = no live context
+  local c=${JARVIS_VERIFY_CONTEXT:-} root tree pid start d
+  [ -n "$c" ] && [ -f "$c" ] || return 1
+  root=$(sed -n 's/^root: //p' "$c" | head -n 1); tree=$(sed -n 's/^tree: //p' "$c" | head -n 1)
+  pid=$(sed -n 's/^owner: //p' "$c" | head -n 1); start=$(sed -n 's/^owner_start: //p' "$c" | head -n 1)
+  case "$(pwd -P)/" in "$tree/"*) ;; *) [ "${1:-}" = lock ] && return 3 ;; esac
+  d=$(cd "$(dirname "$c")" 2>/dev/null && pwd -P) || return 1
+  case "$d/" in "$root/handoffs/.jarvis/verify/"*) ;; *) return 1 ;; esac
+  case "$pid" in ""|*[!0-9]*) return 1 ;; esac
+  [ -n "$start" ] && [ "$(TZ=UTC LC_ALL=C ps -o stat=,lstart= -p "$pid" 2>/dev/null \
+    | awk '$1 !~ /^Z/ && NF >= 6 {print $2 "_" $3 "_" $4 "_" $5 "_" $6}')" = "$start" ] || return 1
+  printf '%s' "$root"
+}
+case "${1:-}" in lock|_verify-lock)
+  if [ -n "${JARVIS_VERIFY_CONTEXT:-}" ]; then
+    JARVIS_VERIFY_ROOT=$(verify_ctx "$1")
+    case $? in
+      0) ROOT=$JARVIS_VERIFY_ROOT ;;
+      3) ;; # a lock in some other checkout a check made: an ordinary lock there
+      *) echo "jarvis lock: JARVIS_VERIFY_CONTEXT=$JARVIS_VERIFY_CONTEXT is no live verification's; unset it (the command was not run)" >&2; exit 2 ;;
+    esac
+  elif [ "$1" = _verify-lock ]; then
+    echo "jarvis: _verify-lock is merge --verify's own; use jarvis lock" >&2; exit 2
+  fi ;;
+esac
 cd "$ROOT" || exit 0
 H=handoffs
 OPEN="$H/OPEN.md"
@@ -1572,21 +1604,42 @@ changed_paths() { # every changed/untracked path, renames as their new path
   git status --porcelain -uall 2>/dev/null | cut -c4- | sed -e 's/.* -> //' -e 's/^"//' -e 's/"$//'
 }
 
+verify_die() { echo "jarvis merge: $*" >&2; exit 2; }
+
+verify_exec() { # $1 = handoff: its brief's verify blocks on HEAD + its listed changes, in a worktree of their own
+  local d
+  have python3 || verify_die "--verify needs python3, and there's none on PATH (nothing run)"
+  d=$(dirname "$0")
+  case "$d" in /*) ;; *) d="$JARVIS_CALLER_PWD/$d" ;; esac
+  [ -f "$d/jarvis-verify.py" ] || verify_die "no $d/jarvis-verify.py — re-run jarvis:setup (nothing run)"
+  exec python3 -I "$d/jarvis-verify.py" run --root "$ROOT" --handoff "$1" --runner "$d/$(basename "$0")" \
+    --bash "$BASH" --max-sec "${JARVIS_VERIFY_MAX_SEC:-7200}" --lock-wait "${JARVIS_LOCK_WAIT:-3600}" \
+    --grace "$JARVIS_STOP_GRACE"
+}
+
 cmd_merge() {
-  local ho="" check=0 msg="" outcome="" reason="" push="$JARVIS_PUSH" keep=0 force=0
+  local ho="" check=0 msg="" outcome="" reason="" push="$JARVIS_PUSH" keep=0 force=0 verify=0 reuse=0 copt=""
   local status brief agent files f bad=0 other title dest trailer sha runs r frag note old_tracked=0 closed line rec
   while [ $# -gt 0 ]; do
     case "$1" in
       --check) check=1; shift ;;
-      -m) msg="${2:-}"; shift 2 ;;
-      --outcome) outcome="${2:-}"; shift 2 ;;
-      --reason) reason="${2:-}"; shift 2 ;;
-      --no-push) push=0; shift ;;
-      --keep-open) keep=1; shift ;;
+      --verify) verify=1; shift ;;
+      --reuse) reuse=1; shift ;;
+      -m) msg="${2:-}"; copt=${copt:-$1}; shift 2 ;;
+      --outcome) outcome="${2:-}"; copt=${copt:-$1}; shift 2 ;;
+      --reason) reason="${2:-}"; copt=${copt:-$1}; shift 2 ;;
+      --no-push) push=0; copt=${copt:-$1}; shift ;;
+      --keep-open) keep=1; copt=${copt:-$1}; shift ;;
       --force) force=1; shift ;;
       *) ho="$1"; shift ;;
     esac
   done
+  if [ $verify = 1 ] || [ $reuse = 1 ]; then
+    [ $reuse = 1 ] && verify_die "--reuse isn't built yet; run --check --verify without it"
+    [ $check = 1 ] || verify_die "--verify goes with --check: jarvis merge <handoff> --check --verify"
+    [ -z "$copt" ] || verify_die "$copt is for a merge; --check --verify commits nothing"
+    [ -f "$ho" ] || verify_die "usage: jarvis merge <handoffs/file.md> --check --verify"
+  fi
   [ -f "$ho" ] || die "usage: jarvis merge <handoffs/file.md> [--check] [-m msg] [--outcome clean|corrected|escalated|respawned [--reason checks|scope|logic|other]] [--no-push] [--keep-open]"
   case "$outcome" in ""|clean|corrected|escalated|respawned) ;;
     *) die "--outcome $outcome: give clean, corrected, escalated or respawned" ;; esac
@@ -1602,6 +1655,7 @@ cmd_merge() {
 
   echo "$ho · status: $status · brief: ${brief:-none}"
   for f in $files; do
+    [ $verify = 1 ] && break # the verifier's strict reading of ## Files gives the verdict
     if changed_paths | grep -qxF "$f"; then :; else
       echo "  ✗ listed but not changed: $f"; bad=1
     fi
@@ -1615,6 +1669,7 @@ cmd_merge() {
   for f in $files; do
     git ls-files --error-unmatch -- "$f" >/dev/null 2>&1 || [ ! -f "$f" ] || echo "   new: $f ($(wc -l < "$f" | tr -d ' ') lines)"
   done
+  [ $verify = 1 ] && verify_exec "$ho"
   [ $check = 1 ] && exit $bad
 
   [ "$status" = blocked ] && die "status is blocked — answer its questions first"
@@ -3321,7 +3376,7 @@ lock_pl() { # the lease helper beside this script, wherever it was called from
 }
 
 cmd_lock() {
-  local class="${1:-}" wait="${JARVIS_LOCK_WAIT:-3600}" reuse=0 spec scope cap extra pl
+  local class="${1:-}" wait="${JARVIS_LOCK_WAIT:-3600}" reuse=0 spec scope cap pl
   local usage="usage: jarvis lock <class> [--wait <sec>] [--reuse] -- <command…>"
   case "$class" in ""|-*) lock_die "$usage" ;; esac
   shift
@@ -3336,15 +3391,7 @@ cmd_lock() {
   done
   [ $# -gt 0 ] || lock_die "no command to run. $usage"
   case "$wait" in ""|*[!0-9]*) lock_die "--wait takes whole seconds, not '$wait'" ;; esac
-  case "$class" in *[!a-z0-9_]*) lock_die "class names are a-z, 0-9 and _, not '$class'" ;; esac
-  spec=$(lock_spec "$class")
-  [ -n "$spec" ] || lock_die "no lock class '$class'. Add one to $H/jarvis.conf, e.g. JARVIS_LOCK_$class=\"host 1\" (host = machine-wide, checkout = this checkout only; then how many at once)"
-  read -r scope cap extra <<< "$spec"
-  case "$scope $cap $extra" in
-    "host "[1-9]*" "|"checkout "[1-9]*" ") case "$cap" in *[!0-9]*) scope="" ;; esac ;;
-    *) scope="" ;;
-  esac
-  [ -n "$scope" ] || lock_die "JARVIS_LOCK_$class=\"$spec\" in $H/jarvis.conf isn't \"<host|checkout> <capacity>\", e.g. JARVIS_LOCK_$class=\"host 1\""
+  lock_class "$class"
   if ! have perl; then
     # a CI runner has no other agents to queue behind, and minimal images have no perl
     case "${CI:-}" in ""|0|false) ;; *)
@@ -3358,6 +3405,20 @@ cmd_lock() {
     JARVIS_LOCK_POLL="${JARVIS_LOCK_POLL:-1}" JARVIS_REUSE_MAX_AGE="${JARVIS_REUSE_MAX_AGE:-7200}" \
     JARVIS_REUSE_ENV="${JARVIS_REUSE_ENV:-}" \
     exec perl "$pl" run "$class" "$scope" "$cap" "$ROOT" "$wait" "$reuse" "$@"
+}
+
+lock_class() { # $1 = class: sets the caller's spec, scope and cap from jarvis.conf, else exits 2
+  local extra
+  case "$1" in ""|*[!a-z0-9_]*) lock_die "class names are a-z, 0-9 and _, not '$1'" ;; esac
+  class=$1
+  spec=$(lock_spec "$class")
+  [ -n "$spec" ] || lock_die "no lock class '$class'. Add one to $H/jarvis.conf, e.g. JARVIS_LOCK_$class=\"host 1\" (host = machine-wide, checkout = this checkout only; then how many at once)"
+  read -r scope cap extra <<< "$spec"
+  case "$scope $cap $extra" in
+    "host "[1-9]*" "|"checkout "[1-9]*" ") case "$cap" in *[!0-9]*) scope="" ;; esac ;;
+    *) scope="" ;;
+  esac
+  [ -n "$scope" ] || lock_die "JARVIS_LOCK_$class=\"$spec\" in $H/jarvis.conf isn't \"<host|checkout> <capacity>\", e.g. JARVIS_LOCK_$class=\"host 1\""
 }
 
 cmd_resources() {
@@ -3387,6 +3448,8 @@ case "$cmd" in
   merge) cmd_merge "$@" ;;
   leftovers) cmd_leftovers "$@" ;;
   lock) cmd_lock "$@" ;;
+  _verify-lock) cmd_lock "$@" ;; # merge --verify's lock: the original checkout's lease (verify_ctx set ROOT)
+  _verify-class) lock_class "${1:-}" ;; # merge --verify's preflight: does this lock class resolve?
   resources) cmd_resources "$@" ;;
   doctor) cmd_doctor "$@" ;;
   watch) cmd_watch "$@" ;;

@@ -1,0 +1,448 @@
+#!/usr/bin/env bash
+# Offline test of `jarvis merge <handoff> --check --verify` (bin/jarvis-verify.py): two
+# workers' dirty edits verified apart, failure tails, timeouts, signals and a killed
+# verifier, leases keyed to the original checkout, the strict ## Files reading, and
+# the plain --check left as it was. Throwaway checkouts with the template's bin files,
+# a throwaway HOME and lock dir, and processes of its own, all stopped before it exits.
+#
+#   eval/verifytest.sh
+# `[ … ]; check "…" $?` reads the test's own status, and the single-quoted scripts
+# expand in the shell they're written for, not this one.
+# shellcheck disable=SC2016,SC2154,SC2319
+set -u
+# One brace group ending in exit, so bash reads the whole file before running any of it:
+# it reads a script as it goes, and an edit made mid-run (another worker's, in a shared
+# checkout) resumes it at a stale offset, in the caller's directory, outside every `cd`.
+{
+here=$(cd "$(dirname "$0")" && pwd)
+tpl="$here/../plugins/jarvis/skills/setup/templates"
+tmp=$(cd "$(mktemp -d "${TMPDIR:-/tmp}/jarvis-verifytest.XXXXXX")" && pwd -P)
+groups="$tmp/groups"; kids="$tmp/kids"
+# groups: what bg_in started; kids: PIDs checks wrote down, each stopped only while its
+# command line still names this test's folder
+trap 'for g in $(cat "$groups" 2>/dev/null); do kill -9 -- "-$g" "$g" 2>/dev/null; done
+  for k in $(cat "$kids" 2>/dev/null); do ps -o command= -p "$k" 2>/dev/null | grep -qF "$tmp/" && kill -9 "$k" 2>/dev/null; done
+  rm -rf "$tmp"' EXIT
+export HOME="$tmp/home" JARVIS_HOME="$tmp/jh" CLAUDE_CONFIG_DIR="$tmp/cc" JARVIS_LOCK_DIR="$tmp/locks" JARVIS_LOCK_POLL=0.05
+export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@example.invalid GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@example.invalid
+unset JARVIS_LOCKS_HELD JARVIS_LOCK_WAIT JARVIS_VERIFY_CONTEXT JARVIS_REUSE_ENV SUPERSET_WORKSPACE_ID SUPERSET_TERMINAL_ID TMUX TMUX_PANE ULTRON_SESSION_ID CLAUDE_PROJECT_DIR
+mkdir -p "$HOME"
+fails=0
+ok() { echo "  ok    $1"; }
+bad() { echo "  FAIL  $1"; fails=$((fails + 1)); }
+check() { if [ "$2" = 0 ]; then ok "$1"; else bad "$1"; fi; }
+
+waitfor() { # $1 = seconds, then a test: poll until it holds
+  local n=$(($1 * 20))
+  shift
+  while [ $n -gt 0 ]; do "$@" && return 0; sleep 0.05; n=$((n - 1)); done
+  return 1
+}
+bg_in() { # $1 = dir, then a command: start it there in the background, in a process group of its own
+  local d=$1
+  shift
+  perl -e 'chdir(shift) or die "chdir: $!"; setpgrp(0, 0); exec { $ARGV[0] } @ARGV or die "exec: $!"' "$d" "$@" 2>>"$tmp/bg.err" &
+  bgpid=$!
+  echo "$bgpid" >> "$groups"
+}
+stop() { kill -9 -- "-$1" "$1" 2>/dev/null; wait "$1" 2>/dev/null; } # a group bg_in started
+alive() { kill -0 "$1" 2>/dev/null && ! ps -o stat= -p "$1" 2>/dev/null | grep -q '^Z'; }
+gone() { ! alive "$1"; }
+# sleeper: runs until stopped; its command line names this test's folder
+printf '%s\n' '#!/bin/sh' 'while :; do sleep 1; done' > "$tmp/sleeper"
+# hold <flag> <seconds>: says it has the lease, then holds it
+printf '%s\n' '#!/bin/sh' 'touch "$1"; sleep "$2"' > "$tmp/hold"
+chmod +x "$tmp/sleeper" "$tmp/hold"
+
+mkrepo() { # $1 = dir, $2 = ignored | tracked: whether handoffs/ itself is committed
+  mkdir -p "$1/handoffs/bin" "$1/handoffs/briefs" "$1/src" "$1/tests" && (
+    cd "$1" && git init -q
+    cp "$tpl/handoffs/bin/jarvis" "$tpl/handoffs/bin/jarvis-lock.pl" "$tpl/handoffs/bin/jarvis-verify.py" handoffs/bin/
+    sed -e 's/{{MAX_CLAUDE}}/3/' -e 's/{{AMBER}}/50/' -e 's/{{RED}}/75/' "$tpl/handoffs/jarvis.conf" > handoffs/jarvis.conf
+    echo 'JARVIS_STOP_GRACE=1' >> handoffs/jarvis.conf
+    printf '# Open\n' > handoffs/OPEN.md
+    if [ "$2" = ignored ]; then printf 'handoffs/\nfixtures/\n' > .gitignore
+    else printf 'handoffs/.jarvis/\nhandoffs/briefs/\nhandoffs/*.md\nfixtures/\n' > .gitignore; fi
+    printf 'a() { echo a; }\n' > src/a.sh
+    printf 'b() { echo b; }\n' > src/b.sh
+    printf 'c() { echo c; }\n' > src/c.sh
+    printf 'old\n' > src/old.txt
+    printf '%s\n' 'set -e' 'for f in src/*.sh; do bash -n "$f"; done' 'echo suite ok' > tests/suite.sh
+    printf '{"name":"x"}\n' > package.json; printf '{"lock":1}\n' > package-lock.json
+    git add -A && git commit -qm init
+  )
+}
+brief() { # $1 = name, stdin = its ## Checks body
+  { printf '# %s\nworker: claude\n## Goal\nx\n## Checks\n' "$1"; cat; printf '## Phase\none\n'; } > "handoffs/briefs/$1.md"
+}
+handoff() { # $1 = name, $2 = brief name, $3 = status, then ## Files lines
+  local n=$1 b=$2 s=$3
+  shift 3
+  { printf '# %s\nstatus: %s\nagent: claude test\nbrief: handoffs/briefs/%s.md\n## What changed\nx\n## Files\n' "$n" "$s" "$b"
+    for l in "$@"; do printf -- '- %s\n' "$l"; done
+    printf '## Checks run\nnone\n'; } > "handoffs/$n.md"
+}
+suite_brief() { # $1 = name: one suite-class block running the tracked suite
+  brief "$1" <<EOF
+Prose the verifier leaves alone: \`touch "$tmp/prose-ran"\` stays prose.
+
+\`\`\`bash
+touch "$tmp/prose-ran"
+\`\`\`
+
+\`\`\`bash verify class=suite timeout=60
+bash tests/suite.sh 2>&1 | tail -40
+\`\`\`
+EOF
+}
+V() { handoffs/bin/jarvis merge "$1" --check --verify; } # $1 = handoff
+leftover() { # nothing of a verification is left: no second worktree, no attempt directory
+  [ "$(git worktree list --porcelain | grep -c '^worktree ')" = 1 ] || return 1
+  [ -z "$(find handoffs/.jarvis/verify -mindepth 1 2>/dev/null)" ]
+}
+snap() { # the state verification must not change
+  { git rev-parse HEAD; git ls-files -s | shasum; git diff | shasum; git diff --cached | shasum
+    git status --porcelain -uall; shasum src/* tests/* handoffs/*.md handoffs/OPEN.md 2>/dev/null; } | shasum
+}
+
+r="$tmp/r"; mkrepo "$r" ignored
+cd "$r" || exit 1
+
+echo "1. two workers' dirty edits, verified apart"
+printf 'a() { echo A; }\n' > src/a.sh                 # worker A: valid
+printf 'b() { echo b\n' > src/b.sh                    # worker B: a syntax error
+printf 'other worker\n' > src/untracked.txt
+suite_brief bA; suite_brief bB
+handoff hA bA done 'src/a.sh — modified'
+handoff hB bB done '`src/b.sh` — modified (broke it)'
+! bash tests/suite.sh >/dev/null 2>&1; check "the suite fails in the dirty checkout itself" $?
+before=$(snap)
+out=$(V handoffs/hA.md 2>&1); rc=$?
+[ $rc = 0 ]; check "A's verify passes though B's error is in the checkout (exit $rc)" $?
+printf '%s' "$out" | grep -q '^verify: passed 1/1 checks at HEAD [0-9a-f]\{7\} · tree [0-9a-f]\{7\} · isolated listed changes · handoffs/.jarvis/verify-results/'
+check "…and says passed, HEAD, tree and its result" $?
+printf '%s' "$out" | grep -q "isn't run: that review is still yours" && [ ! -e "$tmp/prose-ran" ]
+check "…runs neither prose nor an unmarked fence, and says so" $?
+out=$(V handoffs/hB.md 2>&1); rc=$?
+[ $rc = 1 ]; check "B's verify fails (exit $rc)" $?
+printf '%s' "$out" | grep -q 'check 1/1 · suite · 60s · FAILED (exit [0-9]*' && printf '%s' "$out" | grep -q 'src/b.sh'
+check "…naming the block, its exit and the error" $?
+[ "$(snap)" = "$before" ]; check "HEAD, index, diffs, untracked files and handoffs are unchanged" $?
+leftover; check "no worktree or attempt directory left after a pass and a fail" $?
+[ "$(find handoffs/.jarvis/verify-results -name result | wc -l | tr -d ' ')" = 2 ] \
+  && grep -qx 'status: passed' $(grep -l 'handoff: handoffs/hA.md' handoffs/.jarvis/verify-results/*/result) \
+  && grep -qx 'status: failed' $(grep -l 'handoff: handoffs/hB.md' handoffs/.jarvis/verify-results/*/result)
+check "each attempt keeps its result outside the removed directory" $?
+grep -q '^run: -' handoffs/.jarvis/verify-results/*/result; check "…a standalone one, with no run record" $?
+printf 'c() { echo c\n' > src/c.sh; git add src/c.sh  # an unrelated staged edit, broken
+before=$(snap)
+V handoffs/hA.md >/dev/null 2>&1; check "A still passes with a broken staged edit elsewhere: the real index isn't used" $?
+[ "$(snap)" = "$before" ]; check "…and the staged index is untouched" $?
+git reset -q -- src/c.sh; git checkout -q -- src/c.sh
+
+echo "2. plain --check is as it was"
+out=$(handoffs/bin/jarvis merge handoffs/hA.md --check); rc=$?
+[ $rc = 0 ] && [ "$(printf '%s\n' "$out" | head -n 1)" = "handoffs/hA.md · status: done · brief: handoffs/briefs/bA.md" ] \
+  && printf '%s' "$out" | grep -q '^    src/b.sh$'; check "it lists the other worker's changes, exit 0" $?
+handoff hN bA done 'src/c.sh — modified'
+out=$(handoffs/bin/jarvis merge handoffs/hN.md --check); rc=$?
+[ $rc = 1 ] && printf '%s' "$out" | grep -q '✗ listed but not changed: src/c.sh'; check "a listed file that didn't change: ✗ and exit 1" $?
+n=$(find handoffs/.jarvis/verify-results -name result | wc -l)
+handoffs/bin/jarvis merge handoffs/hA.md --check >/dev/null
+[ "$(find handoffs/.jarvis/verify-results -name result | wc -l)" = "$n" ] && leftover; check "it runs nothing and records nothing" $?
+out=$(V handoffs/hN.md 2>&1); rc=$?
+[ $rc = 1 ] && printf '%s' "$out" | grep -q '✗ listed but not changed: src/c.sh' && printf '%s' "$out" | grep -q 'nothing run'
+check "--verify refuses the same mismatch before running anything (exit $rc)" $?
+
+echo "3. options"
+handoffs/bin/jarvis merge handoffs/hA.md --verify >/dev/null 2>&1; [ $? = 2 ]; check "--verify without --check: exit 2" $?
+out=$(handoffs/bin/jarvis merge handoffs/hA.md --check --verify --reuse 2>&1); [ $? = 2 ] && printf '%s' "$out" | grep -q "isn't built yet"
+check "--reuse: exit 2, not built yet" $?
+handoffs/bin/jarvis merge handoffs/hA.md --check --verify -m x >/dev/null 2>&1; [ $? = 2 ]; check "-m with --verify: exit 2" $?
+handoffs/bin/jarvis merge handoffs/hA.md --check --verify --no-push >/dev/null 2>&1; [ $? = 2 ]; check "--no-push with --verify: exit 2" $?
+handoff hBl bA blocked 'src/a.sh — modified'
+out=$(V handoffs/hBl.md 2>&1); [ $? = 2 ] && printf '%s' "$out" | grep -q 'blocked'; check "a blocked handoff: exit 2" $?
+
+echo "4. briefs without verify blocks"
+brief bP <<'EOF'
+Done when `bash tests/suite.sh` passes and `bash -n src/a.sh` is clean.
+
+```bash
+bash tests/suite.sh
+```
+EOF
+handoff hP bP done 'src/a.sh — modified'
+n=$(find handoffs/.jarvis/verify-results -name result | wc -l)
+out=$(V handoffs/hP.md 2>&1); rc=$?
+[ $rc = 2 ] && printf '%s' "$out" | grep -q 'no executable Checks blocks; add a bash verify block to handoffs/briefs/bP.md' \
+  && printf '%s' "$out" | grep -q '```bash verify class=light timeout=300'
+check "prose and unmarked fences: exit 2 with conversion guidance (exit $rc)" $?
+[ "$(find handoffs/.jarvis/verify-results -name result | wc -l)" = "$n" ] && leftover; check "…before any worktree or result" $?
+brief bE <<'EOF'
+```bash verify class=light
+true
+```
+EOF
+handoff hE bE done 'src/a.sh — modified'
+V handoffs/hE.md >/dev/null 2>&1; [ $? = 2 ]; check "a block without timeout=: exit 2" $?
+brief bE <<'EOF'
+```bash verify class=light timeout=5 color=red
+true
+```
+EOF
+V handoffs/hE.md >/dev/null 2>&1; [ $? = 2 ]; check "an unknown attribute: exit 2" $?
+brief bE <<'EOF'
+```bash verify class=light timeout=5
+```
+EOF
+V handoffs/hE.md >/dev/null 2>&1; [ $? = 2 ]; check "an empty block: exit 2" $?
+brief bE <<'EOF'
+```bash verify class=light timeout=5
+true
+EOF
+V handoffs/hE.md >/dev/null 2>&1; [ $? = 2 ]; check "an unclosed fence: exit 2" $?
+brief bE <<'EOF'
+```bash verify class=nosuch timeout=5
+true
+```
+EOF
+out=$(V handoffs/hE.md 2>&1); [ $? = 2 ] && printf '%s' "$out" | grep -q "no lock class 'nosuch'"; check "an unknown lock class: exit 2" $?
+leftover; check "…none of them left anything" $?
+
+echo "5. failures, tails, pipelines, blocks"
+brief bF <<'EOF'
+```bash verify class=light timeout=30
+for i in $(seq 1 100); do echo "line $i"; done
+exit 3
+```
+EOF
+handoff hF bF done 'src/a.sh — modified'
+out=$(V handoffs/hF.md 2>&1); rc=$?
+[ $rc = 1 ] && printf '%s' "$out" | grep -q 'FAILED (exit 3' && printf '%s' "$out" | grep -q '^    line 100$' \
+  && printf '%s' "$out" | grep -q '^    line 61$' && ! printf '%s' "$out" | grep -q '^    line 60$'
+check "a failing check: exit 1, its own exit 3, its last 40 lines" $?
+printf '%s' "$out" | grep -q 'full log: handoffs/.jarvis/verify-results/[^/]*/check-1.log' \
+  && [ "$(grep -c '^line' handoffs/.jarvis/verify-results/*/check-1.log | awk -F: '$2 == 100' | wc -l | tr -d ' ')" -ge 1 ]
+check "…and the full log is kept" $?
+brief bF <<'EOF'
+```bash verify class=light timeout=30
+false | tail -n 1
+```
+EOF
+V handoffs/hF.md >/dev/null 2>&1; [ $? = 1 ]; check "a pipeline failing before its tail fails" $?
+brief bF <<EOF
+\`\`\`bash verify class=light timeout=30
+cd src
+cat <<'DOC' > "$tmp/heredoc"
+it's "quoted" \$HOME
+DOC
+\`\`\`
+
+\`\`\`bash verify class=light timeout=30
+test -f tests/suite.sh && test ! -e src/old.txt && test -f src/new.txt
+\`\`\`
+
+\`\`\`bash verify class=light timeout=30
+exit 9
+\`\`\`
+
+\`\`\`bash verify class=light timeout=30
+touch "$tmp/ran-4"
+\`\`\`
+EOF
+printf 'new\n' > src/new.txt; rm src/old.txt
+handoff hF bF done 'src/a.sh — modified' 'src/old.txt — deleted' 'src/new.txt — created'
+out=$(V handoffs/hF.md 2>&1); rc=$?
+[ "$(cat "$tmp/heredoc" 2>/dev/null)" = "it's \"quoted\" \$HOME" ]; check "block bytes, quotes and here-documents run as written" $?
+printf '%s' "$out" | grep -q 'check 2/4 · light · 30s · passed'; check "each block starts at the worktree root; created and deleted files applied" $?
+[ $rc = 1 ] && printf '%s' "$out" | grep -q 'check 3/4.*FAILED (exit 9' && [ ! -e "$tmp/ran-4" ]; check "the first failure stops the rest" $?
+printf 'old\n' > src/old.txt; rm src/new.txt
+
+echo "6. timeouts kill only the check's own process group"
+bg_in "$r" "$tmp/sleeper"; outsider=$bgpid
+brief bT <<EOF
+\`\`\`bash verify class=light timeout=1
+"$tmp/sleeper" & echo \$! >> "$kids"; echo \$! > "$tmp/kid-T"
+wait
+\`\`\`
+EOF
+handoff hT bT done 'src/a.sh — modified'
+t0=$(date +%s)
+out=$(V handoffs/hT.md 2>&1); rc=$?
+[ $rc = 124 ] && printf '%s' "$out" | grep -q 'TIMED OUT'; check "a timeout exits 124 (exit $rc)" $?
+[ $(( $(date +%s) - t0 )) -le 10 ]; check "…promptly" $?
+waitfor 3 gone "$(cat "$tmp/kid-T")"; check "…its process group is stopped" $?
+alive "$outsider"; check "…and a process outside it is not" $?
+leftover; check "…and nothing is left" $?
+grep -qx 'status: timeout' $(grep -l 'handoff: handoffs/hT.md' handoffs/.jarvis/verify-results/*/result); check "…recorded as timeout" $?
+brief bT <<EOF
+\`\`\`bash verify class=light timeout=30
+"$tmp/sleeper" & echo \$! >> "$kids"; echo \$! > "$tmp/kid-L"
+echo done
+\`\`\`
+EOF
+V handoffs/hT.md >/dev/null 2>&1; check "a check that leaves a process behind still passes" $?
+waitfor 3 gone "$(cat "$tmp/kid-L")"; check "…and what it left is stopped" $?
+
+echo "7. a stopped or killed verifier cleans up"
+brief bS <<EOF
+\`\`\`bash verify class=light timeout=60
+"$tmp/sleeper" & echo \$! >> "$kids"; echo \$! > "$tmp/kid-S"
+touch "$tmp/running-S"
+wait
+\`\`\`
+EOF
+handoff hS bS done 'src/a.sh — modified'
+for sig in TERM INT HUP KILL; do
+  rm -f "$tmp/running-S" "$tmp/kid-S"
+  bg_in "$r" sh -c 'exec handoffs/bin/jarvis merge "$1" --check --verify > "$2" 2>&1' _ handoffs/hS.md "$tmp/out-$sig"
+  sup=$bgpid
+  waitfor 10 test -e "$tmp/running-S"
+  kill -"$sig" "$sup"; wait "$sup" 2>/dev/null; rc=$?
+  case $sig in TERM) want=143 ;; INT) want=130 ;; HUP) want=129 ;; KILL) want=137 ;; esac
+  [ $rc = $want ]; check "$sig: exit $want (got $rc)" $?
+  waitfor 10 leftover; check "$sig: no worktree or attempt directory left" $?
+  waitfor 10 gone "$(cat "$tmp/kid-S")"; check "$sig: the check's processes are stopped" $?
+done
+alive "$outsider"; check "the outside process survived all of it" $?
+stop "$outsider"
+
+echo "8. leases are the original checkout's"
+brief bL <<'EOF'
+```bash verify class=suite timeout=30
+handoffs/bin/jarvis lock suite -- true
+handoffs/bin/jarvis lock docker --wait 0 -- echo nested-docker
+```
+EOF
+handoff hL bL done 'src/a.sh — modified'
+out=$(V handoffs/hL.md 2>&1); rc=$?
+[ $rc = 0 ] && printf '%s' "$out" | grep -q 'passed'; check "a nested lock of the held class runs at once; another class through the shim (exit $rc)" $?
+bg_in "$r" handoffs/bin/jarvis lock suite -- "$tmp/hold" "$tmp/held" 30; holder=$bgpid
+waitfor 5 test -e "$tmp/held"
+out=$(JARVIS_LOCK_WAIT=1 V handoffs/hA.md 2>&1); rc=$?
+[ $rc = 75 ] && printf '%s' "$out" | grep -q 'lease wait ran out'; check "the suite lease held in the checkout queues the verification: exit 75 (exit $rc)" $?
+stop "$holder"
+leftover; check "…and nothing is left" $?
+brief bL <<'EOF'
+```bash verify class=light timeout=30
+handoffs/bin/jarvis status
+```
+EOF
+out=$(V handoffs/hL.md 2>&1); [ $? = 1 ] && printf '%s' "$out" | grep -q 'only lock and resources work'
+check "the worktree's shim refuses anything but lock and resources" $?
+out=$(cd src && JARVIS_VERIFY_CONTEXT="$tmp/nope" ../handoffs/bin/jarvis lock suite -- true 2>&1); [ $? = 2 ] && printf '%s' "$out" | grep -q 'no live verification'
+check "a lock with a dead context is refused" $?
+
+echo "9. ## Files, strictly"
+handoff hX bA done 'src/*.sh — modified'
+V handoffs/hX.md >/dev/null 2>&1; [ $? = 2 ]; check "a glob: exit 2" $?
+handoff hX bA done '../outside — created'
+V handoffs/hX.md >/dev/null 2>&1; [ $? = 2 ]; check "a parent path: exit 2" $?
+handoff hX bA done 'src — modified'
+V handoffs/hX.md >/dev/null 2>&1; [ $? = 2 ]; check "a directory: exit 2" $?
+handoff hX bA done 'src/a.sh — modified' 'src/a.sh — deleted'
+V handoffs/hX.md >/dev/null 2>&1; [ $? = 2 ]; check "contradictory entries: exit 2" $?
+handoff hX bA done 'src/a.sh — created'
+out=$(V handoffs/hX.md 2>&1); [ $? = 1 ] && printf '%s' "$out" | grep -q 'listed as created, but HEAD has it'; check "a wrong action: exit 1" $?
+mkdir -p fixtures; printf 'gen\n' > fixtures/gen.json
+handoff hX bA done 'fixtures/gen.json — created'
+out=$(V handoffs/hX.md 2>&1); [ $? = 2 ] && printf '%s' "$out" | grep -q 'listed source is gitignored'; check "a gitignored source: exit 2" $?
+ln -s ../../outside src/link
+handoff hX bA done 'src/a.sh — modified' 'src/link — created'
+out=$(V handoffs/hX.md 2>&1); [ $? = 2 ] && printf '%s' "$out" | grep -q 'leaves the checkout'; check "a symlink out of the checkout: exit 2" $?
+rm src/link; ln -s a.sh src/link
+V handoffs/hX.md >/dev/null 2>&1; check "a relative symlink inside it is copied as a link" $?
+rm src/link
+git mv -k src/old.txt src/renamed.txt
+handoff hX bF done 'src/old.txt — deleted' 'src/renamed.txt — created' 'handoffs/hX.md — created'
+brief bF <<'EOF'
+```bash verify class=light timeout=30
+test ! -e src/old.txt && test "$(cat src/renamed.txt)" = old
+```
+EOF
+V handoffs/hX.md >/dev/null 2>&1; check "a rename as a deleted and a created entry; the handoff's own entry is left out" $?
+git mv -k src/renamed.txt src/old.txt
+leftover; check "…none of them left anything" $?
+
+echo "10. inputs"
+brief bI <<'EOF'
+```json verify-inputs
+{"requires": ["fixtures/gen.json"], "copy": [], "dependencies": []}
+```
+
+```bash verify class=light timeout=30
+cat fixtures/gen.json
+```
+EOF
+handoff hI bI done 'src/a.sh — modified'
+out=$(V handoffs/hI.md 2>&1); [ $? = 1 ] && printf '%s' "$out" | grep -q 'depends on an unlisted file: fixtures/gen.json (required by Checks); add the source change to ## Files or declare a non-source verification input'
+check "a required file only in the checkout: exit 1, the dependency message" $?
+rm fixtures/gen.json
+out=$(V handoffs/hI.md 2>&1); [ $? = 1 ] && printf '%s' "$out" | grep -q 'required input missing: fixtures/gen.json'
+check "a required file nowhere: exit 1, a different message" $?
+printf 'gen\n' > fixtures/gen.json
+brief bI <<'EOF'
+```json verify-inputs
+{"requires": ["fixtures/gen.json"], "copy": ["fixtures/gen.json"], "dependencies": []}
+```
+
+```bash verify class=light timeout=30
+test "$(cat fixtures/gen.json)" = gen && echo changed > fixtures/gen.json
+```
+EOF
+V handoffs/hI.md >/dev/null 2>&1 && [ "$(cat fixtures/gen.json)" = gen ]; check "a declared copy is private to the worktree" $?
+mkdir -p node_modules/x; printf 'x\n' > node_modules/x/index.js; printf 'node_modules/\n' >> .git/info/exclude
+brief bI <<'EOF'
+```json verify-inputs
+{"requires": ["node_modules/x/index.js"], "copy": [], "dependencies": [{"path": "node_modules", "kind": "node", "lockfiles": ["package-lock.json"], "manifests": ["package.json"]}]}
+```
+
+```bash verify class=light timeout=30
+echo touched > node_modules/x/index.js
+```
+EOF
+V handoffs/hI.md >/dev/null 2>&1 && [ "$(cat node_modules/x/index.js)" = x ]; check "a node dependency is a private copy" $?
+printf '{"lock":2}\n' > package-lock.json
+out=$(V handoffs/hI.md 2>&1); [ $? = 2 ] && printf '%s' "$out" | grep -q 'isolated setup block'; check "…refused when its lockfile changed" $?
+git checkout -q -- package-lock.json
+brief bI <<'EOF'
+```json verify-inputs
+{"requires": [], "copy": [], "dependencies": [{"path": ".venv", "kind": "venv", "lockfiles": [], "manifests": []}]}
+```
+
+```bash verify class=light timeout=30
+true
+```
+EOF
+out=$(V handoffs/hI.md 2>&1); [ $? = 2 ] && printf '%s' "$out" | grep -q 'virtualenv requires an isolated setup check'; check "a virtualenv is never borrowed" $?
+brief bI <<EOF
+\`\`\`bash verify class=light timeout=30
+echo moved >> "$r/src/a.sh"
+\`\`\`
+EOF
+out=$(V handoffs/hI.md 2>&1); [ $? = 75 ] && printf '%s' "$out" | grep -q 'inputs changed during verification; rerun (src/a.sh)'
+check "a listed file that moves during the run: exit 75, not a pass" $?
+printf 'a() { echo A; }\n' > src/a.sh
+leftover; check "…none of them left anything" $?
+
+echo "11. a checkout whose handoffs/bin is tracked"
+r2="$tmp/r2"; mkrepo "$r2" tracked
+cd "$r2" || exit 1
+printf 'a() { echo A; }\n' > src/a.sh
+brief bL <<'EOF'
+```bash verify class=suite timeout=30
+handoffs/bin/jarvis lock suite -- true
+```
+EOF
+handoff hL bL done 'src/a.sh — modified'
+V handoffs/hL.md >/dev/null 2>&1; check "its own tracked jarvis honours the context: the nested lock runs at once" $?
+leftover; check "…and nothing is left" $?
+cd "$r" || exit 1
+
+echo "12. every process this test started has exited"
+none_left() { ! ps -A -o command= | grep -F "$tmp/" | grep -v grep >/dev/null; }
+waitfor 5 none_left; check "none left" $?
+
+if [ $fails = 0 ]; then echo "verifytest: all passed"; exit 0; fi
+echo "verifytest: $fails failed"; exit 1
+}
