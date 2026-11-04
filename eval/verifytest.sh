@@ -498,12 +498,13 @@ check "after a failed attempt on the same candidate: no reuse of the older pass"
 touch "$tmp/slow-R"; V handoffs/hR.md >/dev/null 2>&1; rc=$?; rm -f "$tmp/slow-R"
 out=$(VR handoffs/hR.md 2>&1); [ $rc = 124 ] && [ "$(ran)" = 10 ] && printf '%s' "$out" | grep -q 'ended timeout'
 check "after a timed-out attempt: no reuse" $?
-att=$(rk verify_attempt)
-perl -pi -e 's/^finished: \d+/"finished: " . (time - 8000)/e' "handoffs/.jarvis/verify-results/$att/result"
+# the run's whole history 8000 s back, so its pass is still the newest attempt
+perl -pi -e 's/^(started|finished): (\d+)$/"$1: " . ($2 - 8000)/e; s/^ended_ns: (\d+)(\d{9})$/"ended_ns: " . ($1 - 8000) . $2/e' \
+  $(grep -l '^run: term-R$' handoffs/.jarvis/verify-results/*/result)
 out=$(VR handoffs/hR.md 2>&1); [ "$(ran)" = 11 ] && printf '%s' "$out" | grep -q 'JARVIS_REUSE_MAX_AGE=7200'
 check "a pass older than JARVIS_REUSE_MAX_AGE: no reuse" $?
 att=$(rk verify_attempt)
-perl -pi -e 's/^finished: \d+/"finished: " . (time + 3600)/e' "handoffs/.jarvis/verify-results/$att/result"
+perl -pi -e 's/^finished: \d+/"finished: " . (time + 3600)/e; s/^ended_ns: \d+/"ended_ns: " . (time + 3600) . "000000000"/e' "handoffs/.jarvis/verify-results/$att/result"
 out=$(VR handoffs/hR.md 2>&1); [ "$(ran)" = 12 ] && printf '%s' "$out" | grep -q 'in the future'
 check "a pass stamped in the future: no reuse" $?
 JARVIS_REUSE_MAX_AGE=0 VR handoffs/hR.md >/dev/null 2>&1; [ "$(ran)" = 13 ]; check "JARVIS_REUSE_MAX_AGE=0: no reuse" $?
@@ -536,7 +537,126 @@ kill -TERM "$sup"; wait "$sup" 2>/dev/null
 waitfor 10 leftover; check "…and nothing is left" $?
 V handoffs/hA.md >/dev/null 2>&1; check "…and the lease is free again once it ends" $?
 
-echo "13. every process this test started has exited"
+echo "13. doctor: what a killed verifier left, and only that"
+D() { handoffs/bin/jarvis doctor "$@" 2>&1; }
+registered() { git worktree list --porcelain | grep -q "^worktree .*$1"; } # $1 = the end of a worktree path
+oldstart=Thu_Jan__1_00:00:00_1970
+printf 'run: term-S\nbrief: handoffs/briefs/bS.md\nagent: claude test\nspawned: 100\nstate: running\n' > handoffs/.jarvis/runs/term-S
+rm -f "$tmp/running-S" "$tmp/kid-S"
+bg_in "$r" sh -c 'exec handoffs/bin/jarvis merge "$1" --check --verify > "$2" 2>&1' _ handoffs/hS.md "$tmp/out-D"; sup=$bgpid
+waitfor 10 test -e "$tmp/running-S"
+att=$(sed -n 's/^verify_attempt: //p' handoffs/.jarvis/runs/term-S)
+wd=$(sed -n 's/^watchdog: //p' "handoffs/.jarvis/verify/term-S/$att/owner")
+out=$(D --apply)
+printf '%s' "$out" | grep -q "verify/term-S/$att · run term-S · running: its verifier (pid $sup) is running (left alone)" \
+  && printf '%s' "$out" | grep -q "verify lease is held (pid $sup)" && registered "term-S/$att/tree" && alive "$(cat "$tmp/kid-S")"
+check "a live verifier's attempt is left alone" $?
+out=$(JARVIS_LOCK_DIR="$tmp/otherlocks" D --apply)
+! printf '%s' "$out" | grep -q 'doctor: orphaned' && registered "term-S/$att/tree" && alive "$(cat "$tmp/kid-S")"
+check "…also by a doctor reading another lock dir: the verifier's PID and start time say it's alive" $?
+[ -n "$wd" ] && ps -o command= -p "$wd" | grep -qF "$tmp/" && kill -9 "$wd"; kill -9 "$sup"; wait "$sup" 2>/dev/null
+registered "term-S/$att/tree" && alive "$(cat "$tmp/kid-S")"; check "a verifier killed with its watchdog leaves its worktree and its check running" $?
+out=$(D)
+printf '%s' "$out" | grep -q "^  handoffs/.jarvis/verify/term-S/$att · run term-S · ORPHANED: its verifier (pid $sup) and watchdog are gone · a registered worktree · its check left [0-9]* process.* running" \
+  && printf '%s' "$out" | grep -q 'act on the FINISHED, lost and ORPHANED ones'
+check "doctor reports it orphaned" $?
+registered "term-S/$att/tree" && alive "$(cat "$tmp/kid-S")"; check "…and touches nothing" $?
+out=$(handoffs/bin/jarvis doctor --quiet); [ "$out" = "doctor: 1 orphaned verification worktree — handoffs/bin/jarvis doctor" ]
+check "--quiet counts it ($out)" $?
+out=$(D --apply)
+printf '%s' "$out" | grep -q "^doctor: orphaned verification handoffs/.jarvis/verify/term-S/$att: stopped [0-9]* process.* of its check; removed its worktree; result marked interrupted; run term-S verify_status stale$"
+check "--apply stops its check and removes it" $?
+waitfor 5 gone "$(cat "$tmp/kid-S")" && leftover; check "…nothing of it is left" $?
+[ "$(res "$att" status)" = interrupted ] && [ "$(sed -n 's/^verify_status: //p' handoffs/.jarvis/runs/term-S)" = stale ] \
+  && grep -q "verify-orphan run=term-S brief=handoffs/briefs/bS.md attempt=$att pgid=[0-9]* result=removed$" handoffs/.jarvis/audit.log
+check "…its result is interrupted, its run's verify_status stale, and it's audited" $?
+out=$(D --apply); ! printf '%s' "$out" | grep -q '^doctor: orphaned' && [ -z "$(handoffs/bin/jarvis doctor --quiet)" ]
+check "a second --apply has nothing to do" $?
+printf 'run: term-Z\nbrief: handoffs/briefs/bZ.md\nstate: running\nverify_status: running\nverify_attempt: 20260101T000000Z-1-abcdef\n' > handoffs/.jarvis/runs/term-Z
+out=$(D); printf '%s' "$out" | grep -q '^  run term-Z · verify_status running, but no verification of it is alive'
+check "a run record stuck at verify_status: running is reported" $?
+D --apply >/dev/null; [ "$(sed -n 's/^verify_status: //p' handoffs/.jarvis/runs/term-Z)" = stale ] && grep -q 'verify-stale run=term-Z .* result=stale$' handoffs/.jarvis/audit.log
+check "…and --apply marks it stale" $?
+rm handoffs/.jarvis/runs/term-Z
+git worktree add -q --detach handoffs/.jarvis/verify/standalone-x/manual/tree HEAD
+out=$(D --apply)
+printf '%s' "$out" | grep -q '^  handoffs/.jarvis/verify/standalone-x/manual · no ownership manifest · a registered worktree: left alone' \
+  && registered standalone-x/manual/tree; check "a registered tree with no manifest is reported, never removed" $?
+git worktree remove --force handoffs/.jarvis/verify/standalone-x/manual/tree; rm -rf handoffs/.jarvis/verify/standalone-x
+common=$(cd "$(git rev-parse --git-common-dir)" && pwd -P)
+dead=$(sh -c 'echo $$')
+manifest() { # $1 = checkout, $2 = attempt folder, $3 = PID it names as owner and group
+  printf '%s\n' "schema: jarvis-verify-1" "root: $1" "common: $common" "head: $(git rev-parse HEAD)" "tree: $2/tree" \
+    "attempt: ${2##*/}" "run: -" "handoff: handoffs/h3.md" "brief: handoffs/briefs/b3.md" "owner: $3" "owner_start: $oldstart" \
+    "phase: check 1" "pgid: $3" "pgid_start: $oldstart" "admin: " "watchdog: $dead" "watchdog_start: $oldstart" > "$2/owner"
+}
+ai="$r/handoffs/.jarvis/verify/standalone-hI/20260101T000000Z-2-bbbbbb"; mkdir -p "$ai"; manifest "$r" "$ai" "$dead"
+out=$(D --apply); printf '%s' "$out" | grep -q "^doctor: orphaned verification handoffs/.jarvis/verify/standalone-hI/${ai##*/}: removed its folder$" && [ ! -e "$ai" ]
+check "an add interrupted before it registered: its owned folder is removed" $?
+r3="$tmp/r3"; git worktree add -q --detach "$r3" HEAD   # another checkout of the same repository
+mkdir -p "$r3/handoffs/bin" && cp handoffs/bin/jarvis handoffs/bin/jarvis-lock.pl handoffs/bin/jarvis-verify.py "$r3/handoffs/bin/" \
+  && cp handoffs/jarvis.conf "$r3/handoffs/"
+bg_in "$r" "$tmp/sleeper"; fake=$bgpid   # alive, with a PID its manifest names but another start time
+a3="$r3/handoffs/.jarvis/verify/standalone-h3/20260101T000000Z-3-cccccc"
+mkdir -p "$a3" && git -C "$r3" worktree add -q --detach "$a3/tree" HEAD && manifest "$r3" "$a3" "$fake"
+mkdir -p "handoffs/.jarvis/verify/standalone-h3/${a3##*/}" && cp "$a3/owner" "handoffs/.jarvis/verify/standalone-h3/${a3##*/}/"
+out=$(D --apply)
+printf '%s' "$out" | grep -q "^  handoffs/.jarvis/verify/standalone-h3/${a3##*/} · its manifest names another checkout: left alone" \
+  && [ -e "handoffs/.jarvis/verify/standalone-h3/${a3##*/}/owner" ] && ! printf '%s' "$out" | grep -q "r3/handoffs" \
+  && registered "standalone-h3/${a3##*/}/tree"
+check "another checkout's verification worktree, and a manifest naming it, are left alone" $?
+rm -rf handoffs/.jarvis/verify/standalone-h3
+out=$(cd "$r3" && handoffs/bin/jarvis doctor --apply 2>&1)
+printf '%s' "$out" | grep -q "^doctor: orphaned verification handoffs/.jarvis/verify/standalone-h3/${a3##*/}: removed its worktree$" \
+  && ! registered standalone-h3 && alive "$fake"
+check "…its own checkout's doctor removes it, and never signals a reused PID its manifest names" $?
+stop "$fake"; git worktree remove --force "$r3"
+leftover; check "…and nothing is left" $?
+
+echo "14. result records that don't add up aren't reused"
+brief bQ <<EOF
+\`\`\`bash verify class=light timeout=5
+echo ran >> "$tmp/ran-Q"
+\`\`\`
+EOF
+handoff hQ bQ done 'src/a.sh — modified'
+ranQ() { cat "$tmp/ran-Q" 2>/dev/null | wc -l | tr -d ' '; }
+VR handoffs/hQ.md >/dev/null 2>&1; q=$(grep -l 'handoff: handoffs/hQ.md' handoffs/.jarvis/verify-results/*/result)
+perl -pi -e "s/^ended_ns: \\d+/ended_ns: $(( $(date +%s) + 86400 ))000000000/" "$q"
+out=$(VR handoffs/hQ.md 2>&1); [ "$(ranQ)" = 2 ] && printf '%s' "$out" | grep -q "end time that doesn't match its finish time"
+check "a pass whose ended_ns is a day ahead: no reuse" $?
+rm -r "$(dirname "$q")"
+VR handoffs/hQ.md >/dev/null 2>&1; [ "$(ranQ)" = 2 ]; check "…with that record gone, the real pass is reused" $?
+q=$(grep -l '^status: passed' $(grep -l 'handoff: handoffs/hQ.md' handoffs/.jarvis/verify-results/*/result))
+perl -pi -e "s/^ended_ns: \\d+/ended_ns: $(( $(sed -n 's/^finished: //p' "$q") - 3600 ))000000000/" "$q"
+out=$(VR handoffs/hQ.md 2>&1); [ "$(ranQ)" = 3 ] && printf '%s' "$out" | grep -q "end time that doesn't match its finish time"
+check "a pass whose ended_ns is an hour off its finished: no reuse" $?
+
+echo "15. _run-set and the verify class name"
+printf 'run: term-X\nstate: running\n' > handoffs/.jarvis/runs/term-X
+bg_in "$r" perl -e 'use Fcntl ":flock"; open(my $l, ">>", $ARGV[0]) or die; flock($l, LOCK_EX) or die; open(my $t, ">", $ARGV[1]) or die; close $t; sleep 30' \
+  "$r/handoffs/.jarvis/run-locks/term-X.write-lock" "$tmp/locked-X"; holder=$bgpid
+waitfor 5 test -e "$tmp/locked-X"
+handoffs/bin/jarvis _run-set term-X verify_status running & w=$!
+waitfor 5 sh -c '[ "$(ps -ww -A -o command= | grep -c "[r]un-locks/term-X.write-lock")" -ge 2 ]'
+rm -f handoffs/.jarvis/runs/term-X
+stop "$holder"
+wait "$w"; rc=$?
+[ $rc = 4 ] && [ ! -e handoffs/.jarvis/runs/term-X ]; check "a record removed while _run-set waits for its lock isn't recreated (exit $rc)" $?
+echo 'JARVIS_LOCK_verify="checkout 1"' >> handoffs/jarvis.conf
+out=$(handoffs/bin/jarvis lock verify -- true 2>&1); [ $? = 2 ] && printf '%s' "$out" | grep -q "'verify' is merge --verify's own lease"
+check "a lock class named verify is refused, even one jarvis.conf defines" $?
+brief bV <<'EOF'
+```bash verify class=verify timeout=5
+true
+```
+EOF
+handoff hV bV done 'src/a.sh — modified'
+out=$(V handoffs/hV.md 2>&1); [ $? = 2 ] && printf '%s' "$out" | grep -q "'verify' is merge --verify's own lease"
+check "…and so is a verify block of that class" $?
+perl -ni -e 'print unless /JARVIS_LOCK_verify/' handoffs/jarvis.conf
+
+echo "16. every process this test started has exited"
 none_left() { ! ps -A -o command= | grep -F "$tmp/" | grep -v grep >/dev/null; }
 waitfor 5 none_left; check "none left" $?
 

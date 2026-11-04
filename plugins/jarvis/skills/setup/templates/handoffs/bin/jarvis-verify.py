@@ -6,13 +6,17 @@ nothing else should call it.
   jarvis-verify.py run --root <checkout> --handoff <file> --runner <bin/jarvis>
                        --bash <path> [--max-sec N] [--lock-wait N] [--grace N]
                        [--reuse=0|1] [--max-age N] [--reuse-env "NAMES"] [--lock-dir DIR]
+  jarvis-verify.py doctor --root <checkout> --runner <bin/jarvis> [--lock-dir DIR] [--grace N]
+                          [--apply | --quiet]      `jarvis doctor`'s verification worktrees
 
 It runs the brief's ```bash verify``` blocks under ## Checks against HEAD plus
 exactly the handoff's listed changes, in a detached worktree of its own:
 
   handoffs/.jarvis/verify/<run | standalone-…>/<attempt>/   0700, removed at the end
-      owner      ownership manifest, written before `git worktree add`; also the
-                 context a nested `jarvis lock` reads (JARVIS_VERIFY_CONTEXT)
+      owner      ownership manifest, written before `git worktree add`: checkout, git
+                 common dir, tree, PID and start time of the verifier, its watchdog and
+                 the running check's group, the lease; also the context a nested
+                 `jarvis lock` reads (JARVIS_VERIFY_CONTEXT)
       tree/      the worktree: HEAD, the listed changes, declared inputs
       control/   private copies of bin/jarvis and jarvis-lock.pl for the lock shim
       checks/    each block's script, byte for byte
@@ -45,6 +49,7 @@ import argparse, fcntl, hashlib, json, os, re, shutil, signal, stat, subprocess,
 SCHEMA = "jarvis-verify-1"
 KEY_SCHEMA = "jarvis-verify-key-1"
 SKEW = 60                  # a result stamped further in the future than this is never reused
+ENDED_SLACK = 5            # seconds a result's ended_ns may differ from its finished
 # environment values that count toward a verify_key, with $JARVIS_REUSE_ENV and every LC_*;
 # only their digest is kept
 KEY_ENV = ("PATH", "HOME", "SHELL", "LANG", "TZ", "CI", "NODE_ENV", "NODE_OPTIONS", "PYTHONHASHSEED",
@@ -134,6 +139,61 @@ def group_members(pgid):
         if len(f) >= 3 and f[1] == str(pgid) and not f[2].startswith("Z"):
             pids.append(int(f[0]))
     return pids
+
+
+def stop_group(pgid, start, grace, direct=True):
+    """TERM, then KILL after grace, a check's process group, and only while it is still ours:
+    our unreaped child (direct), or a leader whose start time still matches."""
+    if not pgid:
+        return
+    pgid = int(pgid)
+    if not direct:
+        leader = lstart_of(pgid)
+        if leader and start and leader != start:
+            return                    # the PID is someone else's now
+        if not leader and not group_members(pgid):
+            return
+    for sig, wait in ((signal.SIGTERM, grace), (signal.SIGKILL, 2)):
+        if not group_members(pgid):   # a group with live members still has its ID: it is the one we started
+            return
+        try:
+            os.killpg(pgid, sig)
+        except (ProcessLookupError, PermissionError):
+            return
+        end = time.time() + wait
+        while time.time() < end:
+            if not group_members(pgid):
+                return
+            time.sleep(0.05)
+
+
+def backlink_ok(admin, tree):
+    """Whether a git worktree admin entry still points back at this tree."""
+    try:
+        back = open(os.path.join(admin, "gitdir")).read().strip()
+    except OSError:
+        return False
+    return os.path.realpath(back) == os.path.realpath(os.path.join(tree, ".git")) or back == os.path.join(tree, ".git")
+
+
+def remove_attempt(root, attempt, tree, admin, parents=()):
+    """Remove an attempt's worktree (only that exact registered entry, and only while it still points
+    back at the tree) and its directory, then the empty parents; True when nothing is left."""
+    if tree and os.path.lexists(tree):
+        git(root, "worktree", "remove", "--force", "--force", tree, ok=(0, 1, 128))
+    if tree and os.path.lexists(tree):
+        shutil.rmtree(tree, ignore_errors=True)
+    if admin and os.path.isdir(admin) and backlink_ok(admin, tree):
+        shutil.rmtree(admin, ignore_errors=True)
+    if os.path.lexists(attempt):
+        shutil.rmtree(attempt, ignore_errors=True)
+    for d in parents:
+        try:
+            if d:
+                os.rmdir(d)
+        except OSError:
+            pass
+    return not (os.path.lexists(attempt) or (tree and os.path.lexists(tree)) or (admin and os.path.isdir(admin)))
 
 
 def write_atomic(path, text, mode=0o600):
@@ -429,7 +489,7 @@ class Verify:
         self.cleaned = False
         self.sig = None
         self.result = {}
-        self.run = self.lease = self.key = self.reused = None
+        self.run = self.lease = self.lease_path = self.key = self.reused = None
         self.class_specs = {}
 
     # ---- signals: one cleanup path
@@ -662,15 +722,14 @@ class Verify:
         """The checkout's verify lease, held until this process (and its watchdog) exits."""
         d = self.a.lock_dir
         os.makedirs(d, 0o700, exist_ok=True)
-        key = "verify@" + hashlib.sha1(self.root.encode()).hexdigest()[:12]
-        where = os.path.join(d, key + ".where")
+        slot = lease_slot(d, self.root)
+        where = slot[:-len(".slot0")] + ".where"
         try:
             cur = open(where).read()
         except OSError:
             cur = ""
         if cur != self.root + "\n":
             write_atomic(where, self.root + "\n")
-        slot = os.path.join(d, key + ".slot0")
         fd = os.open(slot, os.O_RDWR | os.O_CREAT, 0o600)
         deadline, told = time.time() + self.a.lock_wait, False
         while True:
@@ -697,7 +756,7 @@ class Verify:
         os.ftruncate(fd, 0)
         os.lseek(fd, 0, 0)
         os.write(fd, rec_text(rec).encode())
-        self.lease = fd
+        self.lease, self.lease_path = fd, slot
 
     def record(self, final, kv):
         """Write verify_* keys to the run record through bin/jarvis _run-set, under its lock; a final
@@ -736,14 +795,17 @@ class Verify:
             "handoff": self.handoff_rel, "brief": self.brief_rel,
             "owner": os.getpid(), "owner_start": lstart_of(os.getpid()),
             "phase": "preparing", "pgid": "", "pgid_start": "", "admin": "",
+            "watchdog": "", "watchdog_start": "", "lease": self.lease_path,
         }
         self.save_owner()
         self.result = {"status": "running", "attempt": self.attempt_id, "run": self.run or "-",
                        "handoff": self.handoff_rel, "brief": self.brief_rel, "head": self.head,
                        "handoff_status": self.status or "-", "started": int(time.time()),
-                       "bash": a.bash, "bash_version": self.bash_version()}
+                       "bash": a.bash, "bash_version": self.bash_version(),
+                       "owner": os.getpid(), "owner_start": self.owner["owner_start"]}
         self.save_result()
         self.start_watchdog()
+        self.save_owner(watchdog=self.watchdog, watchdog_start=lstart_of(self.watchdog))
         if self.record(False, [("verify_status", "running"), ("verify_attempt", self.attempt_id),
                                ("verify_head", self.head), ("verify_started", self.result["started"]),
                                ("verify_finished", ""), ("verify_exit", ""), ("verify_check", ""),
@@ -951,7 +1013,14 @@ class Verify:
             stamps = [int(r[k]) for k in ("started", "finished") if r.get(k, "").isdigit()]
             if not stamps or max(stamps) > now + SKEW:
                 return None, "attempt %s has no time or one in the future" % n
-            order = (int(r["ended_ns"]) if r.get("ended_ns", "").isdigit() else max(stamps) * 10 ** 9, n)
+            fin, ens = r.get("finished", ""), r.get("ended_ns", "")
+            if fin or ens:   # written together; ended_ns orders attempts, so it is checked like the rest
+                if not (fin.isdigit() and ens.isdigit()) or int(ens) > (now + SKEW) * 10 ** 9 \
+                        or abs(int(ens) / 1e9 - int(fin)) > ENDED_SLACK:
+                    return None, "attempt %s has an end time that doesn't match its finish time" % n
+                order = (int(ens), n)
+            else:
+                order = (max(stamps) * 10 ** 9, n)
             if newest is None or order > newest[0]:
                 newest = (order, n, r)
         if newest is None:
@@ -1256,29 +1325,7 @@ class Verify:
         return 128 - rc if rc < 0 else rc
 
     def stop_group(self, pgid, start, grace, direct=True):
-        """TERM, then KILL after grace, a check's process group, and only while it is still ours:
-        our unreaped child (direct), or a leader whose start time still matches."""
-        if not pgid:
-            return
-        pgid = int(pgid)
-        if not direct:
-            leader = lstart_of(pgid)
-            if leader and start and leader != start:
-                return                    # the PID is someone else's now
-            if not leader and not group_members(pgid):
-                return
-        for sig, wait in ((signal.SIGTERM, grace), (signal.SIGKILL, 2)):
-            if not group_members(pgid):   # a group with live members still has its ID: it is the one we started
-                return
-            try:
-                os.killpg(pgid, sig)
-            except (ProcessLookupError, PermissionError):
-                return
-            end = time.time() + wait
-            while time.time() < end:
-                if not group_members(pgid):
-                    return
-                time.sleep(0.05)
+        stop_group(pgid, start, grace, direct)
 
     def show_tail(self, log):
         try:
@@ -1348,33 +1395,8 @@ class Verify:
         """Remove the worktree and the attempt directory; True when nothing is left."""
         if not self.attempt:
             return True
-        ok = True
-        tree = self.tree
-        if tree and os.path.lexists(tree):
-            git(self.root, "worktree", "remove", "--force", "--force", tree, ok=(0, 1, 128))
-        if tree and os.path.lexists(tree):
-            shutil.rmtree(tree, ignore_errors=True)
-        admin = self.owner.get("admin", "")
-        if admin and os.path.isdir(admin):
-            # only the exact entry, and only while it still points back at our tree
-            try:
-                back = open(os.path.join(admin, "gitdir")).read().strip()
-            except OSError:
-                back = ""
-            if os.path.realpath(back) == os.path.realpath(os.path.join(tree, ".git")) or \
-                    back == os.path.join(tree, ".git"):
-                shutil.rmtree(admin, ignore_errors=True)
-        if os.path.lexists(self.attempt):
-            shutil.rmtree(self.attempt, ignore_errors=True)
-        for d in (getattr(self, "keydir", None), getattr(self, "vroot", None)):
-            try:
-                if d:
-                    os.rmdir(d)
-            except OSError:
-                pass
-        if os.path.lexists(self.attempt) or (tree and os.path.lexists(tree)) or (admin and os.path.isdir(admin)):
-            ok = False
-        return ok
+        return remove_attempt(self.root, self.attempt, self.tree, self.owner.get("admin", ""),
+                              (getattr(self, "keydir", None), getattr(self, "vroot", None)))
 
     def cleanup(self):
         if self.cleaned:
@@ -1387,6 +1409,351 @@ class Verify:
         self.cleaned = True
         self.end_watchdog()
         return ok
+
+# ---------------------------------------------------------------- doctor
+
+def lease_slot(lock_dir, root):
+    """The checkout's verify lease: jarvis-lock.pl's slot format, so `jarvis resources` lists it."""
+    return os.path.join(lock_dir, "verify@%s.slot0" % hashlib.sha1(root.encode()).hexdigest()[:12])
+
+
+def lease_try(path, create):
+    """(fd, None) once this process holds the lease at path; (None, holder) while another holds it;
+    (None, None) when there is no such lease file and create is false."""
+    try:
+        fd = os.open(path, os.O_RDWR | (os.O_CREAT if create else 0) | getattr(os, "O_NOFOLLOW", 0), 0o600)
+    except FileNotFoundError:
+        return None, None
+    except OSError as e:
+        return None, "unreadable: %s" % e.strerror
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        os.close(fd)
+        h = read_rec(path)
+        return None, "pid %s" % h["pid"] if h.get("pid") else "another process"
+    return fd, None
+
+
+def same_proc(pid, start):
+    return bool(pid) and str(pid).isdigit() and bool(start) and lstart_of(int(pid)) == start
+
+
+def plural(n, word, many=None):
+    return "%d %s" % (n, word if n == 1 else many or word + "s")
+
+
+class Doctor:
+    """`jarvis doctor`'s verification worktrees: what a verifier killed with its watchdog left behind.
+    An attempt under handoffs/.jarvis/verify/ is an orphan only when its ownership manifest is this
+    checkout's (canonical paths, git common dir, run, tree), its verifier and watchdog are gone (PID
+    and start time) and the verify lease is free. --apply rechecks each under that lease, stops
+    only its check's process group while the group's leader is still the recorded one, removes only
+    that registered worktree (or the folder of an add that never registered), marks the pending
+    result interrupted and a run record stuck at verify_status: running stale, and audits it.
+    Anything it can't account for is reported and left alone."""
+
+    def __init__(self, a):
+        self.a = a
+        self.root = os.path.realpath(a.root)
+        self.state = os.path.join(self.root, STATE_DIR)
+        self.vroot = os.path.join(self.state, "verify")
+        self.slot = lease_slot(a.lock_dir, self.root)
+        c = git(self.root, "rev-parse", "--git-common-dir").stdout.decode().strip()
+        self.common = os.path.realpath(os.path.join(self.root, c))
+
+    def rel(self, p):
+        return os.path.relpath(p, self.root)
+
+    def registered(self):
+        p = git(self.root, "worktree", "list", "--porcelain", "-z", ok=(0, 128, 129))
+        sep = "\0"
+        if p.returncode:      # git before 2.36: no -z
+            p, sep = git(self.root, "worktree", "list", "--porcelain"), "\n"
+        return {os.path.realpath(x[9:]) for x in p.stdout.decode("utf-8", "surrogateescape").split(sep)
+                if x.startswith("worktree ")}
+
+    def survey(self):
+        """(attempts, odd): each attempt examined; odd = (path, why) of entries left alone."""
+        self.reg = self.registered()
+        attempts, odd = [], []
+        if os.path.lexists(self.vroot):
+            if os.path.islink(self.vroot) or not os.path.isdir(self.vroot) or os.path.realpath(self.vroot) != self.vroot:
+                return [], [(self.vroot, "isn't a plain directory of this checkout")]
+            for k in sorted(os.listdir(self.vroot)):
+                kd = os.path.join(self.vroot, k)
+                if os.path.islink(kd):
+                    odd.append((kd, "a symlink"))
+                    continue
+                if not os.path.isdir(kd):
+                    continue
+                for n in sorted(os.listdir(kd)):
+                    ad = os.path.join(kd, n)
+                    if os.path.islink(ad):
+                        odd.append((ad, "a symlink"))
+                    elif os.path.isdir(ad):
+                        attempts.append(self.examine(k, n))
+        trees = {t["tree"] for t in attempts}
+        for p in sorted(self.reg):
+            if p.startswith(self.vroot + "/") and p not in trees:
+                odd.append((p, "a registered worktree with no ownership manifest"))
+        return attempts, odd
+
+    def examine(self, key, name):
+        ad = os.path.join(self.vroot, key, name)
+        t = {"key": key, "name": name, "dir": ad, "tree": os.path.join(ad, "tree"), "m": {}, "admin": "",
+             "why": None, "live": None, "group": None, "fds": []}
+        t["registered"] = t["tree"] in self.reg
+        t["why"] = self.distrust(t)
+        if t["why"]:
+            t["kind"] = "manual"
+            return t
+        m = t["m"]
+        if same_proc(m.get("owner"), m.get("owner_start")):
+            t["live"] = "its verifier (pid %s) is running" % m["owner"]
+        elif same_proc(m.get("watchdog"), m.get("watchdog_start")):
+            t["live"] = "its watchdog (pid %s) is still cleaning up" % m["watchdog"]
+        elif m.get("lease") and m["lease"] != self.slot:   # a verifier with another JARVIS_LOCK_DIR
+            fd, holder = lease_try(m["lease"], False)
+            if holder:
+                t["live"] = "its lease is held (%s)" % holder
+            elif fd is not None:
+                t["fds"].append(fd)
+        if t["live"]:
+            t["kind"] = "live"
+            return t
+        pg = m.get("pgid")
+        members = group_members(int(pg)) if pg else []
+        if members:
+            leader = lstart_of(int(pg))
+            if leader and leader == m.get("pgid_start"):
+                t["group"] = ("ours", len(members))
+            elif leader and m.get("pgid_start"):
+                t["group"] = ("reused", len(members))
+            else:
+                t["kind"] = "stuck"
+                t["why"] = ("%s in its check's process group %s remain%s, but its leader %s, so they can't be "
+                            "told from someone else's" % (plural(len(members), "process", "processes"), pg,
+                                                          "s" if len(members) == 1 else "",
+                                                          "is gone" if not leader else "has no recorded start"))
+                return t
+        t["kind"] = "orphan"
+        return t
+
+    def distrust(self, t):
+        """Why this attempt's ownership can't be trusted, or None."""
+        ad, tree = t["dir"], t["tree"]
+        if os.path.realpath(ad) != ad:
+            return "its folder isn't a plain directory here"
+        mf = os.path.join(ad, "owner")
+        try:
+            st = os.lstat(mf)
+        except OSError:
+            return "no ownership manifest"
+        if not stat.S_ISREG(st.st_mode) or st.st_uid != os.getuid():
+            return "its manifest isn't a file of yours"
+        m = t["m"] = read_rec(mf)
+        if m.get("schema") != SCHEMA:
+            return "its manifest isn't a %s one" % SCHEMA
+        if m.get("root") != self.root:
+            return "its manifest names another checkout"
+        if m.get("common") != self.common:
+            return "its manifest names another git repository"
+        if m.get("attempt") != t["name"] or m.get("tree") != tree:
+            return "its manifest names another attempt or tree"
+        run = m.get("run", "")
+        if not (run == t["key"] or (run == "-" and t["key"].startswith("standalone-"))):
+            return "its manifest's run doesn't match its folder"
+        if not m.get("owner", "").isdigit() or not m.get("owner_start"):
+            return "its manifest has no verifier PID and start time"
+        if any(m.get(k) and not m[k].isdigit() for k in ("watchdog", "pgid")):
+            return "its manifest's PIDs aren't numbers"
+        if m.get("lease") and os.path.basename(m["lease"]) != os.path.basename(self.slot):
+            return "its manifest's lease isn't this checkout's"
+        if os.path.lexists(tree) and (os.path.islink(tree) or not os.path.isdir(tree)):
+            return "its tree isn't a directory"
+        admin = m.get("admin", "")
+        if not admin and os.path.isfile(os.path.join(tree, ".git")) and not os.path.islink(os.path.join(tree, ".git")):
+            try:   # killed between `worktree add` and recording it: the tree's .git file names it
+                with open(os.path.join(tree, ".git")) as f:
+                    g = re.match(r"^gitdir: (.*)$", f.read().strip())
+                admin = os.path.realpath(os.path.join(tree, g.group(1))) if g else ""
+            except OSError:
+                admin = ""
+        if admin and os.path.isdir(admin):
+            if os.path.dirname(admin) != os.path.join(self.common, "worktrees") or not backlink_ok(admin, tree):
+                return "its git worktree entry doesn't point back at its tree"
+            t["admin"] = admin
+        return None
+
+    def stuck_runs(self, attempts):
+        """(run, attempt, result path) of each run record at verify_status: running whose attempt left
+        no folder and whose verifier is gone."""
+        runs = os.path.join(self.state, "runs")
+        names = {t["name"] for t in attempts}
+        out = []
+        try:
+            entries = sorted(os.listdir(runs))
+        except OSError:
+            return out
+        for n in entries:
+            f = os.path.join(runs, n)
+            if n.startswith(".") or not re.match(r"^[A-Za-z0-9_%.-]+$", n) or os.path.islink(f) or not os.path.isfile(f):
+                continue
+            r = read_rec(f)
+            att = r.get("verify_attempt", "")
+            if r.get("verify_status") != "running" or att in names:
+                continue
+            res = ""
+            if re.match(r"^[A-Za-z0-9_.-]+$", att):
+                res = os.path.join(self.state, "verify-results", att, "result")
+            rr = read_rec(res) if res else {}
+            if same_proc(rr.get("owner"), rr.get("owner_start")):
+                continue
+            out.append((n, att, res))
+        return out
+
+    # ---- report
+
+    def report(self, quiet):
+        attempts, odd = self.survey()
+        stuck = self.stuck_runs(attempts)
+        fd, holder = lease_try(self.slot, False)
+        if fd is not None:
+            os.close(fd)
+        for t in attempts:
+            for x in t["fds"]:
+                os.close(x)
+        orphans = [t for t in attempts if t["kind"] == "orphan"]
+        manual = [t for t in attempts if t["kind"] in ("manual", "stuck")] + odd
+        if quiet:
+            parts = []
+            if orphans:
+                parts.append(plural(len(orphans), "orphaned verification worktree"))
+            if stuck:
+                parts.append(plural(len(stuck), "stale verify record"))
+            if manual:
+                parts.append(plural(len(manual), "verification worktree") + " to check by hand")
+            if parts:
+                say(" · ".join(parts))
+            return 3 if orphans or stuck else 0
+        later = " · reclaimed once the running verification (%s) ends" % holder if holder else ""
+        for t in attempts:
+            m, head = t["m"], "  %s · " % self.rel(t["dir"])
+            who = ("run " + m["run"]) if m.get("run", "-") != "-" else "standalone"
+            if t["kind"] == "live":
+                say(head + "%s · running: %s (left alone)" % (who, t["live"]))
+            elif t["kind"] == "orphan":
+                g = t["group"]
+                say(head + "%s · ORPHANED: its verifier (pid %s) and watchdog are gone · %s%s%s" % (
+                    who, m["owner"], "a registered worktree" if t["registered"] else
+                    "no registered worktree (interrupted before or during its add)",
+                    " · its check left %s running (group %s)" % (plural(g[1], "process", "processes"), m["pgid"])
+                    if g and g[0] == "ours" else "", later))
+            else:
+                say(head + "%s%s: left alone — look, then remove it yourself" % (
+                    t["why"], " · a registered worktree" if t["registered"] else ""))
+        for p, why in odd:
+            say("  %s · %s: left alone — look, then remove it yourself" % (self.rel(p), why))
+        for run, att, res in stuck:
+            say("  run %s · verify_status running, but no verification of it is alive and none of it is left: "
+                "stale%s" % (run, later))
+        return 3 if orphans or stuck else 0
+
+    # ---- apply: under the checkout's verify lease, everything rechecked
+
+    def apply(self):
+        os.makedirs(self.a.lock_dir, 0o700, exist_ok=True)
+        fd, holder = lease_try(self.slot, True)
+        if fd is None:
+            say("doctor: left verification worktrees alone: this checkout's verify lease is held (%s); "
+                "run doctor --apply again once that verification ends" % holder)
+            return 0
+        try:
+            os.ftruncate(fd, 0)
+            os.write(fd, rec_text({"pid": os.getpid(), "start": int(time.time()), "cmd": "jarvis doctor --apply",
+                                   "cwd": self.root, "root": self.root, "term": "", "session": "",
+                                   "wrapper": os.getpid()}).encode())
+            attempts, _ = self.survey()
+            for t in attempts:
+                try:
+                    if t["kind"] == "orphan":
+                        self.reclaim(t)
+                finally:
+                    for x in t["fds"]:
+                        os.close(x)
+            for run, att, res in self.stuck_runs(attempts):
+                done = self.mark_stale(run, att)
+                self.mark_result(res)
+                self.audit("verify-stale", run, "-", "attempt=%s" % (att or "-"), "stale" if done else "unchanged")
+                if done:
+                    say("doctor: run %s · verify_status running → stale: no verification of it is alive" % run)
+        finally:
+            os.close(fd)
+        return 0
+
+    def reclaim(self, t):
+        m, where = t["m"], self.rel(t["dir"])
+        done = []
+        g = t["group"]
+        if g and g[0] == "ours":
+            stop_group(m["pgid"], m["pgid_start"], self.a.grace, direct=False)
+            if group_members(int(m["pgid"])):
+                self.audit("verify-orphan", m["run"], m.get("brief", "-"), "attempt=%s pgid=%s" % (t["name"], m["pgid"]),
+                           "check processes didn't stop")
+                say("doctor: left %s: its check's processes (group %s) didn't stop" % (where, m["pgid"]))
+                return
+            done.append("stopped %s of its check" % plural(g[1], "process", "processes"))
+        ok = remove_attempt(self.root, t["dir"], t["tree"], t["admin"], (os.path.join(self.vroot, t["key"]),))
+        if ok and t["tree"] in self.registered():
+            ok = False
+        done.append("removed its worktree" if t["registered"] else "removed its folder")
+        res = os.path.join(self.state, "verify-results", t["name"], "result")
+        if self.mark_result(res, ok):
+            done.append("result marked interrupted")
+        if m["run"] != "-" and self.mark_stale(m["run"], t["name"]):
+            done.append("run %s verify_status stale" % m["run"])
+        self.audit("verify-orphan", m["run"], m.get("brief", "-"), "attempt=%s pgid=%s" % (t["name"], m.get("pgid") or "-"),
+                   "removed" if ok else "cleanup failed")
+        if ok:
+            say("doctor: orphaned verification %s: %s" % (where, "; ".join(done)))
+        else:
+            say("doctor: orphaned verification %s: cleanup FAILED, something is left there or registered "
+                "(git worktree list); %s" % (where, "; ".join(done[:-1]) or "nothing else done"))
+
+    def mark_result(self, res, ok=True):
+        """An attempt's result still at status: running → interrupted."""
+        if not res or os.path.islink(res) or not os.path.isfile(res):
+            return False
+        r = read_rec(res)
+        if r.get("status") != "running":
+            return False
+        now = time.time_ns()
+        r.update(status="interrupted", finished=now // 10 ** 9, ended_ns=now, cleanup="ok" if ok else "failed",
+                 note="the verifier and its watchdog died; jarvis doctor --apply cleaned up")
+        write_atomic(res, rec_text(r))
+        return True
+
+    def mark_stale(self, run, att):
+        """verify_status: running → stale on a run record still naming this attempt."""
+        r = read_rec(os.path.join(self.state, "runs", run))
+        if r.get("verify_status") != "running" or r.get("verify_attempt", "") != att:
+            return False
+        env = {k: v for k, v in os.environ.items() if k != "JARVIS_VERIFY_CONTEXT"}
+        try:
+            return subprocess.run([self.a.runner, "_run-set", "--if", "verify_attempt", att, run,
+                                   "verify_status", "stale", "verify_finished", str(int(time.time()))],
+                                  cwd=self.root, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                  stderr=subprocess.DEVNULL).returncode == 0
+        except OSError:
+            return False
+
+    def audit(self, action, run, brief, target, result):
+        """A line in bin/jarvis's audit format."""
+        line = "%s %s run=%s brief=%s %s result=%s\n" % (time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), action,
+                                                          run or "-", brief or "-", target, result.replace(" ", "_"))
+        with open(os.path.join(self.state, "audit.log"), "a") as f:
+            f.write(line)
 
 
 def ago(s):
@@ -1404,11 +1771,11 @@ def shq(s):
 
 def main():
     ap = argparse.ArgumentParser(prog="jarvis-verify.py")
-    ap.add_argument("op", choices=["run"])
+    ap.add_argument("op", choices=["run", "doctor"])
     ap.add_argument("--root", required=True)
-    ap.add_argument("--handoff", required=True)
+    ap.add_argument("--handoff")
     ap.add_argument("--runner", required=True)
-    ap.add_argument("--bash", required=True)
+    ap.add_argument("--bash")
     ap.add_argument("--max-sec", type=int, default=7200)
     ap.add_argument("--lock-wait", type=int, default=3600)
     ap.add_argument("--grace", type=int, default=10)
@@ -1416,7 +1783,18 @@ def main():
     ap.add_argument("--max-age", type=int, default=7200)
     ap.add_argument("--reuse-env", default="")
     ap.add_argument("--lock-dir", default=os.path.join(os.path.expanduser("~"), ".jarvis", "locks"))
+    ap.add_argument("--apply", action="store_true")
+    ap.add_argument("--quiet", action="store_true")
     a = ap.parse_args()
+    if a.op == "doctor":
+        try:
+            d = Doctor(a)
+            sys.exit(d.apply() if a.apply else d.report(a.quiet))
+        except Fail as e:
+            print("jarvis doctor: %s" % e.msg, file=sys.stderr)
+            sys.exit(2)
+    if not a.handoff or not a.bash:
+        ap.error("run needs --handoff and --bash")
     v = Verify(a)
     for s in SIGCODE:
         signal.signal(s, v.on_signal)

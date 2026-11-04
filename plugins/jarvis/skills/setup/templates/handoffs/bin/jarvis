@@ -58,7 +58,8 @@
 #   jarvis resources [--json]          who holds each lease, who's queued, stored passes
 #   jarvis doctor [--apply | --quiet]  which agent processes, terminals and runs of this checkout
 #                                      are alive and why; --apply ends only the finished and lost
-#                                      ones Jarvis owns, each audited; --quiet: one line or nothing
+#                                      ones Jarvis owns and orphaned verification worktrees, each
+#                                      audited; --quiet: one line or nothing
 #
 # Workers run on a host: Superset, Ultron, tmux, or one added in handoffs/bin/hosts/ (see
 # "hosts" below). The agent in each terminal is any CLI: claude, codex, opencode, or
@@ -1356,9 +1357,10 @@ run_ok() { case "$1" in ""|.|..|*[!A-Za-z0-9_%.-]*) return 1 ;; esac; }
 # don't lose each other's keys. jarvis-verify.py writes through _run-set, the same lock.
 RUN_SET_PL='
 use strict; use warnings; use Fcntl qw(:DEFAULT :flock);
-my ($lk, $f, $ck, $cv, @kv) = @ARGV;
+my ($lk, $f, $need, $ck, $cv, @kv) = @ARGV;
 sysopen(my $l, $lk, O_RDWR | O_CREAT, 0600) or die "jarvis: cannot open $lk: $!\n";
 flock($l, LOCK_EX) or die "jarvis: cannot lock $lk: $!\n";
+exit 4 if $need && !-f $f;
 my @r;
 if (open(my $in, "<", $f)) { @r = <$in>; close $in; chomp @r }
 if (length $ck) { my ($v) = map { substr($_, length($ck) + 2) } grep { index($_, "$ck: ") == 0 } @r; exit 3 if ($v // "") ne $cv }
@@ -1377,18 +1379,18 @@ close $o or die "jarvis: cannot write $tmp: $!\n";
 rename $tmp, $f or do { unlink $tmp; die "jarvis: cannot replace $f: $!\n" };
 '
 
-run_write() { # $1 = run, $2 $3 = write only while key $2 is $3 (else exit 3; "" = always), then <key> <value> pairs
+run_write() { # $1 = run, $2 = 1: only an existing record (else exit 4), $3 $4 = only while key $3 is $4 (else exit 3; "" = always), then <key> <value> pairs
   local lk="$STATE/run-locks"
   [ "$RUNS" = "$STATE/runs" ] || lk="$lk/${RUNS##*/}"
   mkdir -p "$RUNS" "$lk" || return 1
-  perl -e "$RUN_SET_PL" "$lk/$1.write-lock" "$RUNS/$1" "$2" "$3" "${@:4}"
+  perl -e "$RUN_SET_PL" "$lk/$1.write-lock" "$RUNS/$1" "$2" "$3" "$4" "${@:5}"
 }
 
 run_set() { # $1 = run, then <key> <value> pairs
   local run=$1 f tmp
   run_ok "$run" || return 1
   shift
-  if have perl; then run_write "$run" "" "" "$@"; return; fi
+  if have perl; then run_write "$run" 0 "" "" "$@"; return; fi
   [ -n "${RUN_SET_WARNED:-}" ] || echo "jarvis: no perl here, so run records are written without their lock; an update made at the same moment can be lost" >&2
   RUN_SET_WARNED=1
   mkdir -p "$RUNS" && tmp=$(mktemp "$RUNS/.tmp.XXXXXX") || return 1
@@ -1412,10 +1414,10 @@ cmd_run_set() { # merge --verify's record writes: _run-set [--if <key> <value>] 
   local ck="" cv="" run
   if [ "${1:-}" = --if ]; then ck=${2:-}; cv=${3:-}; shift 3 || exit 2; fi
   run=${1:-}
-  run_ok "$run" && [ -f "$RUNS/$run" ] || exit 4
+  run_ok "$run" || exit 4
   have perl || { echo "jarvis _run-set: needs perl for the record's lock" >&2; exit 2; }
   shift
-  run_write "$run" "$ck" "$cv" "$@"
+  run_write "$run" 1 "$ck" "$cv" "$@" # 1: whether the record exists is asked under its lock
 }
 
 runs_of() { # $1 = brief, $2 = only runs in this state: the runs spawned from that brief, oldest first
@@ -1836,7 +1838,8 @@ cmd_close() { # a worker given up on; a merged one is closed by merge
 # Read-only. --apply acts only on what Jarvis positively owns and has finished: a
 # merged/closed run's open terminal (stop_run), a finished worker's verified agent
 # whose terminal is gone (TERM, then KILL), a running run whose terminal is gone and
-# that has no agent (marked lost). A busy agent, a session that isn't a worker's and
+# that has no agent (marked lost), an orphaned merge --verify worktree (doc_verify).
+# A busy agent, a session that isn't a worker's and
 # a terminal nobody recorded are reported, never touched. Each action is printed and
 # audited. `status` (and so `start`) prints the --quiet line: the reconciliation
 # after Jarvis crashes or restarts.
@@ -1942,8 +1945,22 @@ doc_locks() { # the held and queued leases of this checkout's classes and the ma
 
 doc_brief() { if [ "$1" = - ]; then echo "?"; else basename "$1" .md; fi; } # $1 = brief path or -
 
+# merge --verify's worktrees a verifier killed along with its watchdog left behind, and run
+# records stuck at verify_status: running; jarvis-verify.py doctor has the rules. No host needed.
+doc_verify() { # $1 = "" (report; exits 3 when --apply has work) | --quiet | --apply
+  local d
+  [ -d "$STATE/verify" ] || grep -qsx 'verify_status: running' "$RUNS"/* \
+    || git worktree list --porcelain 2>/dev/null | grep -qF "/$STATE/verify/" || return 0
+  have python3 || { [ "$1" = --quiet ] || echo "  not checked: no python3 on PATH"; return 0; }
+  d=$(dirname "$0")
+  case "$d" in /*) ;; *) d="$JARVIS_CALLER_PWD/$d" ;; esac
+  [ -f "$d/jarvis-verify.py" ] || { [ "$1" = --quiet ] || echo "  not checked: no $d/jarvis-verify.py — re-run jarvis:setup"; return 0; }
+  python3 -I "$d/jarvis-verify.py" doctor --root "$ROOT" --runner "$d/$(basename "$0")" \
+    --lock-dir "${JARVIS_LOCK_DIR:-$HOME/.jarvis/locks}" --grace "$JARVIS_STOP_GRACE" ${1:+"$1"}
+}
+
 cmd_doctor() {
-  local apply=0 quiet=0 jt open="" listed=0 procs terms="" lost="" titles="" anc n1 n2 n3 out
+  local apply=0 quiet=0 jt open="" listed=0 procs terms="" lost="" titles="" anc n1 n2 n3 out nv=0
   local pid ps sid st class run brief term id r s
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -1966,8 +1983,9 @@ cmd_doctor() {
   n3=$(printf '%s\n' "$lost" | awk 'NF' | wc -l | tr -d ' ')
 
   if [ $quiet = 1 ]; then
-    [ $((n1 + n2 + n3)) -gt 0 ] || return 0
-    out=""
+    out=$(doc_verify --quiet)
+    [ $((n1 + n2 + n3)) -gt 0 ] || [ -n "$out" ] || return 0
+    [ -n "$out" ] && out=" · $out"
     [ "$n1" -gt 0 ] && out="$out · $n1 finished worker$([ "$n1" = 1 ] || echo s) still running"
     [ "$n2" -gt 0 ] && out="$out · $n2 finished terminal$([ "$n2" = 1 ] || echo s) open"
     [ "$n3" -gt 0 ] && out="$out · $n3 lost run$([ "$n3" = 1 ] || echo s)"
@@ -2031,10 +2049,12 @@ cmd_doctor() {
   echo "leftovers:"; if [ -n "$out" ]; then printf '%s\n' "$out" | sed 's/^/  /'; else echo "  none"; fi
   out=$(doc_locks)
   echo "locks:"; if [ -n "$out" ]; then printf '%s\n' "$out"; else echo "  none held or queued here or machine-wide"; fi
+  out=$(doc_verify); nv=$?
+  echo "verification worktrees:"; if [ -n "$out" ]; then printf '%s\n' "$out"; else echo "  none"; fi
   fable_status | grep -v 'blocked (backstop on)'
 
   if [ $apply = 0 ]; then
-    [ $((n1 + n2 + n3)) -gt 0 ] && echo "act on the FINISHED and lost ones (nothing else is touched): handoffs/bin/jarvis doctor --apply"
+    { [ $((n1 + n2 + n3)) -gt 0 ] || [ $nv = 3 ]; } && echo "act on the FINISHED, lost and ORPHANED ones (nothing else is touched): handoffs/bin/jarvis doctor --apply"
     return 0
   fi
 
@@ -2071,6 +2091,8 @@ cmd_doctor() {
     audit lost "$r" "${brief:--}" "terminal=$r" "marked lost"
     echo "doctor: marked run $(short "$r") lost ($(doc_brief "${brief:--}")): its terminal is gone and no agent of it is alive"
   done
+  # 4. an orphaned verification: rechecked under the checkout's verify lease, then removed
+  doc_verify --apply </dev/null
 }
 
 # ---------------------------------------------------------------- budgets
@@ -3461,6 +3483,7 @@ cmd_lock() {
 lock_class() { # $1 = class: sets the caller's spec, scope and cap from jarvis.conf, else exits 2
   local extra
   case "$1" in ""|*[!a-z0-9_]*) lock_die "class names are a-z, 0-9 and _, not '$1'" ;; esac
+  [ "$1" = verify ] && lock_die "'verify' is merge --verify's own lease (one verification per checkout); give your class another name"
   class=$1
   spec=$(lock_spec "$class")
   [ -n "$spec" ] || lock_die "no lock class '$class'. Add one to $H/jarvis.conf, e.g. JARVIS_LOCK_$class=\"host 1\" (host = machine-wide, checkout = this checkout only; then how many at once)"
