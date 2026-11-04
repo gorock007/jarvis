@@ -1605,7 +1605,7 @@ class Doctor:
             if r.get("verify_status") != "running" or att in names:
                 continue
             res = ""
-            if re.match(r"^[A-Za-z0-9_.-]+$", att):
+            if re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9_.-]*", att):   # never . or ..
                 res = os.path.join(self.state, "verify-results", att, "result")
             rr = read_rec(res) if res else {}
             if same_proc(rr.get("owner"), rr.get("owner_start")):

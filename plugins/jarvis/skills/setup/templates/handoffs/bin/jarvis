@@ -83,6 +83,13 @@ if [ "${1:-} ${2:-}" = "hook pretool" ]; then
   esac
 fi
 
+# spawn's leased part says it started, first thing, so spawn_leased tells its exit (its
+# own message already printed) from a lease that was never taken
+if [ "${1:-}" = _spawn ] && [ -n "${JARVIS_SPAWN_RAN:-}" ]; then
+  echo ran > "$JARVIS_SPAWN_RAN" 2>/dev/null
+  unset JARVIS_SPAWN_RAN
+fi
+
 ROOT=$(git rev-parse --show-toplevel 2>/dev/null) || ROOT="${CLAUDE_PROJECT_DIR:-$PWD}"
 JARVIS_CALLER_PWD=$PWD   # `lock` runs its command where it was called from
 # In `merge --verify`'s worktree a lock is the original checkout's lease, not the
@@ -1025,15 +1032,21 @@ cmd_spawn() {
 # `jarvis _spawn` in a child of the lease helper, which alone holds the lease, so
 # nothing the host starts (a terminal server, a daemon) inherits it.
 spawn_leased() { # $@ = spawn_go's arguments
-  local pl dir="${JARVIS_LOCK_DIR:-$JHOME/locks}" rc=0
+  local pl dir="${JARVIS_LOCK_DIR:-$JHOME/locks}" rc=0 ran
   if have perl && pl=$(lock_pl 2>/dev/null); then
-    JARVIS_SPAWN_LEASE="$ROOTP" JARVIS_LOCK_NOINHERIT=1 JARVIS_CALLER_PWD="$JARVIS_CALLER_PWD" JARVIS_LOCK_DIR="$dir" \
-      JARVIS_LOCK_POLL="${JARVIS_LOCK_POLL:-0.2}" \
+    ran=$(mktemp "${TMPDIR:-/tmp}/jarvis-spawn.XXXXXX") || die "can't write a temporary file: spawn refused"
+    JARVIS_SPAWN_RAN="$ran" JARVIS_SPAWN_LEASE="$ROOTP" JARVIS_LOCK_NOINHERIT=1 JARVIS_CALLER_PWD="$JARVIS_CALLER_PWD" \
+      JARVIS_LOCK_DIR="$dir" JARVIS_LOCK_POLL="${JARVIS_LOCK_POLL:-0.2}" \
       perl "$pl" run spawn checkout 1 "$ROOT" "${JARVIS_SPAWN_WAIT:-120}" 0 "$0" _spawn "$@" || rc=$?
+    if [ -s "$ran" ] || [ $rc -le 1 ]; then # the leased part ran: its exit, its own message
+      rm -f "$ran"
+      [ $rc -lt 128 ] || echo "jarvis spawn: interrupted (exit $rc)" >&2
+      exit $rc
+    fi
+    rm -f "$ran"
     case $rc in
-      0|1) exit $rc ;; # the leased part's own: spawned, or refused and explained
       75) die "another spawn in this checkout has held its spawn lease for ${JARVIS_SPAWN_WAIT:-120}s: try again (jarvis resources shows who)" ;;
-      *) die "can't take the spawn lease of this checkout in $dir, or the spawn under it was interrupted (exit $rc): spawn refused" ;;
+      *) die "can't take the spawn lease of this checkout in $dir (exit $rc): spawn refused" ;;
     esac
   fi
   if [ "$JARVIS_OVERLAP" = refuse ]; then
@@ -1046,14 +1059,15 @@ spawn_leased() { # $@ = spawn_go's arguments
 
 # "<terminal>\t<brief>" for each running worker: the registry's running runs, then the
 # OPEN.md lines no record covers (spawned before the registry). A record in any other
-# state is a finished worker, whatever OPEN.md still says.
+# state is a finished worker, whatever OPEN.md still says. One with no brief is listed
+# with an empty one: jarvis-scope.py counts its scope as unknown.
 overlap_running() {
   local f t b
   for f in "$RUNS"/*; do
     [ -f "$f" ] && [ "$(rec_get "$f" state)" = running ] && printf '%s\t%s\n' "${f##*/}" "$(rec_get "$f" brief)"
   done
   running_lines | awk -F' · ' '{t = $3; sub(/^term /, "", t); print t "\t" $4}' | while IFS="$TAB" read -r t b; do
-    [ -n "$b" ] || continue
+    [ -n "$t$b" ] || continue
     run_ok "$t" && [ -f "$RUNS/$t" ] && continue
     printf '%s\t%s\n' "$t" "$b"
   done

@@ -3,14 +3,15 @@
 # bin/jarvis spawn calls this inside the checkout's spawn lease; nothing else should.
 #
 #   python3 -I jarvis-scope.py overlap <root> <new brief>
-#       stdin: "<terminal>\t<brief>" for each running worker
+#       stdin: "<terminal>\t<brief>" for each running worker (no brief: its scope is unknown)
 #       stdout: one line per conflicting brief; exit 0 = none, 1 = some, 2 = usage, 3 = a bug
 #
 # A scope is the brief's one "- May touch:" row under its one "## Scope" section:
 # comma-separated paths, each bare or in backticks (a backticked one may hold spaces),
 # each optionally followed by a "(note)". "none" alone is the empty scope. A trailing /
 # is a directory, existing or not; a bare path is a file unless it is an existing
-# directory. Globs: * ? and [classes] within a component, ** as a whole component.
+# directory, or a proper prefix of another entry's path. Globs: * ? and [classes] within
+# a component ([^..] negates like [!..]), ** as a whole component.
 # Anything else (braces, extglobs, $, negation, prose around a path, absolute or ..
 # paths, a symlink out of the checkout) makes the scope unknown, never empty: spawn
 # treats unknown as overlapping. This is a collision warning, not a permission check:
@@ -86,7 +87,7 @@ def parse_path(text, root):
         if c == "..":
             raise Unknown("'%s' climbs out with .." % text)
         check_component(c, text)
-        comps.append(c)
+        comps.append(c.replace("[^", "[!"))   # fnmatch reads [^..] as a literal ^; the shell negates
     if not comps:   # "./": the whole checkout
         directory = True
     return Entry(text, comps, directory, root)
@@ -198,8 +199,8 @@ def under(a, b):   # path a is b or below it
 
 def compare(a, ad, ag, b, bd, bg):
     """None, "possible" or "overlap" for one variant of each entry."""
-    if not ag and not bg:
-        if a == b or (ad and under(b, a)) or (bd and under(a, b)):
+    if not ag and not bg:   # a path under the other's makes that one a folder, on disk or not
+        if under(b, a) or under(a, b):
             return "overlap"
         return None
     if ag and bg:   # two globs: disjoint fixed prefixes prove disjoint; else maybe
@@ -209,8 +210,10 @@ def compare(a, ad, ag, b, bd, bg):
         a, ad, b, bd = b, bd, a, ad   # a literal, b the glob
     if len(b) in states(a, b):
         return "overlap"   # the glob names the literal path itself
-    if ad and states(a, b):
-        # it names something under the directory: certainly so when all it can name is there
+    prefix = len(b) > len(a) and "**" not in b[:len(a)] and all(map(fnmatchcase, a, b))
+    if (ad or prefix) and states(a, b):
+        # it names something under the directory (a bare path the glob's own path runs through
+        # is one): certainly so when all it can name is there
         return "overlap" if under(fixed_of(b), a) else "possible"
     if any(len(b) in states(a[:k], b) for k in range(len(a))):
         return "overlap" if bd else "possible"   # it names a folder above the literal path
@@ -256,18 +259,23 @@ def rel(path, root):
 
 
 def overlap(root, new):
-    running = {}
+    running, blank = {}, []
     for line in sys.stdin.read().splitlines():
         if not line.strip():
             continue
         term, _, brief = line.partition("\t")
-        if not brief:
+        if not brief.strip():
+            blank.append(term.strip())
             continue
         running.setdefault(key_of(brief, root), (brief, []))[1].append(term)
-    if not running:
+    if not running and not blank:
         return 0
     out = []
     nk, nshow = key_of(new, root), rel(new, root)
+    for term in dict.fromkeys(blank):
+        out.append("unknown overlap: running term %s has no brief on record, so its scope can't be read — "
+                   "treat it as overlapping %s: queue %s under To-do until it is handed off, or close it "
+                   "(handoffs/bin/jarvis close %s)." % (term, nshow, nshow, term))
     if nk in running:
         terms = running.pop(nk)[1]
         out.append("overlap: %s is already running (term %s) — close that worker first "
@@ -276,11 +284,12 @@ def overlap(root, new):
     try:
         mine = scope_of(new, root)
     except Unknown as e:
-        if running:
+        if running or blank:
             out.append("unknown overlap: %s's scope can't be read (%s), so it can't be compared with "
                        "running %s — give it a '- May touch:' row of paths, or queue it under To-do "
                        "until they are handed off."
-                       % (nshow, e, shown(rel(b, root) for b, _ in running.values())))
+                       % (nshow, e, shown([rel(b, root) for b, _ in running.values()]
+                                          + ["term %s" % t for t in dict.fromkeys(blank)])))
         if out:
             print("\n".join(out))
         return 1 if out else 0

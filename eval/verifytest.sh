@@ -577,7 +577,13 @@ out=$(D); printf '%s' "$out" | grep -q '^  run term-Z · verify_status running, 
 check "a run record stuck at verify_status: running is reported" $?
 D --apply >/dev/null; [ "$(sed -n 's/^verify_status: //p' handoffs/.jarvis/runs/term-Z)" = stale ] && grep -q 'verify-stale run=term-Z .* result=stale$' handoffs/.jarvis/audit.log
 check "…and --apply marks it stale" $?
-rm handoffs/.jarvis/runs/term-Z
+lst=$(TZ=UTC LC_ALL=C ps -o lstart= -p $$ | awk '{print $1 "_" $2 "_" $3 "_" $4 "_" $5}'); mkdir -p handoffs/.jarvis/verify-results
+printf 'owner: %s\nowner_start: %s\n' $$ "$lst" | tee handoffs/.jarvis/result handoffs/.jarvis/verify-results/result >/dev/null
+nok=0; for a in .. .; do   # a live owner in the result these would name mustn't hide the record
+  printf 'run: term-Z\nbrief: handoffs/briefs/bZ.md\nstate: running\nverify_status: running\nverify_attempt: %s\n' "$a" > handoffs/.jarvis/runs/term-Z
+  D | grep -q '^  run term-Z · verify_status running, but no verification of it is alive' || nok=1
+done; check "an attempt named .. or . is no attempt: its record is still stale" $nok
+rm handoffs/.jarvis/runs/term-Z handoffs/.jarvis/result handoffs/.jarvis/verify-results/result
 git worktree add -q --detach handoffs/.jarvis/verify/standalone-x/manual/tree HEAD
 out=$(D --apply)
 printf '%s' "$out" | grep -q '^  handoffs/.jarvis/verify/standalone-x/manual · no ownership manifest · a registered worktree: left alone' \

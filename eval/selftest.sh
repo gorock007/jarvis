@@ -819,6 +819,14 @@ if command -v jq >/dev/null 2>&1 && command -v perl >/dev/null 2>&1 && command -
     out=$($J spawn handoffs/briefs/ovn.md 2>&1); rc=$?; quiet; check "merged, closed and lost runs are ignored (OPEN.md lines too)" $?
     fresh; mkb ovn 'src/'; mkb ovr 'src/'; running r1 ovr; rm -f handoffs/.jarvis/runs/r1
     out=$($J spawn handoffs/briefs/ovn.md 2>&1); rc=$?; said 'overlap: .*with running handoffs/briefs/ovr.md'; check "a legacy OPEN.md line with no record counts" $?
+    pair 'src/x.ts' 'src/[^x]*.ts'; quiet && pair 'src/y.ts' 'src/[^x]*.ts' && said 'overlap: ' && pair 'src/x.ts' 'src/[!x]*.ts' && quiet
+    check "a [^..] class negates like [!..]" $?
+    pair 'src/new' 'src/new/deep.ts'; said 'overlap: .*\[src/new\] with running .*\[src/new/deep.ts\]' && pair 'src/new/deep.ts' 'src/new' && said 'overlap: ' \
+      && pair 'src/new' 'src/new/*.ts' && said 'overlap: '; check "a bare path the other entry's path runs through is a folder, not yet on disk or not" $?
+    pair 'src/new' 'src/newer/x.ts'; quiet && pair 'docs/x.md' '**/*.ts' && quiet; check "…but not across a / boundary, nor for a ** glob" $?
+    fresh; mkb ovn 'src/'; mkdir -p handoffs/.jarvis/runs; printf 'run: r9\nagent: opencode\nstate: running\n' > handoffs/.jarvis/runs/r9
+    out=$($J spawn handoffs/briefs/ovn.md 2>&1); rc=$?
+    said 'unknown overlap: running term r9 has no brief on record' && grep -q 'agents create' "$FAKE_LOG"; check "a running record with no brief: unknown, not dropped" $?
 
     conf refuse
     prep 'src/' 'src/a/x.ts'; o=$(cksum < handoffs/OPEN.md); b=$(cksum < handoffs/briefs/ovn.md); runs=$(ls handoffs/.jarvis/runs)
@@ -829,6 +837,10 @@ if command -v jq >/dev/null 2>&1 && command -v perl >/dev/null 2>&1 && command -
       && [ "$(ls handoffs/.jarvis/runs)" = "$runs" ]; check "…before any launch, started: line, OPEN.md or run-record change" $?
     $J spawn handoffs/briefs/ovn.md --force >/dev/null 2>&1; [ $? = 1 ] && ! grep -q 'agents create' "$FAKE_LOG"; check "…and --force doesn't pass it" $?
     pair 'src/' 'docs/'; [ $rc = 0 ] && grep -q 'agents create' "$FAKE_LOG"; check "refuse: disjoint scopes still spawn" $?
+    fresh; mkb ovn 'src/'; mkdir -p handoffs/.jarvis/runs; printf 'run: r9\nbrief: \nstate: running\n' > handoffs/.jarvis/runs/r9
+    out=$($J spawn handoffs/briefs/ovn.md 2>&1); rc=$?
+    [ $rc = 1 ] && printf '%s' "$out" | grep -q 'refused (JARVIS_OVERLAP=refuse): unknown overlap: running term r9' && ! grep -q 'agents create' "$FAKE_LOG"
+    check "refuse: a running record with an empty brief → refused" $?
     conf bogus; out=$($J spawn handoffs/briefs/ovn.md 2>&1); [ $? = 2 ] && printf '%s' "$out" | grep -q "JARVIS_OVERLAP='bogus'"; check "an invalid JARVIS_OVERLAP exits 2" $?
 
     conf ""; mv handoffs/bin/jarvis-scope.py "$tmp/scope.keep"
@@ -862,6 +874,17 @@ if command -v jq >/dev/null 2>&1 && command -v perl >/dev/null 2>&1 && command -
     JARVIS_SPAWN_WAIT=3 $J spawn handoffs/briefs/ovm.md >/dev/null 2>&1; check "a process the host leaves running doesn't hold the spawn lease" $?
     [ -s "$bgp" ] && kill "$(cat "$bgp")" 2>/dev/null
     $J lock spawn -- true >/dev/null 2>&1; [ $? = 2 ]; check "lock class 'spawn' is reserved" $?
+    # the leased part's own exit (the conf line runs only in it) vs a lease never taken
+    fresh; mkb ovn 'docs/'; cp handoffs/jarvis.conf "$tmp/conf.ov"; nok=0
+    for c in 2 7; do
+      cp "$tmp/conf.ov" handoffs/jarvis.conf; echo "[ -z \"\${JARVIS_SPAWN_LEASE:-}\" ] || { echo 'leased part: no' >&2; exit $c; }" >> handoffs/jarvis.conf
+      out=$($J spawn handoffs/briefs/ovn.md 2>&1); rc=$?
+      [ $rc = $c ] && printf '%s' "$out" | grep -qx 'leased part: no' && ! printf '%s' "$out" | grep -q 'spawn lease' || nok=1
+    done; check "the leased part exiting 2 or more: its message and code, no lease error" $nok
+    cp "$tmp/conf.ov" handoffs/jarvis.conf
+    out=$(JARVIS_LOCK_DIR=/dev/null/locks $J spawn handoffs/briefs/ovn.md 2>&1); rc=$?
+    [ $rc = 1 ] && printf '%s' "$out" | grep -q "can't take the spawn lease of this checkout in /dev/null/locks (exit [0-9]*): spawn refused" && ! grep -q 'agents create' "$FAKE_LOG"
+    check "…a lease that can't be taken still says so" $?
   ) | tee "$tmp/ov.out"
   n=$(grep -c '^  FAIL' "$tmp/ov.out"); fails=$((fails + n))
 else
@@ -967,6 +990,10 @@ if [ -n "$ub" ] && command -v jq >/dev/null 2>&1; then
 else
   echo "ultron host: skipped (no ultron binary: put it on PATH or set ULTRON_BIN; jq needed too)"
 fi
+
+echo "brief template"
+body=$(awk '/^```bash verify/ {on = 1; next} on && /^```/ {exit} on' "$here/../plugins/jarvis/skills/setup/templates/handoffs/briefs/TEMPLATE.md")
+printf '%s\n' "$body" | grep -qx '<.*>' && ! "$BASH" -n -c "$body" 2>/dev/null; check "its verify block is a placeholder bash won't run" $?
 
 echo "jarvis lock (eval/locktest.sh)"; "$BASH" "$here/locktest.sh" 2>&1 | tee "$tmp/lock.out"; grep -q '^locktest: all passed' "$tmp/lock.out" || { n=$(grep -c '^  FAIL' "$tmp/lock.out"); fails=$((fails + (n > 0 ? n : 1))); }
 echo "merge --verify (eval/verifytest.sh)"; "$BASH" "$here/verifytest.sh" 2>&1 | tee "$tmp/verify.out"; grep -q '^verifytest: all passed' "$tmp/verify.out" || { n=$(grep -c '^  FAIL' "$tmp/verify.out"); fails=$((fails + (n > 0 ? n : 1))); }

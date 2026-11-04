@@ -29,7 +29,7 @@ A heavy suite (Docker, e2e, full) only through its wrapped script or
 Each command `jarvis merge --check --verify` should run goes in a block of its own:>
 
 ```bash verify class=light timeout=300
-bash -n src/tool.sh
+<command that proves done>
 ```
 
 ## Questions first
