@@ -8,7 +8,9 @@
 #                                      lint, enforce the band and the Claude caps (machine-wide,
 #                                      this checkout, Opus; --force passes them, never Fable),
 #                                      a respawn gate (a brief that blew its budget or used its
-#                                      attempts needs --after its handoff), spawn, record
+#                                      attempts needs --after its handoff), the scope check (a
+#                                      running worker whose May-touch scope meets this one's:
+#                                      JARVIS_OVERLAP=warn | refuse), spawn, record
 #   jarvis sessions                    the Claude sessions counting toward the caps, machine-wide,
 #                                      and the ones idle for hours you may want to close
 #   jarvis read <terminal> [<lines>]   the bottom of a worker's screen
@@ -144,6 +146,7 @@ JARVIS_BUDGET_TESTS=6    # its failed test runs
 JARVIS_BUDGET_ATTEMPTS=2 # runs per brief before a respawn needs --after
 JARVIS_BUDGET_SEC=300    # the watcher reads a worker's transcript at most this often
 JARVIS_BUDGET_GRACE_MIN=10  # after the ask, minutes without a handoff before Escape
+JARVIS_OVERLAP=warn      # a running worker's May-touch scope meets the new brief's: warn and spawn, or refuse (--force doesn't pass it)
 JARVIS_PUSH=1
 JARVIS_REAP=1            # merge stops what the closed worker left running (0 = only list it)
 JARVIS_STOP_GRACE=10     # seconds merge/close wait for a closed worker's terminal and agent to go
@@ -943,7 +946,7 @@ codex_trust() {
 }
 
 cmd_spawn() {
-  local brief="" after="" force=0 atts="" worker model effort tier canon prompt name id b ifs old spawned
+  local brief="" after="" force=0 atts="" worker model effort tier canon prompt name b ifs
   while [ $# -gt 0 ]; do
     case "$1" in
       --after) after="${2:-}"; shift 2 ;;
@@ -953,6 +956,9 @@ cmd_spawn() {
       *) brief="$1"; shift ;;
     esac
   done
+  case "$JARVIS_OVERLAP" in warn|refuse) ;; *)
+    echo "jarvis spawn: JARVIS_OVERLAP='$JARVIS_OVERLAP' in $H/jarvis.conf must be warn or refuse (nothing spawned)" >&2; exit 2 ;;
+  esac
   [ -f "$brief" ] || die "usage: jarvis spawn <handoffs/briefs/file.md> [--after <partial handoff>] [--attach <file>]... [--force]"
   have jq || die "jq is needed to read the spawn result"
   need_host
@@ -994,8 +1000,6 @@ cmd_spawn() {
   # a brief that blew its budget or used its attempts waits until Jarvis has read why
   budget_gate "$brief" "$after" "$force"
 
-  [ "$worker" = codex ] && codex_trust
-
   prompt="You are a Jarvis worker. Read AGENTS.md, then do the task in $brief."
   [ -n "$after" ] && prompt="$prompt $after records what is already done — start from there."
   [ "$worker" = opencode ] && prompt="$prompt Touch only the files it lists. Never run git commands that change state."
@@ -1012,6 +1016,78 @@ cmd_spawn() {
   set -- $atts
   set +f
   IFS=$ifs
+  spawn_leased "$brief" "$worker" "$model" "$effort" "$canon" "$force" "$name" "$prompt" "$@"
+}
+
+# The scope check, the launch and the record, one spawn at a time per checkout: under
+# this checkout's spawn lease (jarvis-lock.pl, class spawn, checkout scope), taken
+# before the machine-wide one spawn_claim takes for the caps. The leased part runs as
+# `jarvis _spawn` in a child of the lease helper, which alone holds the lease, so
+# nothing the host starts (a terminal server, a daemon) inherits it.
+spawn_leased() { # $@ = spawn_go's arguments
+  local pl dir="${JARVIS_LOCK_DIR:-$JHOME/locks}" rc=0
+  if have perl && pl=$(lock_pl 2>/dev/null); then
+    JARVIS_SPAWN_LEASE="$ROOTP" JARVIS_LOCK_NOINHERIT=1 JARVIS_CALLER_PWD="$JARVIS_CALLER_PWD" JARVIS_LOCK_DIR="$dir" \
+      JARVIS_LOCK_POLL="${JARVIS_LOCK_POLL:-0.2}" \
+      perl "$pl" run spawn checkout 1 "$ROOT" "${JARVIS_SPAWN_WAIT:-120}" 0 "$0" _spawn "$@" || rc=$?
+    case $rc in
+      0|1) exit $rc ;; # the leased part's own: spawned, or refused and explained
+      75) die "another spawn in this checkout has held its spawn lease for ${JARVIS_SPAWN_WAIT:-120}s: try again (jarvis resources shows who)" ;;
+      *) die "can't take the spawn lease of this checkout in $dir, or the spawn under it was interrupted (exit $rc): spawn refused" ;;
+    esac
+  fi
+  if [ "$JARVIS_OVERLAP" = refuse ]; then
+    echo "jarvis spawn: refused (JARVIS_OVERLAP=refuse): no perl or $BIN/jarvis-lock.pl here, so this checkout's spawn lease can't be taken and the overlap check isn't atomic" >&2
+    exit 1
+  fi
+  echo "jarvis spawn: no perl or $BIN/jarvis-lock.pl here: overlap check not atomic (a spawn at the same moment can pass it too)" >&2
+  spawn_go "$@"
+}
+
+# "<terminal>\t<brief>" for each running worker: the registry's running runs, then the
+# OPEN.md lines no record covers (spawned before the registry). A record in any other
+# state is a finished worker, whatever OPEN.md still says.
+overlap_running() {
+  local f t b
+  for f in "$RUNS"/*; do
+    [ -f "$f" ] && [ "$(rec_get "$f" state)" = running ] && printf '%s\t%s\n' "${f##*/}" "$(rec_get "$f" brief)"
+  done
+  running_lines | awk -F' · ' '{t = $3; sub(/^term /, "", t); print t "\t" $4}' | while IFS="$TAB" read -r t b; do
+    [ -n "$b" ] || continue
+    run_ok "$t" && [ -f "$RUNS/$t" ] && continue
+    printf '%s\t%s\n' "$t" "$b"
+  done
+}
+
+spawn_overlap() { # $1 = brief: print where its May-touch scope meets a running worker's; refuse on it with JARVIS_OVERLAP=refuse
+  local running out="" rc=0 why="" d
+  running=$(overlap_running)
+  [ -n "$running" ] || return 0
+  d=$(dirname "$0")
+  case "$d" in /*) ;; *) d="$JARVIS_CALLER_PWD/$d" ;; esac
+  if ! have python3; then why="no python3 on PATH"
+  elif [ ! -f "$d/jarvis-scope.py" ]; then why="no $BIN/jarvis-scope.py (re-run jarvis:setup)"
+  else
+    out=$(printf '%s\n' "$running" | python3 -I "$d/jarvis-scope.py" overlap "$ROOTP" "$1") || rc=$?
+    case "$rc" in
+      0) return 0 ;;
+      1) [ -n "$out" ] || why="jarvis-scope.py found a conflict it didn't name" ;;
+      *) why="jarvis-scope.py failed (exit $rc)" ;;
+    esac
+  fi
+  [ -z "$why" ] || out="unknown overlap: $why, so $1's scope wasn't compared with the $(printf '%s\n' "$running" | grep -c .) running worker(s)' — queue it under To-do until they are handed off, or fix the install"
+  if [ "$JARVIS_OVERLAP" = refuse ]; then
+    printf '%s\n' "$out" | sed 's/^/jarvis spawn: refused (JARVIS_OVERLAP=refuse): /' >&2
+    exit 1
+  fi
+  printf '%s\n' "$out" | sed 's/^/jarvis spawn: /' >&2
+  [ -z "$why" ] || echo "jarvis spawn: spawning anyway (JARVIS_OVERLAP=warn)" >&2
+}
+
+spawn_go() { # $1 brief, $2 worker, $3 model, $4 effort, $5 canon, $6 force, $7 name, $8 prompt, then the attachments
+  local brief=$1 worker=$2 model=$3 effort=$4 canon=$5 force=$6 name=$7 prompt=$8 id old spawned
+  shift 8
+  spawn_overlap "$brief"
   old=$(runs_of "$brief" running | tr '\n' ' ' | sed 's/ $//')
   # the caps: counted, checked and the slot taken under the machine-wide spawn lease;
   # a launch that fails gives the slot back
@@ -1020,6 +1096,7 @@ cmd_spawn() {
     spawn_claim "$canon" "$force" "$brief" "$SPAWN_PENDING" || exit $?
     trap 'rm -f "$SPAWN_PENDING"' EXIT
   fi
+  [ "$worker" = codex ] && codex_trust
   # used up here, last thing before the launch: a failed launch needs a new `fable allow`
   [ "$canon" = fable ] && fable_consume "$brief" "$name"
   # taken before the host starts the agent, so the agent's own start time is never earlier
@@ -3484,6 +3561,7 @@ lock_class() { # $1 = class: sets the caller's spec, scope and cap from jarvis.c
   local extra
   case "$1" in ""|*[!a-z0-9_]*) lock_die "class names are a-z, 0-9 and _, not '$1'" ;; esac
   [ "$1" = verify ] && lock_die "'verify' is merge --verify's own lease (one verification per checkout); give your class another name"
+  [ "$1" = spawn ] && lock_die "'spawn' is jarvis spawn's own lease (one spawn at a time per checkout, and machine-wide for the caps); give your class another name"
   class=$1
   spec=$(lock_spec "$class")
   [ -n "$spec" ] || lock_die "no lock class '$class'. Add one to $H/jarvis.conf, e.g. JARVIS_LOCK_$class=\"host 1\" (host = machine-wide, checkout = this checkout only; then how many at once)"
@@ -3515,6 +3593,10 @@ case "$cmd" in
   _claim) cap_claim "$@" ;; # spawn's cap check, run by jarvis-lock.pl under the spawn lease
   band) cmd_band ;;
   spawn) cmd_spawn "$@" ;;
+  _spawn) # spawn's leased part, run by jarvis-lock.pl under this checkout's spawn lease
+    [ "${JARVIS_SPAWN_LEASE:-}" = "$ROOTP" ] || die "_spawn is jarvis spawn's own; use jarvis spawn"
+    unset JARVIS_SPAWN_LEASE
+    spawn_go "$@" ;;
   read) cmd_read "$@" ;;
   send) cmd_send "$@" ;;
   close) cmd_close "$@" ;;

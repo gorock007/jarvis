@@ -16,6 +16,9 @@
 # lease lasts as long as any process of the run. If this wrapper is SIGKILLed, the
 # command and its children keep the lease until the last of them exits. That is on
 # purpose: they are still using the resource. Kill the process group to free it.
+# $JARVIS_LOCK_NOINHERIT=1 (jarvis spawn's own lease) keeps the descriptor out of the
+# command: the lease is this wrapper's alone and ends with it, so a terminal server or
+# daemon the command starts never holds it.
 #
 # Waiters queue FIFO. Each holds a flock on its own ticket, <key>.q/<epoch-ns>.<pid>,
 # for as long as it waits, and tries the slots only when fewer than <capacity> live
@@ -291,9 +294,11 @@ sub cmd_run {
   my $pid = fork;
   fail "can't fork: $!" unless defined $pid;
   if (!$pid) {
-    my $fl = fcntl($slot, F_GETFD, 0) // 0;
-    fcntl($slot, F_SETFD, $fl & ~FD_CLOEXEC); # the command and its children hold the lease
-    $ENV{JARVIS_LOCKS_HELD} = join ':', grep { length } ($ENV{JARVIS_LOCKS_HELD} // ''), $key;
+    if (!delete $ENV{JARVIS_LOCK_NOINHERIT}) {
+      my $fl = fcntl($slot, F_GETFD, 0) // 0;
+      fcntl($slot, F_SETFD, $fl & ~FD_CLOEXEC); # the command and its children hold the lease
+      $ENV{JARVIS_LOCKS_HELD} = join ':', grep { length } ($ENV{JARVIS_LOCKS_HELD} // ''), $key;
+    }
     run_here($caller, @argv);
   }
   $rec{pid} = $pid;

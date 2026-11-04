@@ -87,7 +87,9 @@ if command -v jq >/dev/null 2>&1; then
 #!/bin/bash
 echo "superset $*" >> "$FAKE_LOG"
 case "$1 $2" in
-  "agents create") n=$(( $(cat "$FAKE_LOG.n" 2>/dev/null || echo 0) + 1 )); echo "$n" > "$FAKE_LOG.n"
+  "agents create") [ -z "${FAKE_SPAWN_SLEEP:-}" ] || sleep "$FAKE_SPAWN_SLEEP"   # the spawn-overlap race
+    [ -z "${FAKE_SPAWN_BG:-}" ] || { sleep 20 </dev/null >/dev/null 2>&1 & echo $! > "$FAKE_SPAWN_BG"; }  # a host's daemon
+    n=$(( $(cat "$FAKE_LOG.n" 2>/dev/null || echo 0) + 1 )); echo "$n" > "$FAKE_LOG.n"
     printf '{"kind":"terminal","sessionId":"term-%s"}\n' "$n" ;;
   "terminals close") [ -z "${FAKE_CLOSE_FAIL:-}" ] || { echo "Error: terminal $6 not found" >&2; exit 1; } ;;
   "terminals read") jq -n --arg t "${FAKE_SCREEN:-Working… esc to interrupt}" '{text: $t}' ;;
@@ -761,6 +763,109 @@ $trust"
   n=$(grep -c '^  FAIL' "$tmp/jarvis.out"); fails=$((fails + n))
 else
   echo "bin/jarvis: skipped (jq not installed)"
+fi
+
+# Spawn overlap: a throwaway repo of its own, with its own JARVIS_HOME (lease, pending
+# spawns) and fake-superset log. Running workers are run records and OPEN.md lines
+# written by hand; the new brief is spawned for real.
+if command -v jq >/dev/null 2>&1 && command -v perl >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1; then
+  echo "spawn overlap"
+  (
+    ov="$tmp/ov"; mkdir -p "$ov" && cd "$ov" || exit 1
+    export PATH="$tmp/fake:$PATH" FAKE_LOG="$tmp/fake-ov.log" SUPERSET_WORKSPACE_ID=ws SUPERSET_TERMINAL_ID=jarvis-ov \
+      JARVIS_HOME="$tmp/jh-ov" CODEX_HOME="$tmp/codex-ov"
+    unset TYPESAFE_API_KEY
+    git init -q && cp -R "$tpl/handoffs" . && sed -e 's/{{MAX_CLAUDE}}/3/' -e 's/{{AMBER}}/50/' -e 's/{{RED}}/75/' "$tpl/handoffs/jarvis.conf" > handoffs/jarvis.conf
+    mkdir -p src/a docs && echo a > src/a/x.ts && git add -A && git commit -qm init
+    J=handoffs/bin/jarvis
+    $J start >/dev/null; cp handoffs/OPEN.md "$tmp/OPEN.ov"
+    mkb() { # $1 name, $2 the May-touch row ("-" = no Scope section), $3 worker (opencode), $4 model
+      { printf '# %s\nworker: %s\nmodel: %s\neffort: \n\n## Goal\nx\n\n' "$1" "${3:-opencode}" "${4:-}"
+        [ "$2" = - ] || printf '## Scope\n- May touch: %s\n- Must not touch: research/\n\n' "$2"
+        printf '## Checks\nx\n'; } > "handoffs/briefs/$1.md"; }
+    fresh() { rm -rf handoffs/.jarvis/runs "$JARVIS_HOME/spawning"; cp "$tmp/OPEN.ov" handoffs/OPEN.md; : > "$FAKE_LOG"; }
+    running() { # $1 run, $2 brief name, $3 state (running)
+      mkdir -p handoffs/.jarvis/runs
+      printf 'run: %s\nbrief: handoffs/briefs/%s.md\nagent: opencode\nspawned: %s\nstate: %s\n' "$1" "$2" "$(date +%s)" "${3:-running}" > "handoffs/.jarvis/runs/$1"
+      printf -- '- 2026-11-04 10:00 · opencode/default · term %s · handoffs/briefs/%s.md\n' "$1" "$2" > "$tmp/ov.line"
+      awk -v l="$(cat "$tmp/ov.line")" '{print} /^## Running workers/ {print l}' handoffs/OPEN.md > "$tmp/ov.o" && cat "$tmp/ov.o" > handoffs/OPEN.md; }
+    conf() { sed -i.bak '/^JARVIS_OVERLAP=/d' handoffs/jarvis.conf && rm -f handoffs/jarvis.conf.bak; [ -z "$1" ] || echo "JARVIS_OVERLAP=$1" >> handoffs/jarvis.conf; }
+    prep() { fresh; mkb ovn "$1"; mkb ovr "$2"; running r1 ovr; } # $1 new scope, $2 running scope
+    pair() { prep "$@"; out=$($J spawn handoffs/briefs/ovn.md 2>&1); rc=$?; } # spawn ovn beside a running ovr; $out, $rc
+    quiet() { [ $rc = 0 ] && ! printf '%s' "$out" | grep -q 'overlap'; }
+    said() { [ $rc = 0 ] && printf '%s\n' "$out" | grep -q "^jarvis spawn: $1"; }
+
+    pair '`src/x.ts`' '`src/x.ts`'
+    said 'overlap: handoffs/briefs/ovn.md \[src/x.ts\] with running handoffs/briefs/ovr.md \[src/x.ts\] — queue handoffs/briefs/ovn.md under To-do until handoffs/briefs/ovr.md is handed off' \
+      && grep -q 'agents create' "$FAKE_LOG"; check "warn: the same file → overlap, names the other brief, and spawns" $?
+    pair 'src/x.ts' 'src/y.ts'; quiet; check "two different files: no overlap" $?
+    pair 'src/a/' 'src/a/new/deep.ts'; said 'overlap: .*\[src/a/\] with running .*\[src/a/new/deep.ts\]'; check "a directory and a file below it (not yet created) → overlap" $?
+    pair 'src/a' 'src/a/x.ts'; said 'overlap: '; check "an existing directory without its / is still a directory" $?
+    pair 'src/a/' 'src/ab'; quiet; check "src/a/ and src/ab: no overlap (a / boundary)" $?
+    pair 'src/x.ts' 'src/*.ts'; said 'overlap: .*\[src/x.ts\] .*\[src/\*.ts\]'; check "a literal file a glob matches → overlap" $?
+    pair 'docs/x.ts' 'src/*.ts'; quiet; check "…one it doesn't match: none" $?
+    pair 'src/**/*.ts' 'docs/**'; quiet; check "two globs with disjoint prefixes: none" $?
+    pair 'src/*.ts' 'src/*.css'; said 'possible overlap: '; check "two globs with a shared prefix → possible overlap" $?
+    pair 'none' 'src/'; quiet; check "none overlaps nothing" $?
+    pair 'Src/X.ts' 'src/x.ts'; said 'possible overlap: '; check "a case variant → possible overlap" $?
+    pair 'src/' 'all of `src/` except tests'; said 'unknown overlap: running handoffs/briefs/ovr.md (term r1) has a scope that can.t be read (line 10: entry'; check "a running brief with prose for a scope → unknown, with its line" $?
+    pair 'src/' '-'; said "unknown overlap: running handoffs/briefs/ovr.md (term r1) has a scope that can.t be read (no '## Scope' section)"; check "…a running brief with no Scope section: unknown, not empty" $?
+    fresh; mkb ovn 'src/'; running r1 gone; out=$($J spawn handoffs/briefs/ovn.md 2>&1); rc=$?
+    said 'unknown overlap: running handoffs/briefs/gone.md (term r1) .*the brief is gone'; check "…a running brief that's gone: unknown" $?
+    pair 'src/{a,b}' 'docs/'; said "unknown overlap: handoffs/briefs/ovn.md's scope can.t be read"; check "the new brief's unreadable scope (braces) → unknown" $?
+    fresh; mkb ovn 'src/'; running r1 ovn; out=$($J spawn handoffs/briefs/ovn.md 2>&1); rc=$?
+    said 'overlap: handoffs/briefs/ovn.md is already running (term r1)'; check "the same brief already running → overlap" $?
+    fresh; mkb ovn 'src/'; mkb ovr 'src/'; running r1 ovr merged; running r2 ovr closed; running r3 ovr lost
+    out=$($J spawn handoffs/briefs/ovn.md 2>&1); rc=$?; quiet; check "merged, closed and lost runs are ignored (OPEN.md lines too)" $?
+    fresh; mkb ovn 'src/'; mkb ovr 'src/'; running r1 ovr; rm -f handoffs/.jarvis/runs/r1
+    out=$($J spawn handoffs/briefs/ovn.md 2>&1); rc=$?; said 'overlap: .*with running handoffs/briefs/ovr.md'; check "a legacy OPEN.md line with no record counts" $?
+
+    conf refuse
+    prep 'src/' 'src/a/x.ts'; o=$(cksum < handoffs/OPEN.md); b=$(cksum < handoffs/briefs/ovn.md); runs=$(ls handoffs/.jarvis/runs)
+    out=$($J spawn handoffs/briefs/ovn.md 2>&1); rc=$?
+    [ $rc = 1 ] && printf '%s\n' "$out" | grep -q '^jarvis spawn: refused (JARVIS_OVERLAP=refuse): overlap: handoffs/briefs/ovn.md \[src/\] with running handoffs/briefs/ovr.md'
+    check "refuse: exit 1, names the other brief" $?
+    ! grep -q 'agents create' "$FAKE_LOG" && [ "$(cksum < handoffs/OPEN.md)" = "$o" ] && [ "$(cksum < handoffs/briefs/ovn.md)" = "$b" ] \
+      && [ "$(ls handoffs/.jarvis/runs)" = "$runs" ]; check "…before any launch, started: line, OPEN.md or run-record change" $?
+    $J spawn handoffs/briefs/ovn.md --force >/dev/null 2>&1; [ $? = 1 ] && ! grep -q 'agents create' "$FAKE_LOG"; check "…and --force doesn't pass it" $?
+    pair 'src/' 'docs/'; [ $rc = 0 ] && grep -q 'agents create' "$FAKE_LOG"; check "refuse: disjoint scopes still spawn" $?
+    conf bogus; out=$($J spawn handoffs/briefs/ovn.md 2>&1); [ $? = 2 ] && printf '%s' "$out" | grep -q "JARVIS_OVERLAP='bogus'"; check "an invalid JARVIS_OVERLAP exits 2" $?
+
+    conf ""; mv handoffs/bin/jarvis-scope.py "$tmp/scope.keep"
+    pair 'src/' 'docs/'; said 'unknown overlap: no handoffs/bin/jarvis-scope.py' && printf '%s' "$out" | grep -q 'spawning anyway'; check "warn: no jarvis-scope.py → a note, and it spawns" $?
+    conf refuse; pair 'src/' 'docs/'; [ $rc = 1 ] && printf '%s' "$out" | grep -q 'refused (JARVIS_OVERLAP=refuse): unknown overlap: no handoffs/bin/jarvis-scope.py' \
+      && ! grep -q 'agents create' "$FAKE_LOG"; check "refuse: no jarvis-scope.py → refused" $?
+    mv "$tmp/scope.keep" handoffs/bin/jarvis-scope.py
+    farm="$tmp/nopy"; mkdir -p "$farm"   # PATH without python: every other command of PATH, linked
+    printf '%s\n' "$PATH" | tr ':' '\n' | while IFS= read -r d; do [ -d "$d" ] && ln -s "$d"/* "$farm"/ 2>/dev/null; done; rm -f "$farm"/python*
+    prep 'src/' 'docs/'; out=$(PATH="$farm" $J spawn handoffs/briefs/ovn.md 2>&1); rc=$?
+    [ $rc = 1 ] && printf '%s' "$out" | grep -q 'refused (JARVIS_OVERLAP=refuse): unknown overlap: no python3 on PATH'; check "refuse: no python3 → refused" $?
+    conf ""; prep 'src/' 'docs/'; out=$(PATH="$farm" $J spawn handoffs/briefs/ovn.md 2>&1); rc=$?
+    said 'unknown overlap: no python3 on PATH' && grep -q 'agents create' "$FAKE_LOG"; check "warn: no python3 → a note, and it spawns" $?
+    fresh; mkb ovn 'src/'; out=$(PATH="$farm" $J spawn handoffs/briefs/ovn.md 2>&1); rc=$?; quiet; check "…nothing running: no python needed, no note" $?
+
+    # two spawns at once, overlapping, the host slow to launch: the second waits for the
+    # checkout's spawn lease, then sees the first running
+    race() { # $1 $2: the first brief's worker and model, $3 $4 the second's
+      fresh; mkb rca 'src/' "$1" "$2"; mkb rcb 'src/a/' "$3" "$4"
+      (FAKE_SPAWN_SLEEP=2 $J spawn handoffs/briefs/rca.md > "$tmp/rca" 2>&1; echo $? > "$tmp/rca.rc") & pa=$!
+      (FAKE_SPAWN_SLEEP=2 $J spawn handoffs/briefs/rcb.md > "$tmp/rcb" 2>&1; echo $? > "$tmp/rcb.rc") & pb=$!
+      wait "$pa" "$pb"; r="$(cat "$tmp/rca.rc")$(cat "$tmp/rcb.rc")"
+      { [ "$r" = 01 ] || [ "$r" = 10 ]; } && [ "$(grep -c 'agents create' "$FAKE_LOG")" = 1 ] \
+        && cat "$tmp/rca" "$tmp/rcb" | grep -q 'refused (JARVIS_OVERLAP=refuse): overlap: '; }
+    conf refuse
+    race codex gpt-5.6-sol opencode ""; check "refuse: Codex and OpenCode spawned at once, overlapping: exactly one passes" $?
+    race claude sonnet claude sonnet; check "…two Claude workers at once: exactly one passes" $?
+
+    conf ""; fresh; mkb ovn 'src/'; bgp="$tmp/ov.bg"
+    FAKE_SPAWN_BG="$bgp" $J spawn handoffs/briefs/ovn.md >/dev/null 2>&1; mkb ovm 'docs/'
+    JARVIS_SPAWN_WAIT=3 $J spawn handoffs/briefs/ovm.md >/dev/null 2>&1; check "a process the host leaves running doesn't hold the spawn lease" $?
+    [ -s "$bgp" ] && kill "$(cat "$bgp")" 2>/dev/null
+    $J lock spawn -- true >/dev/null 2>&1; [ $? = 2 ]; check "lock class 'spawn' is reserved" $?
+  ) | tee "$tmp/ov.out"
+  n=$(grep -c '^  FAIL' "$tmp/ov.out"); fails=$((fails + n))
+else
+  echo "spawn overlap: skipped (jq, perl or python3 not installed)"
 fi
 
 # The tmux host, on a tmux server of its own (its own socket), with a stand-in
