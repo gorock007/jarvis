@@ -522,7 +522,10 @@ It needs perl, which macOS ships (macOS has no `flock(1)`).
   behind.
 - **No perl, anywhere else:** exit 2. The command isn't run.
 - **`bin/jarvis-lock.pl` missing:** exit 2, "re-run jarvis:setup". This
-  happens when a repo was upgraded by copying only `bin/jarvis`.
+  happens when a repo was upgraded by copying only `bin/jarvis`. Copying only
+  `bin/jarvis` without `lib/` is worse: every command, `lock` and `hook
+  prompt` included, exits 1 with "re-run jarvis:setup". Only `hook event` and
+  `hook pretool` (when it has nothing to deny) still exit 0, silently.
 
 `lock` needs no OPEN.md, no host and no `jarvis.conf`. It works from any
 directory, and runs the command in the directory it was called from.
