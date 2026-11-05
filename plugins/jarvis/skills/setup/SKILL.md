@@ -397,8 +397,9 @@ and spawn's May-touch overlap warning. See the `jarvis:run` skill's
    `UserPromptSubmit` entry's `hooks` (keep `hook prompt`), and add the
    `Stop`, `Notification` and `SessionEnd` entries, appending to any the
    user already has. Skip any object whose `command` is already there, so
-   running the step twice adds nothing. They write a worker's state to its event file and do
-   nothing in any other session, because only spawn sets `JARVIS_ROLE`.
+   running the step twice adds nothing. They write a worker's state to its
+   event file and do nothing in any other session: only a worker has
+   `JARVIS_ROLE` from spawn, or a running run record on Superset or Ultron.
 5. Tell the user: spawn now warns when a new brief's May-touch row meets a
    running worker's, and warns "unknown" for a row with prose around its
    paths (`JARVIS_OVERLAP=refuse` makes both a refusal); a brief can mark

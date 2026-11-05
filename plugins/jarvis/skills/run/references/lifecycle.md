@@ -220,7 +220,7 @@ no launch script of ours: the hook finds the run record named after
 `$SUPERSET_TERMINAL_ID` or `$ULTRON_SESSION_ID`, which must say `agent: claude`,
 `state: running` and a brief, and writes that id as `run`. Jarvis's own
 terminal has no such record, so its hooks do nothing. `run` is empty when
-neither applies.
+`JARVIS_ROLE=worker` is set without `JARVIS_RUN`.
 
 **What the watcher does.** For each running worker it reads the last line
 whose `run` is that worker's own and whose `t` is not before its spawn, so a
@@ -651,7 +651,7 @@ launch. A spawn waits up to `JARVIS_SPAWN_WAIT` seconds (120) for it, then
 says "another spawn in this checkout has held its spawn lease…". Any other
 failure to take it is "can't take the spawn lease of this checkout…: spawn
 refused". Once the leased part has started, spawn exits with that part's own
-code (2 for a refusal inside it, say) and adds nothing to its message, except
+code (1 for a refusal inside it) and adds nothing to its message, except
 `jarvis spawn: interrupted (exit N)` for a signal. The lease errors are only
 for a lease that was never taken. The host's processes don't inherit the
 lease. Without perl, warn
