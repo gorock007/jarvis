@@ -40,7 +40,7 @@ file:
   `jarvis usage`.
 - `handoffs/bin/jev.sh`: optional brief lint and terminal triage. It does
   nothing without a `TYPESAFE_API_KEY`.
-- `.claude/settings.json`, which does five things:
+- `.claude/settings.json`, which does six things:
   - puts subagents on Sonnet (`CLAUDE_CODE_SUBAGENT_MODEL`)
   - turns off the security-guidance per-stop review, while keeping its
     per-commit review, on Sonnet
@@ -49,6 +49,9 @@ file:
   - installs the Fable guard (`PreToolUse` on `Agent|Task|Edit|Write|MultiEdit`,
     `jarvis hook pretool`), which denies a Fable subagent and any edit that
     lets Fable into a settings allowlist
+  - installs the worker event hooks (`UserPromptSubmit`, `Stop`,
+    `Notification`, `SessionEnd` → `jarvis hook event`), which tell Jarvis a
+    worker's state; they act only when spawn has set `JARVIS_ROLE=worker`
   - switches off plugins this repo doesn't use
 - `.claude/agents/scout.md` and `diff-reviewer.md`: read-only subagents
   pinned to Sonnet.
@@ -386,7 +389,13 @@ and spawn's May-touch overlap warning. See the `jarvis:run` skill's
    `bash verify` example under **Checks**) and `handoffs/JARVIS.md` (the
    merge gate, the `--verify` loop line and the **Overlap** rule). Keep the
    project's own rules. Existing briefs need no change.
-4. Tell the user: spawn now warns when a new brief's May-touch row meets a
+4. Merge the template `.claude/settings.json` with `jq` as in section 3:
+   append the `jarvis hook event working` object to the existing
+   `UserPromptSubmit` entry's `hooks` (keep `hook prompt`), and add the
+   `Stop`, `Notification` and `SessionEnd` entries, appending to any the
+   user already has. They write a worker's state to its event file and do
+   nothing in any other session, because only spawn sets `JARVIS_ROLE`.
+5. Tell the user: spawn now warns when a new brief's May-touch row meets a
    running worker's, and warns "unknown" for a row with prose around its
    paths (`JARVIS_OVERLAP=refuse` makes both a refusal); a brief can mark
    commands as ```` ```bash verify class=light timeout=300 ```` blocks for

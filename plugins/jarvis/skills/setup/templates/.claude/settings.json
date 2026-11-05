@@ -13,6 +13,11 @@
             "type": "command",
             "command": "\"$CLAUDE_PROJECT_DIR\"/handoffs/bin/jarvis hook prompt",
             "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/handoffs/bin/jarvis hook event working",
+            "timeout": 10
           }
         ]
       }
@@ -24,6 +29,39 @@
           {
             "type": "command",
             "command": "\"$CLAUDE_PROJECT_DIR\"/handoffs/bin/jarvis hook pretool",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/handoffs/bin/jarvis hook event stop",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "Notification": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/handoffs/bin/jarvis hook event notification",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/handoffs/bin/jarvis hook event ended",
             "timeout": 10
           }
         ]

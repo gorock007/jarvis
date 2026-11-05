@@ -1,0 +1,1 @@
+Hook stdin payloads captured from Claude Code 2.1.311 (`claude -p --model claude-haiku-5-5 "say ok"`), with session ids, prompt ids and paths replaced by placeholders. No `Notification` fired in `-p` mode, so there is no fixture for it.
