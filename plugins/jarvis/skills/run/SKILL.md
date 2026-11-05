@@ -162,6 +162,9 @@ again in a few minutes" turns. `jarvis watch` runs in its own plain terminal
 and wakes you with a `[jarvis watch]` message when a handoff lands, a
 worker hits a usage limit, a worker sits at a trust or approval prompt, or a
 worker's screen stays frozen with no handoff after its one stall nudge.
+The watcher reads each worker's hook events first (an end without a
+handoff, a permission prompt, a finished turn) and falls back to the screen
+(`references/lifecycle.md`, "Worker events").
 `JARVIS_FASTPATH="trust edit nudge"` handles Codex folder trust, Claude's
 single-edit Yes within the brief's scope (excluding protected paths/settings),
 and one stall nudge per run without waking you. The nudge comes after

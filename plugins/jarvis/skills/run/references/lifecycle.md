@@ -169,6 +169,115 @@ Merge doesn't ask the agent to exit first. An LLM is not a reliable
 acknowledgement, and asking costs a turn. The handoff is the agent's "done".
 Closing the terminal is the one way to end it that always works.
 
+## Worker events
+
+A worker's own hooks tell the watcher what state it is in, so it doesn't
+have to guess from the screen. Each event is one line in
+`handoffs/.jarvis/events/<brief>.jsonl` (the brief's file name without
+`.md`):
+
+```
+{"t":1762345678,"kind":"stop","run":"%7","detail":"Done; handoff written."}
+```
+
+`t` is the epoch, `run` the writer's run (below) and `detail` one line of at
+most 200 characters. Nothing is printed and the command always exits 0, so a
+hook can't block a prompt or a stop.
+
+**What writes them**
+
+- **Claude Code**, on every host: the hooks in the settings template
+  (`UserPromptSubmit`, `Stop`, `Notification`, `SessionEnd`) run
+  `jarvis hook event <kind>`.
+- **Codex, on tmux only**: the launch script defines a `codex()` function
+  that adds per-run `-c hooks` for `UserPromptSubmit`, `Stop`,
+  `PermissionRequest` and `SessionEnd`, next to the user's own hooks and
+  `notify`.
+- **OpenCode, on tmux only**: a plugin, `handoffs/.jarvis/launch/opencode-events.js`,
+  added through `OPENCODE_CONFIG_CONTENT` (OpenCode adds its plugin list to
+  the user's). The launch script writes the `ended` event itself after
+  `opencode` exits.
+
+**Kinds**
+
+| Kind | Meaning | From |
+| --- | --- | --- |
+| `working` | a prompt was submitted | Claude `UserPromptSubmit`; Codex `UserPromptSubmit`; OpenCode busy |
+| `stop` | the turn finished (`detail`: its last message) | Claude and Codex `Stop`; OpenCode idle |
+| `permission` | waiting at an approval prompt | Claude `permission_prompt`; Codex `PermissionRequest`; OpenCode `permission.asked` |
+| `waiting` | waiting for the user's input | Claude `idle_prompt`, `agent_needs_input`, `elicitation_dialog`, `elicitation_url_dialog`; OpenCode `question.asked` |
+| `ended` | the session ended (`detail`: its reason) | `SessionEnd`; OpenCode: the launch script |
+
+Any other Claude notification type writes nothing. A `SessionEnd` with reason
+`clear` or `resume` writes nothing either: the terminal goes on in a new
+session. OpenCode events come from the root session only. Codex has no idle
+or waiting event, and its `Interrupt` isn't mapped.
+
+**Who counts as a worker.** `JARVIS_ROLE=worker` with `JARVIS_BRIEF` set.
+On tmux the launch script sets both for Claude, Codex and OpenCode workers,
+and `JARVIS_RUN` too, the window's pane id. On Superset and Ultron there is
+no launch script of ours: the hook finds the run record named after
+`$SUPERSET_TERMINAL_ID` or `$ULTRON_SESSION_ID`, which must say `agent: claude`,
+`state: running` and a brief, and writes that id as `run`. Jarvis's own
+terminal has no such record, so its hooks do nothing. `run` is empty when
+neither applies.
+
+**What the watcher does.** For each running worker it reads the last line
+whose `run` is that worker's own and whose `t` is not before its spawn, so a
+respawn starts clean and the old worker's late `ended` doesn't count. A line
+with an empty `run`, or none (an event file from an older `jarvis`), counts
+for no run, and that worker keeps the screen path. The usage-limit check
+still reads the screen, for an ended worker too.
+
+- **`ended`**, with no handoff for the brief written since the turn began
+  (its last `working` event, else its spawn): "worker X ended without a
+  handoff — read its terminal", once. No prompt or stall check after it.
+- **`permission`**: goes through the prompt path once, even when the screen
+  doesn't match a prompt pattern: the trust/edit auto-answer if
+  `JARVIS_FASTPATH` allows it, else the "waiting at a prompt" event. After
+  that the screen decides, because answering fires no new event.
+- **`stop` or `waiting`**: a stall once both the event and the screen's last
+  change are `JARVIS_STALL_MIN` old, with no handoff since the turn began.
+  So a worker that woke on its own (whether a background job fires a prompt
+  hook is unverified) is not nudged while its screen changes. Then the usual one nudge, and after another interval "worker X
+  finished its turn N min ago (hook event: stop|waiting) and has no handoff
+  — read its terminal". A fresh stop raises nothing.
+- **`working`, no events, or another agent**: the frozen-screen check, as
+  before.
+
+Each raised or auto-handled event also writes a line to `watch.log` naming
+what raised it: `<UTC time>`, a tab, `source`, a tab, `<kind>:<event|screen>`,
+a tab, `1`. The tags are `ended:event`, `prompt:event`, `prompt:screen`,
+`stall:event`, `stall:screen`, `nudge:event`, `nudge:screen`, `edit:event`,
+`edit:screen`, `trust:event` and `trust:screen`. `jarvis usage` doesn't
+count these lines.
+
+**Limits**
+
+- On Superset and Ultron a worker's first `working` event can fire before
+  spawn has written its run record, and is lost; the next event is not.
+- Codex and OpenCode workers on Superset and Ultron write no events: those
+  hosts launch them, so they keep the screen path.
+- Codex runs per-run hooks only with `--dangerously-bypass-hook-trust`, which
+  the built-in `JARVIS_AGENT_codex` passes. A line without it, or one that
+  starts `codex` through `exec` or an absolute path, skips the wrapper and
+  keeps the screen path. With `OPENCODE_CONFIG_CONTENT` already set, so
+  does OpenCode. With the built-in line Codex never asks for approval, so
+  `permission` is not expected from it.
+- A tmux worker spawned before its `jarvis` was upgraded has no
+  `JARVIS_RUN`, so its lines have an empty `run` and count for nothing until
+  it is respawned.
+- An OpenCode `stop` has no detail, and a crash of its whole window writes no
+  `ended`.
+- Claude's `Notification` payload was never captured from a live permission
+  prompt; its field names (`notification_type`) come from Claude Code's hooks
+  reference.
+- The event stall needs the screen to hold still, like the screen path. A
+  worker UI that redraws something time-based while idle (a clock, a live
+  statusline) is never nudged or woken. Claude Code's own statusline
+  re-renders only when messages update, so the template's is fine.
+- A truncated multibyte character is possible in `detail` under a C locale.
+
 ## Worker budgets
 
 A worker that has gone wrong costs the most when nobody notices. Every
@@ -519,6 +628,7 @@ jarvis spawn: overlap: <new> [src/lib/] with running <other> [src/lib/x.py] — 
 jarvis spawn: possible overlap: …        (globs or case that might meet)
 jarvis spawn: overlap: <brief> is already running (term T) — close that worker first (handoffs/bin/jarvis close T), or wait for its handoff.
 jarvis spawn: unknown overlap: <new>'s scope can't be read (<reason>), so it can't be compared with running … — give it a '- May touch:' row of paths, or queue it under To-do until they are handed off.
+jarvis spawn: unknown overlap: running term T has no brief on record, so its scope can't be read — treat it as overlapping <new>: queue <new> under To-do until it is handed off, or close it (handoffs/bin/jarvis close T).
 jarvis spawn: unknown overlap: no python3 on PATH | no handoffs/bin/jarvis-scope.py (re-run jarvis:setup) | jarvis-scope.py failed (exit N), …
 ```
 
@@ -529,6 +639,8 @@ jarvis spawn: unknown overlap: no python3 on PATH | no handoffs/bin/jarvis-scope
 - **An unknown scope counts as overlapping.** Most older briefs have prose
   in their May-touch row, so they warn "unknown", and under `refuse` they
   are refused until the row is rewritten as paths.
+  A running worker with no brief on record (a run record or `OPEN.md` line
+  with a term but no brief) is unknown too.
 - Must-not-touch rows aren't subtracted. This is a collision warning, not a
   permission check: it reserves nothing, and a worker can still edit any
   file.
@@ -538,7 +650,11 @@ The check, the launch and the run record happen under a per-checkout
 launch. A spawn waits up to `JARVIS_SPAWN_WAIT` seconds (120) for it, then
 says "another spawn in this checkout has held its spawn lease…". Any other
 failure to take it is "can't take the spawn lease of this checkout…: spawn
-refused". The host's processes don't inherit the lease. Without perl, warn
+refused". Once the leased part has started, spawn exits with that part's own
+code (2 for a refusal inside it, say) and adds nothing to its message, except
+`jarvis spawn: interrupted (exit N)` for a signal. The lease errors are only
+for a lease that was never taken. The host's processes don't inherit the
+lease. Without perl, warn
 mode says `overlap check not atomic` and spawns, while refuse mode refuses.
 
 ## jarvis resources

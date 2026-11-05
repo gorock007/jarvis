@@ -94,6 +94,16 @@ JARVIS_AGENT_gemini='gemini --approval-mode=auto_edit ${JARVIS_MODEL:+-m "$JARVI
 The launch script for each worker is written to
 `handoffs/.jarvis/launch/<slug>.sh`. Read it when a worker won't start.
 
+It also gives the worker its turn events (`references/lifecycle.md`, "Worker
+events"): `JARVIS_ROLE=worker`, `JARVIS_BRIEF` and `JARVIS_RUN` (the pane id)
+for Claude, Codex and OpenCode, a `codex()` function that adds per-run hooks,
+and for OpenCode a plugin (`OPENCODE_CONFIG_CONTENT`, unless you set it) and
+an `ended` event after it exits. The Codex hooks need
+`--dangerously-bypass-hook-trust` in the Codex line, as the built-in one has,
+and `codex` called by name, not through `exec` or an absolute path. Superset
+and Ultron launch Codex and OpenCode themselves, so those workers write no
+events there.
+
 ## Adding a host
 
 A host is seven shell functions, `<name>_self`, `_spawn`, `_run`, `_list`,

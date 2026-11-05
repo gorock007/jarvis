@@ -51,7 +51,8 @@ file:
     lets Fable into a settings allowlist
   - installs the worker event hooks (`UserPromptSubmit`, `Stop`,
     `Notification`, `SessionEnd` → `jarvis hook event`), which tell Jarvis a
-    worker's state; they act only when spawn has set `JARVIS_ROLE=worker`
+    worker's state; they act only for a worker (`JARVIS_ROLE=worker` from
+    spawn, or on Superset and Ultron its run record)
   - switches off plugins this repo doesn't use
 - `.claude/agents/scout.md` and `diff-reviewer.md`: read-only subagents
   pinned to Sonnet.
@@ -259,7 +260,9 @@ tmux new-session -s jarvis \
 ```
 
   Workers then open as windows in that tmux session (`prefix + w` lists
-  them). On Ultron, from the repo root (Ultron's own Jarvis kit is a
+  them). Spawn's launch script gives Codex and OpenCode workers turn events
+  there (a `codex()` wrapper, an OpenCode plugin), without touching their
+  config. On Ultron, from the repo root (Ultron's own Jarvis kit is a
   separate plugin; this starts the jarvis one):
 
 ```bash
@@ -393,7 +396,8 @@ and spawn's May-touch overlap warning. See the `jarvis:run` skill's
    append the `jarvis hook event working` object to the existing
    `UserPromptSubmit` entry's `hooks` (keep `hook prompt`), and add the
    `Stop`, `Notification` and `SessionEnd` entries, appending to any the
-   user already has. They write a worker's state to its event file and do
+   user already has. Skip any object whose `command` is already there, so
+   running the step twice adds nothing. They write a worker's state to its event file and do
    nothing in any other session, because only spawn sets `JARVIS_ROLE`.
 5. Tell the user: spawn now warns when a new brief's May-touch row meets a
    running worker's, and warns "unknown" for a row with prose around its

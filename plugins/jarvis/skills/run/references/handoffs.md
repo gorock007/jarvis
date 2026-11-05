@@ -37,12 +37,15 @@ worker's (`references/lifecycle.md`). Write it as paths only:
 
 - Comma-separated. Each path is bare or in backticks (backticks allow spaces).
 - A trailing `/` is a folder and covers everything under it. A bare path
-  without one is a file, unless that folder already exists.
-- Globs: `*`, `?` and `[…]` within a name, `**` as a whole name.
+  without one is a file, unless that folder already exists or another
+  entry's path runs through it (`src/new` and `src/new/*.ts` overlap).
+- Globs: `*`, `?` and `[…]` within a name, `**` as a whole name. `[^…]`
+  negates like `[!…]`.
 - `none` means the brief edits nothing.
 - A note goes in parentheses after its path. Prose around a path ("in
   `jarvis`: `watch_tick`, …") makes the scope unknown, which spawn treats as
-  overlapping. So do braces, `$`, `!`, absolute paths and `..`.
+  overlapping. So do braces, `$`, absolute paths and `..`, and `!` outside
+  a `[…]` class.
 
 **Checks `merge --check --verify` can run** go in fenced blocks under
 `## Checks`. Only these run; prose and inline backticks around them are for
