@@ -39,11 +39,14 @@ fastpath_on() { case " $JARVIS_FASTPATH " in *" $1 "*) return 0 ;; *) return 1 ;
 # Python supplies realpath (including missing files below symlinked parents). Missing
 # Python, malformed scope, truncated headers and unknown UI shapes all fail closed.
 watch_prompt_action() { # $1 run, $2 screen
-  local agent brief
+  local agent brief screen=$2
   agent=$(run_get "$1" agent); brief=$(run_get "$1" brief)
   [ "$(run_get "$1" state)" = running ] && [ -f "$brief" ] && have python3 || return 1
   case "$agent" in codex) fastpath_on trust ;; claude) fastpath_on edit ;; *) return 1 ;; esac || return 1
-  python3 -I - "$ROOTP" "$brief" "$agent" "$(run_get "$1" spawned)" "$2" <<'PY'
+  # detection saw watch_tick's 15 lines; the edit attempt alone re-reads 80, for the
+  # header above a full diff (a failed read is an empty screen, which fails closed)
+  [ "$agent" = claude ] && screen=$(host read "$1" 80 2>/dev/null | sed -e 's/[[:space:]]*$//')
+  python3 -I - "$ROOTP" "$brief" "$agent" "$(run_get "$1" spawned)" "$screen" <<'PY'
 import os, re, sys
 from pathlib import Path
 
@@ -334,7 +337,6 @@ watch_stall() { # $1 run, $2 event | screen, $3 dedup key, $4 the event's text
 watch_tick() {
   local seen="$STATE/watch.seen" events="" kinds="" ho key id tail_ idle term line brief sum scr stale b opened new t read_lines=15
   local ev et ek eturn en pe src
-  fastpath_on edit && read_lines=80   # include the path above a full edit diff; off keeps the old tail size
   touch "$seen"
   for ho in "$H"/*.md; do
     [ -f "$ho" ] || continue

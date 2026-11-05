@@ -92,7 +92,9 @@ case "$1 $2" in
     n=$(( $(cat "$FAKE_LOG.n" 2>/dev/null || echo 0) + 1 )); echo "$n" > "$FAKE_LOG.n"
     printf '{"kind":"terminal","sessionId":"term-%s"}\n' "$n" ;;
   "terminals close") [ -z "${FAKE_CLOSE_FAIL:-}" ] || { echo "Error: terminal $6 not found" >&2; exit 1; } ;;
-  "terminals read") jq -n --arg t "${FAKE_SCREEN:-Working… esc to interrupt}" '{text: $t}' ;;
+  "terminals read") s=${FAKE_SCREEN:-Working… esc to interrupt}; p=   # the last --max-lines N lines, as Superset returns
+    for a in "$@"; do [ "$p" != --max-lines ] || s=$(printf '%s\n' "$s" | tail -n "$a"); p=$a; done
+    jq -n --arg t "$s" '{text: $t}' ;;
   "terminals send") [ -z "${FAKE_SEND_FAIL:-}" ] || [ "$6" = jarvis-t ] ;;
   "terminals list") printf '{"sessions":[%s]}\n' "$(printf '%s' "${FAKE_OPEN:-}" | sed -E 's/([^ ]+)/{"terminalId":"\1","exited":false,"title":"shell-\1"}/g; s/ /,/g')" ;;
 esac
@@ -264,7 +266,8 @@ EOT
       fp_tick "$(fp_edit src/widget.py)"
       fp_approved && [ "$(wl)" = 'auto edit 1' ] && grep -q 'auto-edit run=fp brief=handoffs/briefs/fp.md path=src/widget.py key=enter result=sent' handoffs/.jarvis/audit.log
       check "fast edit: in-scope file gets single-edit Yes, both logs, no wake or pending batch" $?
-      grep -q 'terminal fp --max-lines 80' "$FAKE_LOG"; check "fast edit: reads enough lines for the header above a full diff" $?
+      grep -q 'terminal fp --max-lines 15' "$FAKE_LOG" && grep -q 'terminal fp --max-lines 80' "$FAKE_LOG"
+      check "fast edit: detection reads 15 lines, the edit attempt re-reads enough for the header above a full diff" $?
       fp_tick "$(fp_edit src/widget.py)"
       grep -q 'terminal jarvis-t --text .*waiting at a prompt (the automatic answer did not take)' "$FAKE_LOG" && ! grep -q -- '--keys' "$FAKE_LOG" \
         && [ "$(wl)" = 'woke prompt 1' ]; check "fast edit: the same prompt one tick after the answer wakes Jarvis, never re-sent" $?
@@ -277,6 +280,21 @@ EOT
       fp_approved; check "fast edit: recognizes a Write header on a Create-file dialog" $?
       fp_setup claude '`src/`'; fp_tick "$(fp_box '' src/new.py 'Do you want to make this edit to new.py?')"
       fp_approved; check "fast edit: a dialog whose header scrolled off uses the row under its title" $?
+      fp_rows=$(i=2; while [ $i -le 21 ]; do printf ' %s  ctx = %s\n' $i $i; i=$((i + 1)); done)
+      fp_setup claude '`src/`'; fp_tick "$(fp_box '⏺ Update(src/widget.py)' src/widget.py 'Do you want to make this edit to widget.py?' "$fp_rows")"
+      fp_approved && grep -q 'path=src/widget.py key=enter' handoffs/.jarvis/audit.log
+      check "fast edit: a diff longer than the 15-line tail is still approved (the 80-line re-read finds the header)" $?
+      # Detection scans the last 15 lines only: a prompt or limit phrase 40 lines up
+      # (scrolled-off output, docs a worker read) neither wakes Jarvis nor sends keys
+      fp_scroll() { printf '%s\n' "$1"; i=1; while [ $i -le 38 ]; do printf '  test_%s ... ok\n' $i; i=$((i + 1)); done; printf 'Working… esc to interrupt\n'; }
+      for a in claude codex; do
+        for ph in 'Do you want to proceed?' 'Claude usage limit reached'; do
+          fp_setup "$a" '`src/`'; fp_tick "$(fp_scroll "$ph")"
+          ! grep -q 'terminal jarvis-t --text' "$FAKE_LOG" && ! grep -q -- '--keys' "$FAKE_LOG" && [ ! -f handoffs/.jarvis/watch.pending ] \
+            && ! grep -q -- '--max-lines 80' "$FAKE_LOG"
+          check "fast paths on: '$ph' 40 lines up a working $a screen wakes nothing" $?
+        done
+      done
       # Live captures (eval/terminals/41-48): Claude Code 2.1.311 and Codex 0.157.1.
       for c in 41 43 44 46 49; do
         fp_setup claude '`src/`'; fp_tick "$(fp_cap $c)"
@@ -458,6 +476,7 @@ $trust"
       fp_tick "$trust"; fp_woke; check "fast paths: removing trust disables just trust" $?
       fp_setup claude '`src/`'; echo 'JARVIS_FASTPATH="trust nudge"' >> handoffs/jarvis.conf
       fp_tick "$(fp_edit src/widget.py)"; fp_woke; check "fast paths: removing edit disables just edit" $?
+      ! grep -q -- '--max-lines 80' "$FAKE_LOG"; check "fast paths: with edit off, no 80-line re-read" $?
       fp_setup codex '`src/`'; echo 'JARVIS_FASTPATH=""' >> handoffs/jarvis.conf
       fp_tick "$trust"; fp_woke && grep -q 'terminal fp --max-lines 15' "$FAKE_LOG"; check "fast paths: empty restores prompt wake and the original tail size" $?
       fp_tick frozen; fp_age $(( $(date +%s) - 120 )); fp_tick frozen
