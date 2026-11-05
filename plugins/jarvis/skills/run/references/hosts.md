@@ -115,9 +115,9 @@ are optional:
   doctor` can name the terminals it doesn't know.
 
 Select it with `JARVIS_HOST=<name>` in `jarvis.conf`. The contract is spelled out in
-the "hosts" comment block of `handoffs/bin/jarvis`, and the superset and
-tmux functions next to it are working examples. Nothing else in the
-workflow changes.
+the "hosts" comment block of `handoffs/bin/lib/hosts.sh`, and
+`lib/host-superset.sh` and `lib/host-tmux.sh` are working examples. Nothing
+else in the workflow changes.
 
 `_close` must end what runs in the terminal, not just hide it: closing the
 terminal is how merge and `jarvis close` stop a worker's agent. On a pty that
