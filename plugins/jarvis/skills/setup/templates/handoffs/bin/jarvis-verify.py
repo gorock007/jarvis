@@ -94,6 +94,11 @@ def sha(data):
     return hashlib.sha256(data).hexdigest()
 
 
+def runner_lib(runner):
+    """The lib/ folder bin/jarvis sources: beside the real file, wherever it was called through."""
+    return os.path.join(os.path.dirname(os.path.realpath(runner)), "lib")
+
+
 def git_env():
     env = dict(os.environ)
     for k in list(env):
@@ -983,7 +988,10 @@ class Verify:
             "brief": sha(b"".join(x for x in self.bbytes.splitlines(True) if not x.startswith(b"started:"))),
             "blocks": [[b["n"], b["class"], b["timeout"], b["reuse"], b["body"]] for b in self.blocks],
             "inputs": self.inputs, "copies": self.copies, "dependencies": self.dep_digests,
-            "runner": fsha(a.runner), "helper": fsha(os.path.abspath(__file__)), "lock_helper": fsha(self.lock_pl),
+            "runner": fsha(a.runner),
+            "runner_lib": [[n, fsha(os.path.join(runner_lib(a.runner), n))]
+                           for n in sorted(os.listdir(runner_lib(a.runner)))] if os.path.isdir(runner_lib(a.runner)) else None,
+            "helper": fsha(os.path.abspath(__file__)), "lock_helper": fsha(self.lock_pl),
             "shim": self.shim, "classes": self.class_specs, "lock_wait": a.lock_wait, "grace": a.grace,
             "bash": [os.path.realpath(a.bash), self.result.get("bash_version", "")],
             "os": [u.sysname, u.release, u.machine], "cwd": ".",
@@ -1167,6 +1175,9 @@ class Verify:
         self.ctl_runner = os.path.join(ctl, "jarvis")
         shutil.copyfile(self.a.runner, self.ctl_runner)
         os.chmod(self.ctl_runner, 0o700)
+        lib = runner_lib(self.a.runner)   # bin/jarvis sources its lib/ from beside itself
+        if os.path.isdir(lib):
+            shutil.copytree(lib, os.path.join(ctl, "lib"))
         if os.path.isfile(self.lock_pl):
             shutil.copyfile(self.lock_pl, os.path.join(ctl, "jarvis-lock.pl"))
             os.chmod(os.path.join(ctl, "jarvis-lock.pl"), 0o700)

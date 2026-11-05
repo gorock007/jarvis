@@ -782,7 +782,7 @@ plugins/jarvis/
   skills/
     setup/
       SKILL.md                       jarvis:setup: interview + install
-      templates/                     CLAUDE.md, AGENTS.md, handoffs/ (JARVIS.md, jarvis.conf, bin/jarvis, bin/jarvis-lock.pl, bin/jev.sh), .claude/
+      templates/                     CLAUDE.md, AGENTS.md, handoffs/ (JARVIS.md, jarvis.conf, bin/jarvis, bin/lib/, bin/jarvis-lock.pl, bin/jev.sh), .claude/
     run/
       SKILL.md                       jarvis:run: the operating playbook
       references/

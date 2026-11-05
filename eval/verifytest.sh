@@ -57,7 +57,7 @@ chmod +x "$tmp/sleeper" "$tmp/hold"
 mkrepo() { # $1 = dir, $2 = ignored | tracked: whether handoffs/ itself is committed
   mkdir -p "$1/handoffs/bin" "$1/handoffs/briefs" "$1/src" "$1/tests" && (
     cd "$1" && git init -q
-    cp "$tpl/handoffs/bin/jarvis" "$tpl/handoffs/bin/jarvis-lock.pl" "$tpl/handoffs/bin/jarvis-verify.py" handoffs/bin/
+    cp "$tpl/handoffs/bin/jarvis" "$tpl/handoffs/bin/jarvis-lock.pl" "$tpl/handoffs/bin/jarvis-verify.py" handoffs/bin/ && cp -R "$tpl/handoffs/bin/lib" handoffs/bin/
     sed -e 's/{{MAX_CLAUDE}}/3/' -e 's/{{AMBER}}/50/' -e 's/{{RED}}/75/' "$tpl/handoffs/jarvis.conf" > handoffs/jarvis.conf
     echo 'JARVIS_STOP_GRACE=1' >> handoffs/jarvis.conf
     printf '# Open\n' > handoffs/OPEN.md
@@ -600,7 +600,7 @@ ai="$r/handoffs/.jarvis/verify/standalone-hI/20260101T000000Z-2-bbbbbb"; mkdir -
 out=$(D --apply); printf '%s' "$out" | grep -q "^doctor: orphaned verification handoffs/.jarvis/verify/standalone-hI/${ai##*/}: removed its folder$" && [ ! -e "$ai" ]
 check "an add interrupted before it registered: its owned folder is removed" $?
 r3="$tmp/r3"; git worktree add -q --detach "$r3" HEAD   # another checkout of the same repository
-mkdir -p "$r3/handoffs/bin" && cp handoffs/bin/jarvis handoffs/bin/jarvis-lock.pl handoffs/bin/jarvis-verify.py "$r3/handoffs/bin/" \
+mkdir -p "$r3/handoffs/bin" && cp handoffs/bin/jarvis handoffs/bin/jarvis-lock.pl handoffs/bin/jarvis-verify.py "$r3/handoffs/bin/" && cp -R handoffs/bin/lib "$r3/handoffs/bin/" \
   && cp handoffs/jarvis.conf "$r3/handoffs/"
 bg_in "$r" "$tmp/sleeper"; fake=$bgpid   # alive, with a PID its manifest names but another start time
 a3="$r3/handoffs/.jarvis/verify/standalone-h3/20260101T000000Z-3-cccccc"

@@ -27,6 +27,7 @@ jobs:
         run: |
           shellcheck -S error \
             plugins/jarvis/skills/setup/templates/handoffs/bin/jarvis \
+            plugins/jarvis/skills/setup/templates/handoffs/bin/lib/*.sh \
             plugins/jarvis/skills/setup/templates/handoffs/bin/jev.sh \
             eval/verifytest.sh
       - name: python helpers compile

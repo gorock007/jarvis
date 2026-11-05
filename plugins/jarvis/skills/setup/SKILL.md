@@ -30,6 +30,10 @@ file:
   `sessions`, `budget`, `fable`, plus the prompt-guard and PreToolUse hooks
   and the statusline tap. It needs `jq` and, for `usage`, `merge --verify`
   and the overlap check, `python3`.
+- `handoffs/bin/lib/`: the modules `bin/jarvis` sources: `core.sh`,
+  `hosts.sh` and one file per host, `caps.sh`, `spawn.sh`, `merge.sh`,
+  `watch.sh` and the rest. `bin/jarvis` doesn't run without them. Copy the
+  folder whole and never edit one file of it alone.
 - `handoffs/bin/jarvis-lock.pl`: the lease behind `jarvis lock` and
   `jarvis resources`. It needs `perl`, which macOS ships.
 - `handoffs/bin/jarvis-verify.py`: the engine behind `jarvis merge --check
@@ -191,7 +195,8 @@ their defaults: `JARVIS_MAX_CLAUDE_GLOBAL`, `JARVIS_MAX_OPUS`,
 Then:
 
 - Copy `templates/handoffs/` to `<repo>/handoffs/`, keeping the `.gitkeep`s
-  (this includes `handoffs/bin/jarvis-verify.py` and
+  (this includes `handoffs/bin/lib/`, which `bin/jarvis` sources and which
+  needs no `chmod`, and `handoffs/bin/jarvis-verify.py` and
   `handoffs/bin/jarvis-scope.py`, which run through `python3` and need no
   `chmod`), and `chmod +x handoffs/bin/jarvis handoffs/bin/jarvis-lock.pl handoffs/bin/jev.sh`.
   Skip `jev.sh` if the user said no to Jev.
@@ -220,7 +225,8 @@ Then:
 - `handoffs/bin/jarvis band` should print a band, or `unknown` until the
   first statusline refresh. `echo '{}' | handoffs/bin/jarvis hook prompt`
   must exit 0 and print nothing. `handoffs/bin/jarvis` with no arguments
-  prints its help. `handoffs/bin/jarvis lock suite -- true` must exit 0.
+  prints its help (that loads every file of `lib/`).
+  `handoffs/bin/jarvis lock suite -- true` must exit 0.
 - On Superset, confirm the model ids the host accepts:
   `superset agents create --workspace "$SUPERSET_WORKSPACE_ID" --agent claude --model __probe__ --prompt x`
   fails with an error that lists the accepted ids (the same works for
@@ -379,7 +385,13 @@ brief's checks on HEAD plus only the listed changes in a throwaway worktree,
 and spawn's May-touch overlap warning. See the `jarvis:run` skill's
 `references/lifecycle.md`.
 
-1. Copy the new `handoffs/bin/jarvis` and `handoffs/bin/jarvis-lock.pl`,
+1. Replace `handoffs/bin/lib/` whole with the template's before copying
+   `bin/jarvis`. `bin/jarvis` is split into modules there, and it stops
+   with 're-run jarvis:setup' without them. Copy it to
+   `handoffs/bin/lib.new`, then
+   `rm -rf handoffs/bin/lib && mv handoffs/bin/lib.new handoffs/bin/lib`.
+   Leave `handoffs/bin/hosts/` (the user's own hosts) alone. Then copy
+   the new `handoffs/bin/jarvis` and `handoffs/bin/jarvis-lock.pl`,
    plus the two new helpers `handoffs/bin/jarvis-verify.py` and
    `handoffs/bin/jarvis-scope.py` (run through `python3`, no `chmod`
    needed). Without `jarvis-verify.py`, `--verify` exits 2; without
@@ -417,3 +429,5 @@ and spawn's May-touch overlap warning. See the `jarvis:run` skill's
 - Keep the templates' voice: short rules, plain words, each rule with its
   reason. `CLAUDE.md` and `AGENTS.md` are read by every session, so every
   line in them has to earn its tokens.
+- `bin/jarvis` and `bin/lib/` are one unit: every upgrade copies both, lib
+  first, and replaces lib whole.

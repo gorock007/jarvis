@@ -1079,7 +1079,7 @@ fi
 # plugin's URL in a launch line (a checkout path with a space, # ? and %), and which
 # handoffs count for a run's brief.
 echo "launch URL and handoff_since"
-fn() { awk -v n="$1" 'index($0, n "() {") == 1 {p=1; one = /\}( *#.*)?$/} p {print} p && (one || /^}$/) {exit}' "$jbin"; }  # a function of the script, whole
+fn() { awk -v n="$1" 'index($0, n "() {") == 1 {p=1; one = /\}( *#.*)?$/} p {print} p && (one || /^}$/) {exit}' "$jbin" "${jbin%/*}/lib"/*.sh; }  # a function of the script or its lib/, whole
 jbin="$here/../plugins/jarvis/skills/setup/templates/handoffs/bin/jarvis"
 if command -v node >/dev/null 2>&1; then
   # shellcheck disable=SC2034 # the variables are read by the functions eval'd inside
@@ -1118,6 +1118,38 @@ fi
   check "…x.md.old, another brief and another checkout's path don't" $?
 ) | tee "$tmp/hs.out"
 n=$(grep -c '^  FAIL' "$tmp/hs.out"); fails=$((fails + n))
+
+# bin/jarvis sources lib/ from beside its real file: called through symlinks that live
+# elsewhere (no lib/ next to them) and by a relative path, it still finds it; with no
+# lib/ at all, commands stop with a pointer to setup and the hooks' fast paths stay silent.
+echo "lib/ beside bin/jarvis"
+(
+  tpl="$here/../plugins/jarvis/skills/setup/templates"; lr="$tmp/lr/repo"; export JARVIS_HOME="$tmp/lr/jh"
+  mkdir -p "$lr/sub" "$tmp/lr/links" "$JARVIS_HOME" && cd "$lr" || exit 1
+  git init -q && cp -R "$tpl/handoffs" . \
+    && sed -e 's/{{MAX_CLAUDE}}/3/' -e 's/{{AMBER}}/50/' -e 's/{{RED}}/75/' "$tpl/handoffs/jarvis.conf" > handoffs/jarvis.conf
+  now=$(date +%s)
+  echo "{\"five_hour\":{\"used_percentage\":30,\"resets_at\":$((now + 2 * 3600))},\"ts\":$now}" > "$JARVIS_HOME/usage.json"
+  ln -s ../repo/handoffs/bin/jarvis "$tmp/lr/links/rel"; ln -s "$lr/handoffs/bin/jarvis" "$tmp/lr/links/abs"
+  ln -s rel "$tmp/lr/links/rel2"
+  for l in rel abs rel2; do
+    out=$(cd sub && "$BASH" "$tmp/lr/links/$l" band 2>&1); rc=$?
+    [ $rc = 0 ] && printf '%s' "$out" | grep -Eq '^(green|amber|red) '; check "band through the $l symlink, from a subdirectory: lib/ found beside the real file" $?
+  done
+  out=$(cd handoffs && "$BASH" bin/jarvis band 2>&1); rc=$?
+  [ $rc = 0 ] && printf '%s' "$out" | grep -Eq '^(green|amber|red) '; check "band as bin/jarvis from handoffs/" $?
+  rm -rf handoffs/bin/lib
+  out=$("$BASH" handoffs/bin/jarvis status 2>&1); rc=$?
+  [ $rc = 1 ] && [ "$out" = "jarvis: no $PWD/handoffs/bin/lib/ beside bin/jarvis — re-run jarvis:setup" ]
+  check "no lib/: status exits 1, pointing at jarvis:setup" $?
+  out=$(echo '{"hook_event_name":"Stop"}' | JARVIS_ROLE=worker JARVIS_BRIEF=handoffs/briefs/x.md "$BASH" handoffs/bin/jarvis hook event stop 2>&1); rc=$?
+  [ $rc = 0 ] && [ -z "$out" ]; check "no lib/: hook event stop exits 0, silent" $?
+  out=$(echo '{"tool_name":"Edit","tool_input":{"file_path":"app.txt"}}' | "$BASH" handoffs/bin/jarvis hook pretool 2>&1); rc=$?
+  [ $rc = 0 ] && [ -z "$out" ]; check "no lib/: hook pretool on other input exits 0, silent" $?
+  err=$(echo '{"prompt":"hi"}' | "$BASH" handoffs/bin/jarvis hook prompt 2>&1 >/dev/null); rc=$?
+  [ $rc = 1 ] && printf '%s' "$err" | grep -q 're-run jarvis:setup$'; check "no lib/: hook prompt exits 1, the message on stderr" $?
+) | tee "$tmp/lib.out"
+n=$(grep -c '^  FAIL' "$tmp/lib.out"); fails=$((fails + n))
 
 # The tmux host, on a tmux server of its own (its own socket), with a stand-in
 # agent that echoes its launch and each line typed into it. The user's tmux
@@ -1178,7 +1210,7 @@ if command -v tmux >/dev/null 2>&1 && command -v jq >/dev/null 2>&1; then
     # shellcheck disable=SC2016
     for a in codex opencode; do
       printf 'JARVIS_AGENT_%s='"'"'export PATH="%s:$PATH"; [ -x "%s/%s" ] && %s'"'"'\n' \
-        "$a" "$fb" "$fb" "$a" "$(sed -n "s/^JARVIS_AGENT_$a='\\(.*\\)'\$/\\1/p" "$tpl/handoffs/bin/jarvis")"
+        "$a" "$fb" "$fb" "$a" "$(sed -n "s/^JARVIS_AGENT_$a='\\(.*\\)'\$/\\1/p" "$tpl/handoffs/bin/lib/defaults.sh")"
     done >> handoffs/jarvis.conf
     evs() { jq -r '.kind + ":" + .detail' "handoffs/.jarvis/events/$1.jsonl" 2>/dev/null | tr '\n' ' '; }
     if python3 -c 'import tomllib' 2>/dev/null; then

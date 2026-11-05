@@ -45,7 +45,7 @@ free() { (cd "$1" && handoffs/bin/jarvis lock "$2" --wait 0 -- true 2>/dev/null)
 mkrepo() { # $1 = dir: a checkout with the template's bin files and one extra class
   mkdir -p "$1/handoffs/bin" "$1/sub" && (
     cd "$1" && git init -q
-    cp "$tpl/handoffs/bin/jarvis" "$tpl/handoffs/bin/jarvis-lock.pl" handoffs/bin/
+    cp "$tpl/handoffs/bin/jarvis" "$tpl/handoffs/bin/jarvis-lock.pl" handoffs/bin/ && cp -R "$tpl/handoffs/bin/lib" handoffs/bin/
     sed -e 's/{{MAX_CLAUDE}}/3/' -e 's/{{AMBER}}/50/' -e 's/{{RED}}/75/' "$tpl/handoffs/jarvis.conf" > handoffs/jarvis.conf
     echo 'JARVIS_LOCK_pair="host 2"' >> handoffs/jarvis.conf
     echo a > app.txt && echo s > sub/s.txt
