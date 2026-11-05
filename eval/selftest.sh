@@ -651,8 +651,13 @@ $trust"
       ev_nudge && ev_src nudge:screen; check "events: working falls back to the frozen-screen check (source nudge:screen)" $?
       ev_setup claude; ev_tick frozen; ev_age $(( $(date +%s) - 120 )) handoffs/.jarvis/screen-ev; ev_tick frozen
       ev_nudge && ev_src nudge:screen; check "events: no events file: today's screen check" $?
-      ev_setup codex; ev_at 0 ended; ev_at 0 permission; ev_tick frozen; ev_age $(( $(date +%s) - 120 )) handoffs/.jarvis/screen-ev; ev_tick frozen
-      ev_nudge && ev_src nudge:screen && ! grep -q 'ended without\|waiting at a prompt' "$FAKE_LOG"; check "events: a Codex run's events file is ignored" $?
+      for a in codex opencode; do
+        ev_setup $a; ev_at 30 working; ev_at 0 ended; ev_tick
+        ev_woke 'ended without a handoff' && ev_src ended:event; check "events: a $a run's events are read too (tmux writes them)" $?
+        ev_setup $a; ev_at 180 working; ev_at 120 stop; ev_tick; ev_nudge && ev_src nudge:event; check "…its stop drives the stall path" $?
+      done
+      ev_setup fake; ev_at 0 ended; ev_at 0 permission; ev_tick frozen; ev_age $(( $(date +%s) - 120 )) handoffs/.jarvis/screen-ev; ev_tick frozen
+      ev_nudge && ev_src nudge:screen && ! grep -q 'ended without\|waiting at a prompt' "$FAKE_LOG"; check "events: another agent's events file is ignored" $?
       ev_setup claude; ev_at 900 ended; ev_at 700 permission; ev_tick; ev_quiet; check "events: lines older than the run's spawn are ignored" $?
       ev_setup claude; ev_at 900 working; ev_at 700 stop; ev_tick frozen; ev_age $(( $(date +%s) - 120 )) handoffs/.jarvis/screen-ev; ev_tick frozen
       ev_nudge && ev_src nudge:screen; check "…so the screen decides, as with no events" $?
@@ -1094,6 +1099,74 @@ if command -v tmux >/dev/null 2>&1 && command -v jq >/dev/null 2>&1; then
       && grep -q '^unset .*JARVIS_ROLE JARVIS_BRIEF' handoffs/.jarvis/launch/tw.sh && ! grep -q 'export JARVIS_ROLE' handoffs/.jarvis/launch/tw.sh
     check "spawn on tmux: a Claude worker's launch script sets JARVIS_ROLE=worker and JARVIS_BRIEF; another agent's only unsets them" $?
     [ -n "$tc" ] && poll shows_t "$tc" '^role=worker brief=handoffs/briefs/2026-10-20-1200-tc.md$'; check "…and the worker sees them" $?
+    # Codex and OpenCode workers get per-run hooks: stand-in binaries, with the
+    # captured payloads, run what the launch script hands them. The agent lines set PATH
+    # themselves (the user's shell startup files can reset the server's) and refuse to
+    # run anything but the stand-in, so a real agent never starts here.
+    fb="$tmp/tb-bin"; mkdir -p "$fb"
+    # shellcheck disable=SC2016
+    for a in codex opencode; do
+      printf 'JARVIS_AGENT_%s='"'"'export PATH="%s:$PATH"; [ -x "%s/%s" ] && %s'"'"'\n' \
+        "$a" "$fb" "$fb" "$a" "$(sed -n "s/^JARVIS_AGENT_$a='\\(.*\\)'\$/\\1/p" "$tpl/handoffs/bin/jarvis")"
+    done >> handoffs/jarvis.conf
+    evs() { jq -r '.kind + ":" + .detail' "handoffs/.jarvis/events/$1.jsonl" 2>/dev/null | tr '\n' ' '; }
+    if python3 -c 'import tomllib' 2>/dev/null; then
+      # fake codex: each -c hooks.<Event> parsed as TOML, its commands run with the event's payload
+      cat > "$fb/codex" <<EOF
+#!/usr/bin/env python3
+import json, subprocess, sys, tomllib
+hooks, a = {}, sys.argv[1:]
+for i, x in enumerate(a[:-1]):
+    if x == "-c" and a[i + 1].startswith("hooks."):
+        k, v = a[i + 1][6:].split("=", 1)
+        hooks[k] = tomllib.loads("v = " + v)["v"]
+print("fake codex hooks: " + " ".join(sorted(hooks)) + " | " + " ".join(x for x in a if x.startswith("--dangerously-bypass-hook")))
+for ev, f in (("UserPromptSubmit", "user-prompt-submit"), ("Stop", "stop"), ("PermissionRequest", ""), ("SessionEnd", "session-end")):
+    stdin = open("$here/hook-payloads/codex-%s.json" % f).read() if f else "{}"
+    for g in hooks.get(ev, []):
+        for h in g["hooks"]:
+            subprocess.run(h["command"], shell=True, input=stdin, text=True, timeout=h.get("timeout", 10))
+print("fake codex done")
+EOF
+      chmod +x "$fb/codex"
+      printf '# x\nworker: codex\nmodel: gpt-5.6-terra\neffort: low\nstarted: <x>\n' > handoffs/briefs/2026-10-20-1200-tx.md
+      tx=$(JARVIS_HOME="$tmp/jh-tx" CODEX_HOME="$tmp/codex-tx" T spawn handoffs/briefs/2026-10-20-1200-tx.md 2>/dev/null | sed -n 's/^spawned \([^ ]*\) .*/\1/p')
+      grep -qx "export JARVIS_ROLE=worker JARVIS_BRIEF='handoffs/briefs/2026-10-20-1200-tx.md'" handoffs/.jarvis/launch/tx.sh \
+        && grep -q "^codex() { command codex -c 'hooks.UserPromptSubmit=" "handoffs/.jarvis/launch/tx.sh"
+      check "spawn on tmux: a Codex worker's launch script sets its role and wraps codex with -c hooks" $?
+      [ -n "$tx" ] && poll shows_t "$tx" '^fake codex done'
+      shows_t "$tx" '^fake codex hooks: PermissionRequest SessionEnd Stop UserPromptSubmit | --dangerously-bypass-hook-trust$' \
+        && [ "$(evs 2026-10-20-1200-tx)" = 'working: stop:ok permission: ended:other ' ]
+      check "…its hooks reach jarvis hook event with Codex's payloads: working, stop, permission, ended" $?
+    else
+      echo "  (Codex hook checks skipped: python3 has no tomllib)"
+    fi
+    if command -v node >/dev/null 2>&1; then
+      # fake opencode: loads the plugin OPENCODE_CONFIG_CONTENT names, feeds it the events
+      cat > "$fb/oc-driver.mjs" <<EOF
+import { readFileSync } from "node:fs";
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const url = JSON.parse(process.env.OPENCODE_CONFIG_CONTENT).plugin[0];
+const hooks = await (await import(url)).JarvisEvents({});
+console.log("fake opencode plugin: " + (hooks.event ? "on" : "off"));
+for (const l of readFileSync("$here/hook-payloads/opencode-events.jsonl", "utf8").split("\n").filter(Boolean)) {
+  await hooks.event?.({ event: JSON.parse(l) }); await sleep(400);
+}
+console.log("fake opencode done");
+EOF
+      printf '#!/bin/sh\nexec node "%s/oc-driver.mjs"\n' "$fb" > "$fb/opencode"; chmod +x "$fb/opencode"
+      printf '# o\nworker: opencode\nmodel: \neffort: \nstarted: <x>\n' > handoffs/briefs/2026-10-20-1200-to.md
+      to=$(JARVIS_HOME="$tmp/jh-to" T spawn handoffs/briefs/2026-10-20-1200-to.md 2>/dev/null | sed -n 's/^spawned \([^ ]*\) .*/\1/p')
+      grep -q '^\[ -n "${OPENCODE_CONFIG_CONTENT:-}" \] || export OPENCODE_CONFIG_CONTENT=' handoffs/.jarvis/launch/to.sh \
+        && [ -f handoffs/.jarvis/launch/opencode-events.js ] && grep -q "jarvis' hook event ended </dev/null$" handoffs/.jarvis/launch/to.sh
+      check "spawn on tmux: an OpenCode worker gets the events plugin through OPENCODE_CONFIG_CONTENT, and ended after it exits" $?
+      oc_done() { [ "$(evs 2026-10-20-1200-to)" = 'working: stop: working: permission: waiting: stop: ended: ' ]; }
+      [ -n "$to" ] && poll oc_done && shows_t "$to" '^fake opencode plugin: on'
+      check "…the plugin maps busy, idle, permission and question (a subagent's ignored) and the exit is ended" $?
+      ! grep -q 'export JARVIS_ROLE\|OPENCODE_CONFIG_CONTENT\|^codex()' handoffs/.jarvis/launch/tw.sh; check "…another agent gets neither" $?
+    else
+      echo "  (OpenCode plugin checks skipped: no node)"
+    fi
     tmux -L "$sock" kill-server
     rm -f "${tenv%%,*}"
   ) | tee "$tmp/tmux.out"

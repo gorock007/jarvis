@@ -1,0 +1,13 @@
+{"type":"session.created","properties":{"sessionID":"ses_00000000000000000000000000","info":{"id":"ses_00000000000000000000000000","directory":"/home/user/repo"}}}
+{"type":"session.status","properties":{"sessionID":"ses_00000000000000000000000000","status":{"type":"busy"}}}
+{"type":"session.status","properties":{"sessionID":"ses_00000000000000000000000000","status":{"type":"busy"}}}
+{"type":"session.status","properties":{"sessionID":"ses_00000000000000000000000000","status":{"type":"busy"}}}
+{"type":"session.status","properties":{"sessionID":"ses_00000000000000000000000000","status":{"type":"idle"}}}
+{"type":"session.idle","properties":{"sessionID":"ses_00000000000000000000000000"}}
+{"type":"session.created","properties":{"sessionID":"ses_00000000000000000000000001","info":{"id":"ses_00000000000000000000000001","parentID":"ses_00000000000000000000000000","directory":"/home/user/repo"}}}
+{"type":"session.status","properties":{"sessionID":"ses_00000000000000000000000000","status":{"type":"busy"}}}
+{"type":"session.status","properties":{"sessionID":"ses_00000000000000000000000001","status":{"type":"busy"}}}
+{"type":"session.status","properties":{"sessionID":"ses_00000000000000000000000001","status":{"type":"idle"}}}
+{"type":"permission.asked","properties":{"sessionID":"ses_00000000000000000000000000"}}
+{"type":"question.asked","properties":{"sessionID":"ses_00000000000000000000000000"}}
+{"type":"session.status","properties":{"sessionID":"ses_00000000000000000000000000","status":{"type":"idle"}}}
