@@ -46,7 +46,12 @@ tmux_spawn() {
 }
 
 tmux_sq() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }   # quoted for sh
-url_path() { printf '%s' "$1" | sed -e 's/%/%25/g' -e 's/ /%20/g' -e 's/#/%23/g' -e 's/?/%3F/g' -e 's/"/%22/g' -e 's/\\/%5C/g'; }   # a file path as a URL's path: % first; # and ? would end it, \ reads as /
+url_path() { # a file path as a URL's path: % first; # and ? would end it, \ reads as /; tab, CR and LF would break the line the URL sits on
+  local p=$1
+  p=${p//\%/%25}; p=${p//$'\n'/%0A}   # sed reads lines, so the LF goes here
+  printf '%s' "$p" | sed -e 's/ /%20/g' -e 's/#/%23/g' -e 's/?/%3F/g' -e 's/"/%22/g' -e 's/\\/%5C/g' \
+    -e "s/$(printf '\t')/%09/g" -e "s/$(printf '\r')/%0D/g"
+}
 
 # Turn events for a tmux Codex or OpenCode worker, per run, never in the user's config:
 # - codex: a codex() wrapper adds -c hooks (UserPromptSubmit, Stop, PermissionRequest,

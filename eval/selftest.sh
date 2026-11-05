@@ -1101,6 +1101,15 @@ if command -v node >/dev/null 2>&1; then
 else
   echo "  (plugin URL check skipped: no node)"
 fi
+(
+  eval "$(fn url_path)"
+  tb=$(printf '\t'); cr=$(printf '\r'); lf='
+'
+  [ "$(url_path "/a${tb}b")" = "/a%09b" ] && [ "$(url_path "/a${cr}b")" = "/a%0Db" ] \
+    && [ "$(url_path "/a${lf}b")" = "/a%0Ab" ] && [ "$(url_path "/a b#c?d%e")" = "/a%20b%23c%3Fd%25e" ]
+  check "url_path: a tab, CR and LF are percent-encoded, % first (no %25 of the new %0A)" $?
+) | tee "$tmp/up.out"
+n=$(grep -c '^  FAIL' "$tmp/up.out"); fails=$((fails + n))
 # shellcheck disable=SC2034 # the variables are read by the functions eval'd inside
 (
   ROOT="$tmp/hs/repo"; ROOTP=$ROOT; H=handoffs
@@ -1116,6 +1125,13 @@ fi
   ! hs handoffs/briefs/x.md.old && ! hs "$ROOT/handoffs/briefs/x.md.old" && ! hs handoffs/briefs/y.md \
     && ! hs "$ROOT/handoffs/briefs/y.md" && ! hs "$tmp/other/repo/handoffs/briefs/x.md"
   check "…x.md.old, another brief and another checkout's path don't" $?
+  hs "//handoffs/briefs/x.md" && hs "//handoffs/briefs/x.md (rerun)"
+  check "…a doubled leading // counts like a single one" $?
+  # ROOT is a symlink to the real directory; ROOTP, as pwd -P names it, is the real one
+  ln -s "$ROOT" "$tmp/hs/link" && ROOT="$tmp/hs/link" && ROOTP=$(cd "$tmp/hs/repo" && pwd -P)
+  hs "$ROOTP/handoffs/briefs/x.md" && hs "$ROOTP/handoffs/briefs/x.md (rerun)" && ! hs "$ROOTP/handoffs/briefs/x.md.old" \
+    && ! hs "$ROOTP/handoffs/briefs/y.md" && hs "$ROOT/handoffs/briefs/x.md"
+  check "…where ROOT and ROOTP differ, the ROOTP spelling counts on its own" $?
 ) | tee "$tmp/hs.out"
 n=$(grep -c '^  FAIL' "$tmp/hs.out"); fails=$((fails + n))
 

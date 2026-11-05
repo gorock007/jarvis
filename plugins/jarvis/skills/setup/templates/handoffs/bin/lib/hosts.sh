@@ -4,7 +4,7 @@
 # ---------------------------------------------------------------- hosts
 
 # A host runs agents in terminals that Jarvis can read and type into. It is seven
-# functions named <host>_<op>; everything else in this script is the same on any host.
+# functions named <host>_<op>; everything else in jarvis is the same on any host.
 #   self                                 this terminal's id
 #   spawn <agent> <model> <effort> <prompt> <name> [<attachment>...]
 #                                        start a worker in a new terminal in this checkout,

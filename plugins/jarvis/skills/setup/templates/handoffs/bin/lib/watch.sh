@@ -301,7 +301,7 @@ handoff_since() { # $1 = brief, $2 = epoch: a handoff for the brief in handoffs/
     b=$(field brief "$ho" | sed 's#^[^A-Za-z0-9_/]*##')
     case "$b" in
       "$ROOT/${1#./}"|"$ROOT/${1#./}"[!A-Za-z0-9_.-]*|"$ROOTP/${1#./}"|"$ROOTP/${1#./}"[!A-Za-z0-9_.-]*) ;;
-      *) b=${b#/}; case "$b" in "${1#./}"|"${1#./}"[!A-Za-z0-9_.-]*) ;; *) continue ;; esac ;;
+      *) b=${b#"${b%%[!/]*}"}; case "$b" in "${1#./}"|"${1#./}"[!A-Za-z0-9_.-]*) ;; *) continue ;; esac ;;
     esac
     [ "$(mtime "$ho")" -ge "$2" ] && return 0
   done

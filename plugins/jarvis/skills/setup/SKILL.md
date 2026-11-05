@@ -294,6 +294,11 @@ ultron agent spawn --role jarvis --agent claude --model claude-opus-5-5 --effort
 
 ## 5. Upgrading a repo set up with jarvis 0.2 or earlier
 
+A repo is upgraded by following every section from its own version up to the
+latest, in order. Wherever a step copies `handoffs/bin/jarvis`, replace the
+whole `handoffs/bin/lib/` first, as section 9 step 1 describes (a repo older
+than 0.8 has no `lib/` yet: create it).
+
 The old layout kept every Jarvis rule in `CLAUDE.md`, which every worker
 loaded too. Move it without losing anything project-specific:
 

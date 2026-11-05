@@ -64,8 +64,8 @@
 #                                      audited; --quiet: one line or nothing
 #
 # Workers run on a host: Superset, Ultron, tmux, or one added in handoffs/bin/hosts/ (see
-# "hosts" below). The agent in each terminal is any CLI: claude, codex, opencode, or
-# one added as JARVIS_AGENT_<name> in jarvis.conf.
+# lib/hosts.sh). The agent in each terminal is any CLI: claude, codex, opencode, or one
+# added as JARVIS_AGENT_<name> in jarvis.conf.
 # Settings live in handoffs/jarvis.conf. Works on the stock macOS bash (3.2).
 # jq is needed for spawn, the hooks and the band. Without it spawn refuses and the band
 # reads amber (the Fable checks fail closed too); only the hooks and the guard let things through.
@@ -88,7 +88,8 @@ if [ "${1:-} ${2:-}" = "hook pretool" ]; then
 fi
 
 # the turn hooks of Claude Code, Codex and OpenCode workers: lib/event-hook.sh, before config and host; silent, exit 0
-[ "${1:-} ${2:-}" = "hook event" ] && { [ -f "$JARVIS_LIB/event-hook.sh" ] && . "$JARVIS_LIB/event-hook.sh"; exit 0; }
+# shellcheck disable=SC1091
+[ "${1:-} ${2:-}" = "hook event" ] && { [ -r "$JARVIS_LIB/event-hook.sh" ] && . "$JARVIS_LIB/event-hook.sh"; exit 0; }
 
 # spawn's leased part says it started, first thing, so spawn_leased tells its exit (its
 # own message already printed) from a lease that was never taken
@@ -129,6 +130,7 @@ case "${1:-}" in lock|_verify-lock)
 esac
 cd "$ROOT" || exit 0
 H=handoffs
+# shellcheck disable=SC2034 # read only by lib/*.sh
 OPEN="$H/OPEN.md"
 STATE="$H/.jarvis"
 BIN="$H/bin"
@@ -143,6 +145,7 @@ PROJ=$(printf '%s' "$ROOT" | sed 's#[^A-Za-z0-9]#-#g')   # Claude Code's name fo
 CLAUDE_DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
 JHOME="${JARVIS_HOME:-$HOME/.jarvis}"   # machine-wide: the usage reading and its history, the spawn lease, pending spawns
 ROOTP=$(pwd -P)                         # this checkout as session records name it
+# shellcheck disable=SC2034 # read only by lib/*.sh
 TAB=$(printf '\t')
 
 # the functions, from lib/: the host ones before a host of handoffs/bin/hosts/, the rest after it
