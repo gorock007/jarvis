@@ -6,6 +6,8 @@ PROMPT_RE="trust (this|the files in this) folder|do you trust|is this a project 
 
 # ---------------------------------------------------------------- watch
 
+WATCH_READ_LINES=15   # the last rows watch_tick reads for every worker; detection works from these alone
+
 jarvis_idle_min() { # minutes since the Jarvis transcript last changed; empty if unknown
   local tp
   have jq || return
@@ -43,9 +45,14 @@ watch_prompt_action() { # $1 run, $2 screen
   agent=$(run_get "$1" agent); brief=$(run_get "$1" brief)
   [ "$(run_get "$1" state)" = running ] && [ -f "$brief" ] && have python3 || return 1
   case "$agent" in codex) fastpath_on trust ;; claude) fastpath_on edit ;; *) return 1 ;; esac || return 1
-  # detection saw watch_tick's 15 lines; the edit attempt alone re-reads 80, for the
-  # header above a full diff (a failed read is an empty screen, which fails closed)
-  [ "$agent" = claude ] && screen=$(host read "$1" 80 2>/dev/null | sed -e 's/[[:space:]]*$//')
+  # detection saw watch_tick's WATCH_READ_LINES rows; the edit attempt alone re-reads 80, for
+  # the header above a full diff. A failed read is an empty screen, which fails closed. The
+  # re-read must end with the very rows detection saw (the dedupe key comes from them): if the
+  # screen moved between the reads, fail closed and let the prompt path wake Jarvis once.
+  if [ "$agent" = claude ]; then
+    screen=$(host read "$1" 80 2>/dev/null | sed -e 's/[[:space:]]*$//')
+    [ -n "$2" ] && [ "$(printf '%s\n' "$screen" | tail -n "$(printf '%s\n' "$2" | wc -l | tr -d ' ')")" = "$2" ] || return 1
+  fi
   python3 -I - "$ROOTP" "$brief" "$agent" "$(run_get "$1" spawned)" "$screen" <<'PY'
 import os, re, sys
 from pathlib import Path
@@ -335,7 +342,7 @@ watch_stall() { # $1 run, $2 event | screen, $3 dedup key, $4 the event's text
 }
 
 watch_tick() {
-  local seen="$STATE/watch.seen" events="" kinds="" ho key id tail_ idle term line brief sum scr stale b opened new t read_lines=15
+  local seen="$STATE/watch.seen" events="" kinds="" ho key id tail_ idle term line brief sum scr stale b opened new t
   local ev et ek eturn en pe src
   touch "$seen"
   for ho in "$H"/*.md; do
@@ -349,7 +356,7 @@ watch_tick() {
   while IFS= read -r line; do
     id=$(printf '%s' "$line" | sed -n 's/.*term \([^ ]*\).*/\1/p')
     [ -n "$id" ] || continue
-    tail_=$(host read "$id" "$read_lines" 2>/dev/null | sed -e 's/[[:space:]]*$//')
+    tail_=$(host read "$id" "$WATCH_READ_LINES" 2>/dev/null | sed -e 's/[[:space:]]*$//')
     b=$(budget_tick "$id" "$tail_" </dev/null)
     [ -n "$b" ] && { events="$events$b"; kinds="$kinds budget"; }
     # a worker's own hook events come first; the screen is the fallback

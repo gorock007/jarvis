@@ -93,7 +93,8 @@ case "$1 $2" in
     printf '{"kind":"terminal","sessionId":"term-%s"}\n' "$n" ;;
   "terminals close") [ -z "${FAKE_CLOSE_FAIL:-}" ] || { echo "Error: terminal $6 not found" >&2; exit 1; } ;;
   "terminals read") s=${FAKE_SCREEN:-Working… esc to interrupt}; p=   # the last --max-lines N lines, as Superset returns
-    for a in "$@"; do [ "$p" != --max-lines ] || s=$(printf '%s\n' "$s" | tail -n "$a"); p=$a; done
+    for a in "$@"; do [ "$p" != --max-lines ] || { [ "$a" != 80 ] || [ -z "${FAKE_SCREEN_80:-}" ] || s=$FAKE_SCREEN_80   # a screen that moved between reads
+      s=$(printf '%s\n' "$s" | tail -n "$a"); }; p=$a; done
     jq -n --arg t "$s" '{text: $t}' ;;
   "terminals send") [ -z "${FAKE_SEND_FAIL:-}" ] || [ "$6" = jarvis-t ] ;;
   "terminals list") printf '{"sessions":[%s]}\n' "$(printf '%s' "${FAKE_OPEN:-}" | sed -E 's/([^ ]+)/{"terminalId":"\1","exited":false,"title":"shell-\1"}/g; s/ /,/g')" ;;
@@ -284,6 +285,23 @@ EOT
       fp_setup claude '`src/`'; fp_tick "$(fp_box '⏺ Update(src/widget.py)' src/widget.py 'Do you want to make this edit to widget.py?' "$fp_rows")"
       fp_approved && grep -q 'path=src/widget.py key=enter' handoffs/.jarvis/audit.log
       check "fast edit: a diff longer than the 15-line tail is still approved (the 80-line re-read finds the header)" $?
+      # The 80-line re-read must end with the rows detection saw: a screen that moved between
+      # the two reads (a frame, then the dialog) fails closed, waking Jarvis once and never sending keys
+      fp_frame=$(fp_edit src/widget.py | sed 's/+new = 1/+newer = 1/')
+      fp_setup claude '`src/`'; : > "$FAKE_LOG"; FAKE_SCREEN="$fp_frame" FAKE_SCREEN_80="$(fp_edit src/widget.py)" $J watch --once >/dev/null
+      fp_woke && grep -q -- '--max-lines 80' "$FAKE_LOG" && [ "$(wl)" = 'woke prompt 1' ]
+      check "fast edit: an 80-line re-read that differs from the 15 lines detection saw wakes Jarvis, no keys" $?
+      : > "$FAKE_LOG"; FAKE_SCREEN="$fp_frame" FAKE_SCREEN_80="$(fp_edit src/widget.py)" $J watch --once >/dev/null
+      ! grep -q 'terminal jarvis-t --text' "$FAKE_LOG" && ! grep -q -- '--keys' "$FAKE_LOG" && [ "$(wl)" = 'woke prompt 1' ]
+      check "fast edit: …and the next tick on the same screens neither wakes again nor sends keys" $?
+      fp_setup claude '`src/`'; : > "$FAKE_LOG"; FAKE_SCREEN="$(fp_edit src/widget.py)" FAKE_SCREEN_80="$(fp_edit src/widget.py)" $J watch --once >/dev/null
+      fp_approved; check "fast edit: consistent 15- and 80-line reads are approved" $?
+      fp_setup claude '`src/`'; fp_short=$(fp_box '' src/new.py 'Do you want to make this edit to new.py?')
+      [ "$(printf '%s\n' "$fp_short" | wc -l | tr -d ' ')" -lt 15 ]; check "fast edit: (the short screen below really has under 15 rows)" $?
+      : > "$FAKE_LOG"; FAKE_SCREEN="$fp_short" FAKE_SCREEN_80="$fp_short" $J watch --once >/dev/null
+      fp_approved; check "fast edit: a screen shorter than 15 rows is still approved" $?
+      fp_setup claude '`src/`'; : > "$FAKE_LOG"; FAKE_SCREEN="$(fp_edit src/widget.py)"$'\n   \n   \n   ' $J watch --once >/dev/null
+      fp_approved; check "fast edit: a dialog followed by blank rows (so under 15 rows are left after trimming) is still approved" $?
       # Detection scans the last 15 lines only: a prompt or limit phrase 40 lines up
       # (scrolled-off output, docs a worker read) neither wakes Jarvis nor sends keys
       fp_scroll() { printf '%s\n' "$1"; i=1; while [ $i -le 38 ]; do printf '  test_%s ... ok\n' $i; i=$((i + 1)); done; printf 'Working… esc to interrupt\n'; }
