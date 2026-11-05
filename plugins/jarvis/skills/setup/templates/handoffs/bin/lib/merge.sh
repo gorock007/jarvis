@@ -95,6 +95,7 @@ cmd_merge() {
   git ls-files --error-unmatch -- "$ho" >/dev/null 2>&1 && old_tracked=1
   mv "$ho" "$dest"
   # a handoff that lists itself would be staged at the path it just left
+  # shellcheck disable=SC2046 # $files is a whitespace-separated list
   set -- $(printf '%s\n' $files | grep -vxF "$ho") "$dest"
   [ $old_tracked = 1 ] && set -- "$@" "$ho"
   [ -n "$brief" ] && [ -f "$brief" ] && set -- "$@" "$brief"

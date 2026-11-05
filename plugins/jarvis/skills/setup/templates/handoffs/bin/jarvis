@@ -161,6 +161,7 @@ for JARVIS_M in band caps status spawn leftovers runs merge doctor budget watch 
 
 cmd="${1:-}"
 [ $# -gt 0 ] && shift
+# shellcheck disable=SC2154 # scope, cap: set by lock_class in lib/lock.sh
 case "$cmd" in
   start) cmd_start "$@" ;;
   status) cmd_status ;;

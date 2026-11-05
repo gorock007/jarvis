@@ -22,14 +22,16 @@ jobs:
       - name: Install packages (macOS)
         if: runner.os == 'macOS'
         run: brew install jq tmux shellcheck
-      - name: shellcheck (errors only)
+      - name: shellcheck (warnings fail)
         if: ${{ !cancelled() }}
         run: |
-          shellcheck -S error \
+          shellcheck -S warning -e SC2034 \
             plugins/jarvis/skills/setup/templates/handoffs/bin/jarvis \
             plugins/jarvis/skills/setup/templates/handoffs/bin/lib/*.sh \
-            plugins/jarvis/skills/setup/templates/handoffs/bin/jev.sh \
-            eval/verifytest.sh
+            plugins/jarvis/skills/setup/templates/handoffs/bin/jev.sh
+      - name: shellcheck (errors only)
+        if: ${{ !cancelled() }}
+        run: shellcheck -S error eval/verifytest.sh
       - name: python helpers compile
         if: ${{ !cancelled() }}
         # -I ignores PYTHONPYCACHEPREFIX; -X pycache_prefix keeps __pycache__ out of the tree
