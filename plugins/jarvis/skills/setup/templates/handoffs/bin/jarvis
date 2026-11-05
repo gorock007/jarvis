@@ -454,6 +454,7 @@ tmux_spawn() {
 }
 
 tmux_sq() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }   # quoted for sh
+url_path() { printf '%s' "$1" | sed -e 's/%/%25/g' -e 's/ /%20/g' -e 's/#/%23/g' -e 's/?/%3F/g' -e 's/"/%22/g' -e 's/\\/%5C/g'; }   # a file path as a URL's path: % first; # and ? would end it, \ reads as /
 
 # Turn events for a tmux Codex or OpenCode worker, per run, never in the user's config:
 # - codex: a codex() wrapper adds -c hooks (UserPromptSubmit, Stop, PermissionRequest,
@@ -480,7 +481,7 @@ tmux_event_lines() { # $1 = agent
         && mv "$STATE/launch/.opencode-events.$$" "$STATE/launch/opencode-events.js"; }; then
         rm -f "$STATE/launch/.opencode-events.$$"; return 0
       fi
-      c=$(printf 'file://%s' "$ROOT/$STATE/launch/opencode-events.js" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g')   # a JSON string
+      c=$(printf 'file://%s' "$(url_path "$ROOT/$STATE/launch/opencode-events.js")" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g')   # a JSON string
       echo "[ -n \"\${OPENCODE_CONFIG_CONTENT:-}\" ] || export OPENCODE_CONFIG_CONTENT=$(tmux_sq "{\"plugin\":[\"$c\"]}")" ;;
   esac
 }
@@ -2891,8 +2892,12 @@ handoff_since() { # $1 = brief, $2 = epoch: a handoff for the brief in handoffs/
     case "${ho##*/}" in OPEN.md|TEMPLATE.md|JARVIS.md) continue ;; esac
     # the brief's path on its brief: line as merge finds it, with ./, quotes or a note
     # around it; it must end there (x.md.old isn't x.md)
-    b=$(field brief "$ho" | sed 's#^[^A-Za-z0-9_]*##')
-    case "$b" in "${1#./}"|"${1#./}"[!A-Za-z0-9_.-]*) ;; *) continue ;; esac
+    # an absolute path counts when it is this checkout's (as git or pwd -P names it) plus the brief
+    b=$(field brief "$ho" | sed 's#^[^A-Za-z0-9_/]*##')
+    case "$b" in
+      "$ROOT/${1#./}"|"$ROOT/${1#./}"[!A-Za-z0-9_.-]*|"$ROOTP/${1#./}"|"$ROOTP/${1#./}"[!A-Za-z0-9_.-]*) ;;
+      *) b=${b#/}; case "$b" in "${1#./}"|"${1#./}"[!A-Za-z0-9_.-]*) ;; *) continue ;; esac ;;
+    esac
     [ "$(mtime "$ho")" -ge "$2" ] && return 0
   done
   return 1

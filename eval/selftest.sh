@@ -1075,6 +1075,50 @@ else
   echo "spawn overlap: skipped (jq, perl or python3 not installed)"
 fi
 
+# Two helpers of bin/jarvis, run on their own from the template's source: the OpenCode
+# plugin's URL in a launch line (a checkout path with a space, # ? and %), and which
+# handoffs count for a run's brief.
+echo "launch URL and handoff_since"
+fn() { awk -v n="$1" 'index($0, n "() {") == 1 {p=1; one = /\}( *#.*)?$/} p {print} p && (one || /^}$/) {exit}' "$jbin"; }  # a function of the script, whole
+jbin="$here/../plugins/jarvis/skills/setup/templates/handoffs/bin/jarvis"
+if command -v node >/dev/null 2>&1; then
+  # shellcheck disable=SC2034 # the variables are read by the functions eval'd inside
+  (
+    ROOT="$tmp/we ird#q?p%25/repo"; H=handoffs; STATE=$H/.jarvis; BIN=$H/bin; SPAWN_BRIEF=handoffs/briefs/x.md
+    mkdir -p "$ROOT/$STATE/launch" && cd "$ROOT" || exit 1
+    eval "$(fn tmux_sq)"; eval "$(fn url_path)"; eval "$(fn tmux_opencode_plugin)"; eval "$(fn tmux_event_lines)"
+    tmux_event_lines opencode > "$tmp/oc-line.sh"
+    unset OPENCODE_CONFIG_CONTENT; . "$tmp/oc-line.sh"
+    got=$(node --input-type=module -e '
+      import { fileURLToPath } from "node:url";
+      const u = JSON.parse(process.env.OPENCODE_CONFIG_CONTENT).plugin[0];
+      const m = await import(u);
+      console.log(fileURLToPath(u) + "|" + typeof m.JarvisEvents);')
+    [ "$got" = "$ROOT/$STATE/launch/opencode-events.js|function" ]
+    check "opencode plugin URL: a checkout path with a space, #, ? and % loads the plugin file" $?
+  ) | tee "$tmp/ocurl.out"
+  n=$(grep -c '^  FAIL' "$tmp/ocurl.out"); fails=$((fails + n))
+else
+  echo "  (plugin URL check skipped: no node)"
+fi
+# shellcheck disable=SC2034 # the variables are read by the functions eval'd inside
+(
+  ROOT="$tmp/hs/repo"; ROOTP=$ROOT; H=handoffs
+  mkdir -p "$ROOT/$H" && cd "$ROOT" || exit 1
+  eval "$(fn field)"; eval "$(fn mtime)"; eval "$(fn handoff_since)"
+  hs() { # $1 = the handoff's brief: value; true when it counts for handoffs/briefs/x.md
+    printf '# t\nstatus: done\nbrief: %s\n' "$1" > "$H/2026-10-20-1200-h.md"; handoff_since handoffs/briefs/x.md 0
+  }
+  hs handoffs/briefs/x.md && hs ./handoffs/briefs/x.md && hs "\`handoffs/briefs/x.md\` (rerun)"
+  check "handoff_since: the repo-relative path, with ./ or a note, counts" $?
+  hs "$ROOT/handoffs/briefs/x.md" && hs "$ROOT/handoffs/briefs/x.md (rerun)" && hs "/handoffs/briefs/x.md"
+  check "…an absolute path under the checkout counts, and a leading / alone" $?
+  ! hs handoffs/briefs/x.md.old && ! hs "$ROOT/handoffs/briefs/x.md.old" && ! hs handoffs/briefs/y.md \
+    && ! hs "$ROOT/handoffs/briefs/y.md" && ! hs "$tmp/other/repo/handoffs/briefs/x.md"
+  check "…x.md.old, another brief and another checkout's path don't" $?
+) | tee "$tmp/hs.out"
+n=$(grep -c '^  FAIL' "$tmp/hs.out"); fails=$((fails + n))
+
 # The tmux host, on a tmux server of its own (its own socket), with a stand-in
 # agent that echoes its launch and each line typed into it. The user's tmux
 # sessions are never touched.
