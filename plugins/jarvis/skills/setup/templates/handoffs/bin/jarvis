@@ -83,6 +83,71 @@ if [ "${1:-} ${2:-}" = "hook pretool" ]; then
   esac
 fi
 
+# Claude Code's UserPromptSubmit, Stop, Notification and SessionEnd hooks, in every
+# session of the checkout: a worker appends one line to its brief's event file,
+# handoffs/.jarvis/events/<brief>.jsonl, {"t":<epoch>,"kind":"…","detail":"…"}; the
+# watcher reads it before the screen. Anything else does nothing. Before config and host
+# loading, and it never fails a hook: no output (UserPromptSubmit's stdout goes to the
+# model), exit 0 whatever happens (2 on Stop would block the agent). A worker is
+# JARVIS_ROLE=worker plus JARVIS_BRIEF (tmux's launch script sets both), else the
+# terminal Superset or Ultron gave it ($SUPERSET_TERMINAL_ID, $ULTRON_SESSION_ID) names
+# a run record of a running Claude worker with a brief; Jarvis's terminal has none. That
+# record is written once the host returns the terminal id, so a Superset or Ultron
+# worker's first `working` event can come too early and is lost.
+#   working       a prompt was submitted
+#   stop          the turn finished; detail: its last_assistant_message, one line, 200 chars
+#   notification  permission_prompt → permission; idle_prompt, agent_needs_input,
+#                 elicitation_dialog, elicitation_url_dialog → waiting; any other → none
+#   ended         the session ended (detail: its reason); clear and resume aren't an end:
+#                 the terminal goes on in a new session, so they write nothing
+#   permission, waiting   as written
+if [ "${1:-} ${2:-}" = "hook event" ]; then
+  (
+    # stdin closed: a pipe would take fd 0, and cat would wait on its own output
+    true 3<&0 || exec </dev/null
+    k=${3:-}; in=""; d=""; b=""; f=""; t=""
+    case "$k" in working|stop|notification|ended|permission|waiting) ;; *) exit 0 ;; esac
+    r=${CLAUDE_PROJECT_DIR:-}
+    [ -n "$r" ] && [ -d "$r/handoffs" ] || r=$(git rev-parse --show-toplevel 2>/dev/null) || exit 0
+    if [ "${JARVIS_ROLE:-}" = worker ] && [ -n "${JARVIS_BRIEF:-}" ]; then b=$JARVIS_BRIEF
+    else
+      for t in "${SUPERSET_TERMINAL_ID:-}" "${ULTRON_SESSION_ID:-}"; do
+        case "$t" in ""|.|..|*[!A-Za-z0-9_%.-]*) continue ;; esac
+        b=$(awk 'index($0, "brief: ") == 1 {b = substr($0, 8)} $0 == "agent: claude" {a = 1} $0 == "state: running" {s = 1}
+          END {if (a && s) print b}' "$r/handoffs/.jarvis/runs/$t" 2>/dev/null)
+        [ -n "$b" ] && break
+      done
+    fi
+    f=${b##*/}; f=${f%.md}
+    case "$f" in ""|.*|*[!A-Za-z0-9_.-]*) exit 0 ;; esac
+    # one string field of the hook's JSON: jq when it parses, else the last "key":"value"
+    # (its escapes roughly undone), on one line
+    case "$k" in notification) t=notification_type ;; ended) t=reason ;; stop) t=last_assistant_message ;; *) t="" ;; esac
+    if [ -n "$t" ]; then
+      [ -t 0 ] || in=$(cat)
+      d=$(printf '%s' "$in" | jq -r --arg t "$t" '.[$t] // empty | strings' 2>/dev/null) \
+        || d=$(printf '%s' "$in" | sed -nE "s/.*\"$t\"[[:space:]]*:[[:space:]]*\"(([^\"\\\\]|\\\\.)*)\".*/\\1/p" | tail -n 1 \
+          | sed -e 's/\\[nrt]/ /g' -e 's/\\"/"/g' -e 's/\\\\/\\/g')
+      d=$(printf '%s' "$d" | tr '\n\r\t' '   ' | tr -d '\000-\037')
+      d=${d:0:200}
+    fi
+    case "$k" in
+      notification)
+        case "$d" in
+          permission_prompt) k=permission ;;
+          idle_prompt|agent_needs_input|elicitation_dialog|elicitation_url_dialog) k=waiting ;;
+          *) exit 0 ;;
+        esac ;;
+      ended) case "$d" in clear|resume) exit 0 ;; esac ;;
+    esac
+    d=$(printf '%s' "$d" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g')   # a JSON string
+    mkdir -p "$r/handoffs/.jarvis/events" || exit 0
+    # one short line in one write to an O_APPEND file: concurrent hooks never interleave
+    printf '{"t":%s,"kind":"%s","detail":"%s"}\n' "$(date +%s)" "$k" "$d" >> "$r/handoffs/.jarvis/events/$f.jsonl"
+  ) >/dev/null 2>&1
+  exit 0
+fi
+
 # spawn's leased part says it started, first thing, so spawn_leased tells its exit (its
 # own message already printed) from a lease that was never taken
 if [ "${1:-}" = _spawn ] && [ -n "${JARVIS_SPAWN_RAN:-}" ]; then
@@ -362,7 +427,10 @@ tmux_spawn() {
   launch="$STATE/launch/$name.sh"
   {
     echo "# written by jarvis spawn; tmux runs it in the worker's window"
-    echo "unset CLAUDECODE CLAUDE_CODE_SESSION_ID CLAUDE_CODE_ENTRYPOINT"
+    echo "unset CLAUDECODE CLAUDE_CODE_SESSION_ID CLAUDE_CODE_ENTRYPOINT JARVIS_ROLE JARVIS_BRIEF"
+    # a Claude worker's hooks write its events (jarvis hook event) under its brief
+    [ "$agent" = claude ] && [ -n "${SPAWN_BRIEF:-}" ] \
+      && echo "export JARVIS_ROLE=worker JARVIS_BRIEF='$(printf '%s' "$SPAWN_BRIEF" | sed "s/'/'\\\\''/g")'"
     tmux_fable_lines "$model"
     echo "$cmd"
     # shellcheck disable=SC2016
@@ -1115,6 +1183,7 @@ spawn_go() { # $1 brief, $2 worker, $3 model, $4 effort, $5 canon, $6 force, $7 
   [ "$canon" = fable ] && fable_consume "$brief" "$name"
   # taken before the host starts the agent, so the agent's own start time is never earlier
   spawned=$(now)
+  SPAWN_BRIEF=$brief   # for a host that writes the launch line (tmux): not exported
   id=$(host spawn "$worker" "$model" "$effort" "$prompt" "$name" "$@") \
     || die "spawn failed on $HOST (a failed Claude spawn can mean the red band)"
   [ -n "$id" ] || die "spawn on $HOST returned no terminal id"
@@ -2692,13 +2761,14 @@ except (OSError, ValueError):
 PY
 }
 
-watch_auto_prompt() { # $1 run, $2 screen; send first, record only successful actions
+watch_auto_prompt() { # $1 run, $2 screen, $3 event | screen (what raised it); send first, record only successful actions
   local action kind keys path
   action=$(watch_prompt_action "$1" "$2") || return 1
   IFS="$TAB" read -r kind keys path <<EOF
 $action
 EOF
   host send "$1" --keys "$keys" >/dev/null 2>&1 || return 1
+  watch_log source "$kind:${3:-screen}"
   watch_log auto "$kind"
   audit "auto-$kind" "$1" "$(run_get "$1" brief)" "path=$path key=$keys" sent
 }
@@ -2719,8 +2789,61 @@ pending_put() { # $1 = opened, $2 = kinds, $3 = events, $4 = nojarvis; written t
     && mv "$tmp" "$PENDING"
 }
 
+# A Claude worker's last hook event (jarvis hook event) since its run was spawned, so a
+# respawn of the brief starts clean: "<t> <kind> <turn> <line>", where turn
+# is when its current turn began (its last working event, else the spawn) and line the
+# event's line number (with t, the dedup key). Empty: no events file, or not Claude.
+watch_event() { # $1 = run
+  local brief f
+  [ "$(run_get "$1" agent)" = claude ] || return 0
+  brief=$(run_get "$1" brief)
+  f="$STATE/events/$(basename "${brief:-@}" .md).jsonl"
+  [ -n "$brief" ] && [ -f "$f" ] || return 0
+  awk -v sp="$(run_get "$1" spawned | grep -Ex '[0-9]+' || echo 0)" '
+    match($0, /^[{]"t":[0-9]+,"kind":"[a-z]+"/) {
+      h = substr($0, 6, RLENGTH - 6); t = h; sub(/,.*/, "", t); k = h; sub(/.*"kind":"/, "", k)
+      if (t + 0 < sp + 0 || k !~ /^(working|stop|permission|waiting|ended)$/) next
+      if (k == "working") w = t
+      lt = t; lk = k; ln = NR }
+    END { if (ln) print lt, lk, (w ? w : sp + 0), ln }' "$f"
+}
+
+handoff_since() { # $1 = brief, $2 = epoch: a handoff for the brief in handoffs/, written (or rewritten) at or after it
+  local ho
+  for ho in "$H"/*.md; do
+    [ -f "$ho" ] || continue
+    case "${ho##*/}" in OPEN.md|TEMPLATE.md|JARVIS.md) continue ;; esac
+    [ "$(field brief "$ho")" = "$1" ] && [ "$(mtime "$ho")" -ge "$2" ] && return 0
+  done
+  return 1
+}
+
+# The stall path, whether the screen or a hook event raised it: the one nudge, then a
+# wake once another JARVIS_STALL_MIN has passed. Adds to watch_tick's events and kinds.
+watch_stall() { # $1 run, $2 event | screen, $3 dedup key, $4 the event's text
+  local nudged t
+  if fastpath_on nudge && [ "$(run_get "$1" state)" = running ]; then
+    nudged=$(run_get "$1" nudged); t=$(now)
+    if [ -z "$nudged" ]; then
+      if host send "$1" "Finish the phase or write your handoff now." >/dev/null 2>&1; then
+        run_set "$1" nudged "$t"
+        watch_log source "nudge:$2"
+        watch_log auto nudge
+        audit auto-nudge "$1" "$(run_get "$1" brief)" "prompt=stall key=enter" sent
+        return 0
+      fi
+    elif [ $(( t - nudged )) -lt $(( JARVIS_STALL_MIN * 60 )) ]; then
+      return 0
+    fi
+  fi
+  grep -qxF "$3" "$seen" && return 0
+  echo "$3" >> "$seen"; events="$events $4;"; kinds="$kinds stall"
+  watch_log source "stall:$2"
+}
+
 watch_tick() {
-  local seen="$STATE/watch.seen" events="" kinds="" ho key id tail_ idle term line brief sum scr stale b opened new nudged t read_lines=15
+  local seen="$STATE/watch.seen" events="" kinds="" ho key id tail_ idle term line brief sum scr stale b opened new t read_lines=15
+  local ev et ek eturn en pe src
   fastpath_on edit && read_lines=80   # include the path above a full edit diff; off keeps the old tail size
   touch "$seen"
   for ho in "$H"/*.md; do
@@ -2737,24 +2860,48 @@ watch_tick() {
     tail_=$(host read "$id" "$read_lines" 2>/dev/null | sed -e 's/[[:space:]]*$//')
     b=$(budget_tick "$id" "$tail_" </dev/null)
     [ -n "$b" ] && { events="$events$b"; kinds="$kinds budget"; }
-    [ -n "$tail_" ] || continue
+    # a Claude worker's own hook events come first; the screen is the fallback
+    ev=$(watch_event "$id"); ek=""; pe=""
+    if [ -n "$ev" ]; then
+      read -r et ek eturn en <<EOF
+$ev
+EOF
+      brief=$(run_get "$id" brief)
+      if [ "$ek" = ended ]; then
+        key="ended $id $en $et"
+        if ! handoff_since "$brief" "$eturn" && ! grep -qxF "$key" "$seen"; then
+          echo "$key" >> "$seen"; events="$events worker $(short "$id") ended without a handoff — read its terminal;"; kinds="$kinds ended"
+          watch_log source ended:event
+        fi
+        continue
+      fi
+      # a permission event is acted on once; after that the screen decides
+      [ "$ek" = permission ] && ! grep -qxF "pev $id $en $et" "$seen" && pe=1
+    fi
     sum=$(printf '%s' "$tail_" | cksum | cut -d' ' -f1)
-    if printf '%s' "$tail_" | grep -Eiq "$LIMIT_RE"; then
+    if [ -n "$tail_" ] && printf '%s' "$tail_" | grep -Eiq "$LIMIT_RE"; then
       key="limit $id $(date +%Y%m%d%H)"
       grep -qxF "$key" "$seen" || { echo "$key" >> "$seen"; events="$events usage limit in worker $(short "$id");"; kinds="$kinds limit"; }
-    elif printf '%s' "$tail_" | grep -Eiq "$PROMPT_RE"; then
+    elif [ -n "$pe" ] || { [ -n "$tail_" ] && printf '%s' "$tail_" | grep -Eiq "$PROMPT_RE"; }; then
+      src=screen; [ -n "$pe" ] && { src=event; echo "pev $id $en $et" >> "$seen"; }
       key="prompt $id $sum"
       # A successful send is not proof the UI accepted it. If this screen is
       # observed again, raise the normal deduplicated prompt event, never retry.
-      if ! grep -qxF "auto $id $sum" "$seen" && ! grep -qxF "$key" "$seen" && watch_auto_prompt "$id" "$tail_"; then
+      if ! grep -qxF "auto $id $sum" "$seen" && ! grep -qxF "$key" "$seen" && watch_auto_prompt "$id" "$tail_" "$src"; then
         echo "auto $id $sum" >> "$seen"
         continue
       fi
       t=""; grep -qxF "auto $id $sum" "$seen" && t=" (the automatic answer did not take)"
-      grep -qxF "$key" "$seen" || { echo "$key" >> "$seen"; events="$events worker $(short "$id") is waiting at a prompt$t — read its terminal;"; kinds="$kinds prompt"; }
-    else
-      # a working agent's screen keeps changing (spinner, timer, output); a frozen one
-      # with no handoff is stuck at something the patterns above don't know
+      grep -qxF "$key" "$seen" || { echo "$key" >> "$seen"; events="$events worker $(short "$id") is waiting at a prompt$t — read its terminal;"; kinds="$kinds prompt"; watch_log source "prompt:$src"; }
+    elif [ "$ek" = stop ] || [ "$ek" = waiting ]; then
+      # its turn is over: stalled once that's JARVIS_STALL_MIN old with no handoff since the turn began
+      stale=$(( ($(now) - et) / 60 ))
+      [ "$stale" -ge "$JARVIS_STALL_MIN" ] && ! handoff_since "$brief" "$eturn" \
+        && watch_stall "$id" event "stall $id event $en $et" "worker $(short "$id") finished its turn ${stale} min ago (hook event: $ek) and has no handoff — read its terminal"
+    elif [ -n "$tail_" ]; then
+      # working, or no hook events: a working agent's screen keeps changing (spinner,
+      # timer, output); a frozen one with no handoff is stuck at something the patterns
+      # above don't know
       scr="$STATE/screen-$id"
       if [ "$(cat "$scr" 2>/dev/null)" != "$sum" ]; then
         echo "$sum" > "$scr"
@@ -2762,21 +2909,7 @@ watch_tick() {
         stale=$(( ($(now) - $(mtime "$scr")) / 60 ))
         brief=$(printf '%s' "$line" | grep -o "$H/briefs/[^ ]*\.md" | head -n 1)
         if [ "$stale" -ge "$JARVIS_STALL_MIN" ] && ! grep -lq "^brief:[[:space:]]*${brief:-@@none@@}" "$H"/*.md 2>/dev/null; then
-          if fastpath_on nudge && [ "$(run_get "$id" state)" = running ]; then
-            nudged=$(run_get "$id" nudged); t=$(now)
-            if [ -z "$nudged" ]; then
-              if host send "$id" "Finish the phase or write your handoff now." >/dev/null 2>&1; then
-                run_set "$id" nudged "$t"
-                watch_log auto nudge
-                audit auto-nudge "$id" "$(run_get "$id" brief)" "prompt=stall key=enter" sent
-                continue
-              fi
-            elif [ $(( t - nudged )) -lt $(( JARVIS_STALL_MIN * 60 )) ]; then
-              continue
-            fi
-          fi
-          key="stall $id $sum"
-          grep -qxF "$key" "$seen" || { echo "$key" >> "$seen"; events="$events worker $(short "$id")'s screen hasn't changed in ${stale} min and it has no handoff — read its terminal;"; kinds="$kinds stall"; }
+          watch_stall "$id" screen "stall $id $sum" "worker $(short "$id")'s screen hasn't changed in ${stale} min and it has no handoff — read its terminal"
         fi
       fi
     fi
