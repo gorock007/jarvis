@@ -520,9 +520,9 @@ $trust"
       exec </dev/null   # stop, notification and ended read stdin: never the caller's, which may stay open
       for c in git awk sed head tail tr cut date mkdir cat; do ln -s "$(command -v "$c")" "$tmp/nojq/$c"; done
       evf=handoffs/.jarvis/events/ev.jsonl
-      W() { JARVIS_ROLE=worker JARVIS_BRIEF=handoffs/briefs/ev.md "$BASH" handoffs/bin/jarvis hook event "$@"; }
+      W() { JARVIS_ROLE=worker JARVIS_BRIEF=handoffs/briefs/ev.md JARVIS_RUN=%7 "$BASH" handoffs/bin/jarvis hook event "$@"; }
       evn() { cat "$evf" 2>/dev/null | wc -l | tr -d ' '; }
-      evlast() { tail -n 1 "$evf" 2>/dev/null | grep -Eqx "[{]\"t\":[0-9]+,\"kind\":\"$1\",\"detail\":\"$2\"[}]"; } # kind, detail
+      evlast() { tail -n 1 "$evf" 2>/dev/null | grep -Eqx "[{]\"t\":[0-9]+,\"kind\":\"$1\",\"run\":\"%7\",\"detail\":\"$2\"[}]"; } # kind, detail
 
       out=$("$BASH" handoffs/bin/jarvis hook event working </dev/null 2>&1); rc=$?
       [ $rc = 0 ] && [ -z "$out" ] && [ ! -e handoffs/.jarvis/events ]; check "hook event: no worker env, in Jarvis's terminal (no run record): nothing, silent, exit 0" $?
@@ -544,6 +544,8 @@ $trust"
       done
       n=$(evn); out=$(W stop </dev/null 2>&1); rc=$?
       [ $rc = 0 ] && [ -z "$out" ] && [ "$(evn)" = $((n + 1)) ] && evlast stop ""; check "hook event stop: no message, an empty detail" $?
+      for r in '' 'a"b' '../x' 'a b' .; do JARVIS_RUN=$r JARVIS_ROLE=worker JARVIS_BRIEF=handoffs/briefs/ev.md "$BASH" handoffs/bin/jarvis hook event working; done
+      [ "$(tail -n 5 "$evf" | jq -r '.run' | tr '\n' ,)" = ',,,,,' ]; check "hook event: no JARVIS_RUN, or one outside the run-id charset: an empty run (the line counts for no run)" $?
       for c in 'prompt_input_exit prompt_input_exit' 'logout logout' 'other other' 'clear -' 'resume -'; do
         set -- $c
         for p in "$PATH" "$tmp/nojq"; do
@@ -595,13 +597,13 @@ $trust"
       mkdir -p handoffs/.jarvis/runs
       rec term-s sf claude running; rec term-c sc codex running; rec term-m sm claude merged; rec s_u1 su claude running
       SUPERSET_TERMINAL_ID=term-s "$BASH" handoffs/bin/jarvis hook event stop
-      [ "$(grep -c '"kind":"stop"' handoffs/.jarvis/events/sf.jsonl 2>/dev/null)" = 1 ]; check "hook event: on Superset, no env: the run record of \$SUPERSET_TERMINAL_ID names the brief" $?
+      [ "$(grep -c '"kind":"stop","run":"term-s"' handoffs/.jarvis/events/sf.jsonl 2>/dev/null)" = 1 ]; check "hook event: on Superset, no env: the run record of \$SUPERSET_TERMINAL_ID names the brief, and the terminal is the run" $?
       SUPERSET_TERMINAL_ID=term-c "$BASH" handoffs/bin/jarvis hook event stop; SUPERSET_TERMINAL_ID=term-m "$BASH" handoffs/bin/jarvis hook event stop
       [ ! -e handoffs/.jarvis/events/sc.jsonl ] && [ ! -e handoffs/.jarvis/events/sm.jsonl ]; check "…not a Codex run's, nor a finished one's" $?
       SUPERSET_TERMINAL_ID='../runs/term-s' "$BASH" handoffs/bin/jarvis hook event stop; SUPERSET_TERMINAL_ID='term-s/' "$BASH" handoffs/bin/jarvis hook event stop
       [ "$(grep -c . handoffs/.jarvis/events/sf.jsonl)" = 1 ]; check "…an id outside the run-id charset is ignored" $?
       env -u SUPERSET_TERMINAL_ID ULTRON_SESSION_ID=s_u1 "$BASH" handoffs/bin/jarvis hook event working
-      grep -q '"kind":"working"' handoffs/.jarvis/events/su.jsonl; check "…on Ultron, the run record of \$ULTRON_SESSION_ID" $?
+      grep -q '"kind":"working","run":"s_u1"' handoffs/.jarvis/events/su.jsonl; check "…on Ultron, the run record of \$ULTRON_SESSION_ID" $?
       rm -rf handoffs/.jarvis
 
       ev_setup() { # $1 = agent: one running run, term ev, spawned 10 minutes ago
@@ -612,14 +614,15 @@ $trust"
         printf 'brief: handoffs/briefs/ev.md\nagent: %s\nspawned: %s\nstate: running\n' "$1" "$(( $(date +%s) - 600 ))" > handoffs/.jarvis/runs/ev
         printf '# Open\nJarvis session: jarvis-t\n## Running workers\n- now · %s/model · term ev · handoffs/briefs/ev.md\n' "$1" > handoffs/OPEN.md
       }
-      ev_at() { printf '{"t":%s,"kind":"%s","detail":"%s"}\n' "$(( $(date +%s) - $1 ))" "$2" "${3:-}" >> "$evf"; } # seconds ago, kind, detail
+      ev_at() { printf '{"t":%s,"kind":"%s","run":"%s","detail":"%s"}\n' "$(( $(date +%s) - $1 ))" "$2" "${R-ev}" "${3:-}" >> "$evf"; } # seconds ago, kind, detail; $R = the writer (ev)
       ev_tick() { : > "$FAKE_LOG"; FAKE_SCREEN="${1:-Working… esc to interrupt}" "$BASH" handoffs/bin/jarvis watch --once >/dev/null; }
       ev_woke() { grep -q "terminal jarvis-t --text .*$1" "$FAKE_LOG"; }
       ev_quiet() { ! grep -q 'terminals send' "$FAKE_LOG"; }
       ev_nudge() { grep -q 'terminal ev --text Finish the phase or write your handoff now.' "$FAKE_LOG" && ! grep -q 'terminal jarvis-t --text' "$FAKE_LOG"; }
       ev_src() { grep -q "$(printf '\tsource\t%s\t1$' "$1")" handoffs/.jarvis/watch.log; } # the watch.log source tag
       ev_age() { touch -t "$(date -r "$1" +%Y%m%d%H%M.%S 2>/dev/null || date -d "@$1" +%Y%m%d%H%M.%S)" "$2"; } # epoch, file
-      ev_handoff() { printf '# phase\nstatus: blocked\nbrief: handoffs/briefs/ev.md\n' > handoffs/ev-handoff.md; }
+      ev_handoff() { printf '# phase\nstatus: blocked\nbrief: %s\n' "${1:-handoffs/briefs/ev.md}" > handoffs/ev-handoff.md; }
+      ev_frozen() { ev_tick "$@"; ev_age $(( $(date +%s) - 120 )) handoffs/.jarvis/screen-ev; } # a first look at the screen, then that look made 2 min old
 
       ev_setup claude; ev_at 30 working; ev_at 0 ended prompt_input_exit; ev_tick
       ev_woke 'ended without a handoff' && [ "$(wl)" = 'woke ended 1' ] && ev_src ended:event; check "events: ended without a handoff wakes Jarvis on the first tick (source ended:event)" $?
@@ -637,13 +640,21 @@ $trust"
       ev_setup claude; ev_at 0 permission permission_prompt; ev_tick "$(cat "$here"/terminals/41-*.txt)"
       grep -q 'terminal ev --keys enter$' "$FAKE_LOG" && [ "$(wl)" = 'auto edit 1' ] && ev_src edit:event; check "events: …and goes through the fast edit path (source edit:event)" $?
 
-      ev_setup claude; ev_at 180 working; ev_at 120 stop; ev_tick
+      ev_setup claude; ev_at 180 working; ev_at 120 stop; ev_tick; ev_quiet; check "events: an old stop on a screen not seen before: nothing yet (the first look is a change)" $?
+      ev_age $(( $(date +%s) - 120 )) handoffs/.jarvis/screen-ev; ev_tick
       ev_nudge && [ "$(wl)" = 'auto nudge 1' ] && ev_src nudge:event && grep -Eq '^nudged: [0-9]+$' handoffs/.jarvis/runs/ev; check "events: stop older than JARVIS_STALL_MIN nudges once (source nudge:event)" $?
       ev_tick; ev_quiet; check "…no wake during the next interval" $?
       sed -i.bak 's/^nudged: .*/nudged: '"$(( $(date +%s) - 120 ))"'/' handoffs/.jarvis/runs/ev && rm -f handoffs/.jarvis/runs/ev.bak; ev_tick
       ev_woke 'finished its turn 2 min ago (hook event: stop) and has no handoff' && [ "$(wl)" = 'woke stall 1' ] && ev_src stall:event; check "…then wakes Jarvis (source stall:event)" $?
       ev_tick; ev_quiet; check "…once" $?
-      ev_setup claude; ev_at 120 waiting idle_prompt; ev_tick; ev_nudge; check "events: waiting older than JARVIS_STALL_MIN nudges too" $?
+      ev_setup claude; ev_at 120 waiting idle_prompt; ev_frozen; ev_tick; ev_nudge; check "events: waiting older than JARVIS_STALL_MIN nudges too" $?
+      # a worker that ended its turn to wait on a background job, then got back to work: no
+      # prompt hook fires for that, but its screen moves
+      ev_setup claude; ev_at 180 working; ev_at 120 stop; ev_frozen 'waiting on the job'; ev_tick 'job done, running tests 1'; ev_tick 'running tests 2'
+      ev_quiet && ! grep -q '^nudged:' handoffs/.jarvis/runs/ev; check "events: a stop followed by a changing screen raises nothing (the worker is at work)" $?
+      ev_age $(( $(date +%s) - 120 )) handoffs/.jarvis/screen-ev; ev_tick 'running tests 2'
+      ev_nudge && ev_src nudge:event; check "…until that screen too has been frozen JARVIS_STALL_MIN" $?
+      ev_setup claude; ev_at 180 working; ev_at 120 waiting idle_prompt; ev_frozen; ev_tick 'output moved'; ev_quiet; check "…the same after waiting" $?
       ev_setup claude; ev_at 0 stop; ev_tick frozen; ev_age $(( $(date +%s) - 120 )) handoffs/.jarvis/screen-ev; ev_tick frozen
       ev_quiet && ! grep -q '^nudged:' handoffs/.jarvis/runs/ev; check "events: a fresh stop doesn't, even on a screen frozen past JARVIS_STALL_MIN" $?
       ev_setup claude; ev_at 180 working; ev_handoff; ev_at 120 stop; ev_tick; ev_tick; ! grep -q 'Finish the phase\|finished its turn' "$FAKE_LOG"; check "events: a stop after a handoff written this turn doesn't" $?
@@ -654,13 +665,29 @@ $trust"
       for a in codex opencode; do
         ev_setup $a; ev_at 30 working; ev_at 0 ended; ev_tick
         ev_woke 'ended without a handoff' && ev_src ended:event; check "events: a $a run's events are read too (tmux writes them)" $?
-        ev_setup $a; ev_at 180 working; ev_at 120 stop; ev_tick; ev_nudge && ev_src nudge:event; check "…its stop drives the stall path" $?
+        ev_setup $a; ev_at 180 working; ev_at 120 stop; ev_frozen; ev_tick; ev_nudge && ev_src nudge:event; check "…its stop drives the stall path" $?
       done
       ev_setup fake; ev_at 0 ended; ev_at 0 permission; ev_tick frozen; ev_age $(( $(date +%s) - 120 )) handoffs/.jarvis/screen-ev; ev_tick frozen
       ev_nudge && ev_src nudge:screen && ! grep -q 'ended without\|waiting at a prompt' "$FAKE_LOG"; check "events: another agent's events file is ignored" $?
       ev_setup claude; ev_at 900 ended; ev_at 700 permission; ev_tick; ev_quiet; check "events: lines older than the run's spawn are ignored" $?
       ev_setup claude; ev_at 900 working; ev_at 700 stop; ev_tick frozen; ev_age $(( $(date +%s) - 120 )) handoffs/.jarvis/screen-ev; ev_tick frozen
       ev_nudge && ev_src nudge:screen; check "…so the screen decides, as with no events" $?
+      # a respawn: the old worker (term old) of the same brief writes into the same file
+      # after the new run was spawned, e.g. its SessionEnd once jarvis close stops it
+      ev_setup claude; R=old ev_at 30 working; R=old ev_at 0 ended prompt_input_exit; R=old ev_at 0 stop; ev_tick
+      ev_quiet && ! grep -q 'ended without\|finished its turn' "$FAKE_LOG"; check "events: another run's lines of the same brief (a respawned brief's old worker) are ignored" $?
+      ev_frozen frozen; ev_tick frozen; ev_nudge && ev_src nudge:screen; check "…so the screen decides" $?
+      ev_setup claude; R=old ev_at 0 ended; ev_at 30 working; ev_at 120 stop; ev_frozen; ev_tick; ev_nudge && ev_src nudge:event && ! grep -q 'ended without' "$FAKE_LOG"
+      check "…while its own lines still count" $?
+      ev_setup claude; R='' ev_at 0 ended; printf '{"t":%s,"kind":"ended","detail":""}\n' "$(date +%s)" >> "$evf"; ev_tick; ev_quiet; check "events: a line with no run (or an older file's, with no run field) counts for no run" $?
+      ev_setup claude; ev_at 30 working; ev_at 0 ended; ev_tick "$(printf 'You have hit your limit · resets 5pm\n> ')"
+      ev_woke 'usage limit in worker' && ev_woke 'ended without a handoff'; check "events: ended still raises a usage limit on its final screen" $?
+      for b in ./handoffs/briefs/ev.md 'handoffs/briefs/ev.md (rev 2, after the ruling)' '`handoffs/briefs/ev.md`'; do
+        ev_setup claude; ev_at 30 working; ev_handoff "$b"; ev_at 0 ended; ev_tick
+        ! grep -q 'ended without' "$FAKE_LOG" && ev_woke 'handoff handoffs/ev-handoff.md'; check "events: a handoff whose brief: is '$b' counts" $?
+      done
+      ev_setup claude; ev_handoff ./handoffs/briefs/ev.md; ev_frozen frozen; ev_tick frozen; ev_quiet; check "…and the frozen-screen check matches it the same way" $?
+      ev_setup claude; ev_at 30 working; ev_handoff handoffs/briefs/ev.md.old; ev_at 0 ended; ev_tick; ev_woke 'ended without a handoff'; check "…while another brief's (ev.md.old) doesn't" $?
     )
 
     echo s > self.txt
@@ -1091,14 +1118,14 @@ if command -v tmux >/dev/null 2>&1 && command -v jq >/dev/null 2>&1; then
     env -u SUPERSET_WORKSPACE_ID -u TMUX -u TMUX_PANE handoffs/bin/jarvis read %1 >/dev/null 2>&1; [ $? = 1 ]; check "with no host, jarvis says so" $?
     # a Claude worker's launch script gives its hooks JARVIS_ROLE and JARVIS_BRIEF; others' don't
     # shellcheck disable=SC2016
-    printf '%s\n' 'JARVIS_AGENT_claude='"'"'echo "role=$JARVIS_ROLE brief=$JARVIS_BRIEF"'"'" >> handoffs/jarvis.conf
+    printf '%s\n' 'JARVIS_AGENT_claude='"'"'echo "role=$JARVIS_ROLE brief=$JARVIS_BRIEF run=$JARVIS_RUN"'"'" >> handoffs/jarvis.conf
     printf '# c\nworker: claude\nmodel: claude-haiku-5-5\neffort: low\nstarted: <x>\n' > handoffs/briefs/2026-10-20-1200-tc.md
     # a JARVIS_HOME of its own: the pending spawns of the sections above would fill the amber caps
     tc=$(JARVIS_HOME="$tmp/jh-tc" T spawn handoffs/briefs/2026-10-20-1200-tc.md 2>/dev/null | sed -n 's/^spawned \([^ ]*\) .*/\1/p')
     grep -qx "export JARVIS_ROLE=worker JARVIS_BRIEF='handoffs/briefs/2026-10-20-1200-tc.md'" handoffs/.jarvis/launch/tc.sh \
       && grep -q '^unset .*JARVIS_ROLE JARVIS_BRIEF' handoffs/.jarvis/launch/tw.sh && ! grep -q 'export JARVIS_ROLE' handoffs/.jarvis/launch/tw.sh
     check "spawn on tmux: a Claude worker's launch script sets JARVIS_ROLE=worker and JARVIS_BRIEF; another agent's only unsets them" $?
-    [ -n "$tc" ] && poll shows_t "$tc" '^role=worker brief=handoffs/briefs/2026-10-20-1200-tc.md$'; check "…and the worker sees them" $?
+    [ -n "$tc" ] && poll shows_t "$tc" "^role=worker brief=handoffs/briefs/2026-10-20-1200-tc.md run=$tc\$"; check "…and the worker sees them, with JARVIS_RUN its pane (the run id)" $?
     # Codex and OpenCode workers get per-run hooks: stand-in binaries, with the
     # captured payloads, run what the launch script hands them. The agent lines set PATH
     # themselves (the user's shell startup files can reset the server's) and refuse to
@@ -1136,7 +1163,8 @@ EOF
       check "spawn on tmux: a Codex worker's launch script sets its role and wraps codex with -c hooks" $?
       [ -n "$tx" ] && poll shows_t "$tx" '^fake codex done'
       shows_t "$tx" '^fake codex hooks: PermissionRequest SessionEnd Stop UserPromptSubmit | --dangerously-bypass-hook-trust$' \
-        && [ "$(evs 2026-10-20-1200-tx)" = 'working: stop:ok permission: ended:other ' ]
+        && [ "$(evs 2026-10-20-1200-tx)" = 'working: stop:ok permission: ended:other ' ] \
+        && [ "$(jq -r .run "handoffs/.jarvis/events/2026-10-20-1200-tx.jsonl" | sort -u)" = "$tx" ]
       check "…its hooks reach jarvis hook event with Codex's payloads: working, stop, permission, ended" $?
     else
       echo "  (Codex hook checks skipped: python3 has no tomllib)"
@@ -1161,7 +1189,8 @@ EOF
         && [ -f handoffs/.jarvis/launch/opencode-events.js ] && grep -q "jarvis' hook event ended </dev/null$" handoffs/.jarvis/launch/to.sh
       check "spawn on tmux: an OpenCode worker gets the events plugin through OPENCODE_CONFIG_CONTENT, and ended after it exits" $?
       oc_done() { [ "$(evs 2026-10-20-1200-to)" = 'working: stop: working: permission: waiting: stop: ended: ' ]; }
-      [ -n "$to" ] && poll oc_done && shows_t "$to" '^fake opencode plugin: on'
+      [ -n "$to" ] && poll oc_done && shows_t "$to" '^fake opencode plugin: on' \
+        && [ "$(jq -r .run "handoffs/.jarvis/events/2026-10-20-1200-to.jsonl" | sort -u)" = "$to" ]
       check "…the plugin maps busy, idle, permission and question (a subagent's ignored) and the exit is ended" $?
       ! grep -q 'export JARVIS_ROLE\|OPENCODE_CONFIG_CONTENT\|^codex()' handoffs/.jarvis/launch/tw.sh; check "…another agent gets neither" $?
     else
