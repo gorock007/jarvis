@@ -1,0 +1,66 @@
+#!/usr/bin/env python3
+"""Offline Claude protocol double. No network or child processes."""
+import json
+import os
+from pathlib import Path
+import sys
+import time
+
+args = sys.argv[1:]
+assert args[0] == "-p"
+flags = {"--model": "claude-sonnet-5-5", "--effort": "high", "--output-format": "json",
+         "--setting-sources": "", "--tools": "", "--disallowedTools": "mcp__*",
+         "--max-turns": "1", "--max-budget-usd": "0.50"}
+for flag, value in flags.items():
+    assert args[args.index(flag) + 1] == value, flag
+for flag in ("--strict-mcp-config", "--disable-slash-commands", "--no-session-persistence"):
+    assert flag in args, flag
+assert json.loads(Path(args[args.index("--mcp-config") + 1]).read_text()) == {"mcpServers": {}}
+assert Path(args[args.index("--system-prompt-file") + 1]).read_text().startswith("You prepare a proposed memory update")
+assert not list(Path.cwd().iterdir()), "generation cwd is not empty"
+assert Path.cwd() != Path(os.environ["LESSONS_TEST_REPO"])
+bundle = json.load(sys.stdin)
+assert set(bundle) == {"as_of", "next_id", "manifest", "current_lessons", "sources", "scope_changes"}
+assert len(json.dumps(bundle, ensure_ascii=False, separators=(",", ":")).encode()) <= 160000
+with Path(os.environ["LESSONS_FAKE_CALLS"]).open("a") as handle:
+    handle.write(json.dumps({"bundle": bundle}) + "\n")
+mode = os.environ.get("LESSONS_FAKE_MODE", "valid")
+if mode == "timeout":
+    Path(os.environ["LESSONS_FAKE_PID"]).write_text(str(os.getpid()))
+    time.sleep(30)
+if mode == "unsupported":
+    print("unsupported isolation flag", file=sys.stderr)
+    sys.exit(2)
+current = {"review": [], "briefs": []}
+if bundle["current_lessons"]:
+    blocks = bundle["current_lessons"].split("```jsonl\n")[1:]
+    for audience, block in zip(current, blocks):
+        current[audience] = [json.loads(row) for row in block.split("```", 1)[0].splitlines()]
+response = {**current, "retired": [], "review_notes": ["Offline fixture."]}
+if not any(current.values()) and mode != "empty":
+    response["review"] = [{"id": bundle["next_id"], "date": bundle["as_of"], "checked_at": bundle["as_of"],
+                           "scope": ["src/*"], "trigger": "When editing the scoped file",
+                           "lesson": "Validate the resulting behavior using an independent fixture.",
+                           "evidence": [bundle["sources"][0]["id"]], "supersedes": None}]
+if mode == "unknown":
+    response["untrusted_extra"] = True
+elif mode == "long":
+    response["review"][0]["lesson"] = "x" * 401
+elif mode == "omit":
+    response["review"] = []
+    response["briefs"] = []
+elif mode == "secret":
+    response["review"][0]["lesson"] = "sk" + "_" + "fixtureCredentialValue123456789"
+elif mode == "replacement":
+    prior = response["review"][0]
+    replacement = {**prior, "id": bundle["next_id"], "date": bundle["as_of"], "checked_at": bundle["as_of"],
+                   "lesson": "Use a concrete regression fixture for the corrected mechanism.", "supersedes": prior["id"]}
+    response["review"] = [replacement]
+    response["retired"] = [{"id": prior["id"], "action": "superseded", "replacement": replacement["id"],
+                            "reason": "The supplied evidence supports this correction.", "evidence": replacement["evidence"]}]
+elif mode == "custom":
+    response = json.loads(Path(os.environ["LESSONS_FAKE_RESPONSE"]).read_text())
+print(json.dumps({"type": "result", "subtype": "success", "is_error": False,
+                  "result": json.dumps(response), "total_cost_usd": 0.0123,
+                  "usage": {"input_tokens": 100, "output_tokens": 40, "cache_read_input_tokens": 3},
+                  "session_id": "never-persist-this-field"}))
