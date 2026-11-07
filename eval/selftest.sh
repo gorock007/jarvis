@@ -193,6 +193,15 @@ EOT
     st | grep -qx 'lessons: 10 handoffs since the last pass — jarvis lessons propose'; check "status: the lessons hint at 10 merged handoffs" $?
     rm -f handoffs/merged/zz-lessons-*.md; rm -rf handoffs/.jarvis/lessons
 
+    # handoffs/LESSONS.md is not a handoff: status doesn't name it, watch raises no event for it
+    printf '# lessons\n- one\n' > handoffs/LESSONS.md
+    st | grep -q 'LESSONS.md'; [ $? != 0 ]; check "status: handoffs/LESSONS.md isn't listed as a handoff" $?
+    $J watch --once >/dev/null; : > "$FAKE_LOG"
+    printf '# lessons\n- two\n' > handoffs/LESSONS.md; touch -t 203001010000 handoffs/LESSONS.md
+    $J watch --once >/dev/null
+    ! grep -q 'LESSONS.md' "$FAKE_LOG" && ! grep -q 'LESSONS.md' handoffs/.jarvis/watch.log 2>/dev/null; check "watch: a changed handoffs/LESSONS.md raises no handoff event" $?
+    rm -f handoffs/LESSONS.md
+
     old=$(date -u -r $((now - 70 * 60)) +%Y-%m-%dT%H:%M:%S.000Z 2>/dev/null || date -u -d "@$((now - 70 * 60))" +%Y-%m-%dT%H:%M:%S.000Z)
     printf '{"type":"assistant","timestamp":"%s","message":{"model":"claude-fable-5-1","usage":{"input_tokens":5,"cache_read_input_tokens":240000,"cache_creation_input_tokens":3000}}}\n' "$old" > "$tmp/t.jsonl"
     hp() { printf '{"session_id":"s","transcript_path":"%s","prompt":"%s"}' "$tmp/t.jsonl" "$1" | $J hook prompt; }

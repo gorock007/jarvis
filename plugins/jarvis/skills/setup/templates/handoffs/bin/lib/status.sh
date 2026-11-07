@@ -64,7 +64,7 @@ EOF
   # handoffs on disk that no running worker accounts for
   for ho in "$H"/*.md; do
     [ -f "$ho" ] || continue
-    case "$(basename "$ho")" in OPEN.md|TEMPLATE.md|JARVIS.md) continue ;; esac
+    case "$(basename "$ho")" in OPEN.md|TEMPLATE.md|JARVIS.md|LESSONS.md) continue ;; esac
     brief=$(field brief "$ho")
     running_lines | grep -q "${brief:-@@none@@}" && continue
     echo "handoff not tied to a running worker: $ho ($(field status "$ho"))"
