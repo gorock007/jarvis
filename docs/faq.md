@@ -7,8 +7,9 @@ of them (see [Start Jarvis](hosts.md#start-jarvis)), or set `JARVIS_HOST` in
 
 **A worker won't start: "unknown model"**
 Your host doesn't accept that model ID. The error lists the IDs it does
-accept. Update the table in your `CLAUDE.md`, or run `jarvis:setup` again to
-check the IDs.
+accept. Use one of the IDs in [Model routing](routing.md) (`claude-opus-5-5`,
+`sonnet`, `haiku`, …) on the brief's `model:` line; the template at
+`handoffs/briefs/TEMPLATE.md` lists them too.
 
 **Codex or OpenCode rows don't work**
 On Superset, check `superset agents list --local`; on Ultron, `ultron agent list`. On tmux, check that

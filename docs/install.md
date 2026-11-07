@@ -22,7 +22,11 @@ For Claude Code, Codex, or any agent that reads `SKILL.md` files:
 npx skills add gorock007/jarvis
 ```
 
-It finds two skills, `setup` and `run`. Install both.
+It finds two skills, `setup` and `run`. Install both. They are called `setup`
+and `run` (the `name:` in each `SKILL.md`), without the `jarvis:` prefix a
+plugin install adds. To start, say "set up Jarvis in this repo" for `setup`,
+and in the start prompt (see [Start Jarvis](hosts.md#start-jarvis)) write
+"Use the run skill" where it says "Use the jarvis:run skill".
 
 ## Option 3: Manual
 
@@ -32,6 +36,11 @@ mkdir -p ~/.claude/skills
 cp -R jarvis/plugins/jarvis/skills/setup ~/.claude/skills/jarvis-setup
 cp -R jarvis/plugins/jarvis/skills/run   ~/.claude/skills/jarvis-run
 ```
+
+The folders are named `jarvis-setup` and `jarvis-run`, but the skills inside
+are still called `setup` and `run` (the `name:` in each `SKILL.md`). Start them
+the same way as under Option 2: "set up Jarvis in this repo", and "Use the run
+skill" in the start prompt.
 
 ## Check that it installed
 

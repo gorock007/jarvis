@@ -18,15 +18,21 @@ send the same first message.
 > `--checkout local` matters. Jarvis and its workers share one working copy,
 > and only Jarvis uses git.
 
-**Anywhere else, with tmux**, from the repo root:
+**Anywhere else, with tmux**, from the repo root. Run this from a plain
+terminal:
 
 ```bash
 tmux new-session -s jarvis \
   "claude --model claude-opus-5-5 --effort high 'You are Jarvis. Use the jarvis:run skill: read handoffs/JARVIS.md and handoffs/OPEN.md, run handoffs/bin/jarvis start, then tell me what is open.'"
 ```
 
-Workers open as windows in that session. `prefix + w` lists them, and
-`tmux attach -t jarvis` gets you back in after you detach or log out.
+If you're already inside tmux, `tmux new-session` refuses to nest. Run only the
+`claude --model … '…'` part in the current pane instead, and workers open as
+windows of your current session.
+
+Workers open as windows in Jarvis's tmux session. `prefix + w` lists them, and
+`tmux attach -t jarvis` gets you back in after you detach or log out (when you
+started the session with the command above).
 
 **On Ultron**, from the repo root:
 
@@ -68,4 +74,5 @@ Superset uses. Another agent is one more line:
 JARVIS_AGENT_gemini='gemini --approval-mode=auto_edit ${JARVIS_MODEL:+-m "$JARVIS_MODEL"} "$JARVIS_PROMPT"'
 ```
 
-Details: [`hosts.md`](../plugins/jarvis/skills/run/references/hosts.md).
+The details are in the plugin's `run` skill:
+[`hosts.md` on GitHub](https://github.com/gorock007/jarvis/blob/main/plugins/jarvis/skills/run/references/hosts.md).
