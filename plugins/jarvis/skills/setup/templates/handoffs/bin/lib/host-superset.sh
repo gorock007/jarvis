@@ -38,12 +38,18 @@ superset_read() {
     | { have jq && jq -r '.text // empty' || cat; }
 }
 
-superset_send() {
-  if [ "${2:-}" = --keys ]; then
-    superset terminals send --workspace "$WS" --terminal "$1" --keys "${3:-}" >/dev/null
-  else
-    superset terminals send --workspace "$WS" --terminal "$1" --text "$2" >/dev/null
+superset_send() { # the CLI's error stays on stderr; JSON that says nothing went in is a failure too
+  local out
+  if [ "${2:-}" = --keys ]; then set -- "$1" --keys "${3:-}"
+  # a text that starts with "-" is taken for an option and refused unless it is --text=…
+  else case "$2" in -*) set -- "$1" "--text=$2" ;; *) set -- "$1" --text "$2" ;; esac
   fi
+  out=$(superset terminals send --workspace "$WS" --terminal "$@" --json) || return 1
+  case "$out" in
+    '{'*) have jq || return 0
+      printf '%s' "$out" | jq -e '.submitted == true or (.keys // 0) > 0' >/dev/null 2>&1 \
+        || { echo "superset took nothing into $1: $out" >&2; return 1; } ;;
+  esac
 }
 
 superset_close() { superset terminals close --workspace "$WS" --terminal "$1" >/dev/null; }

@@ -93,10 +93,16 @@ case "$1 $2" in
     printf '{"kind":"terminal","sessionId":"term-%s"}\n' "$n" ;;
   "terminals close") [ -z "${FAKE_CLOSE_FAIL:-}" ] || { echo "Error: terminal $6 not found" >&2; exit 1; } ;;
   "terminals read") s=${FAKE_SCREEN:-Working… esc to interrupt}; p=   # the last --max-lines N lines, as Superset returns
+    [ -z "${FAKE_SCREEN_FILE:-}" ] || [ ! -f "$FAKE_SCREEN_FILE" ] || s=$(cat "$FAKE_SCREEN_FILE")   # a screen sends land on
     for a in "$@"; do [ "$p" != --max-lines ] || { [ "$a" != 80 ] || [ -z "${FAKE_SCREEN_80:-}" ] || s=$FAKE_SCREEN_80   # a screen that moved between reads
       s=$(printf '%s\n' "$s" | tail -n "$a"); }; p=$a; done
     jq -n --arg t "$s" '{text: $t}' ;;
-  "terminals send") [ -z "${FAKE_SEND_FAIL:-}" ] || [ "$6" = jarvis-t ] ;;
+  "terminals send") x=; p=   # answers as the real CLI does: JSON, or the error on stderr and exit 1
+    for a in "$@"; do [ "$p" != --text ] || x=$a; case "$a" in --text=*) x=${a#--text=} ;; esac; p=$a; done
+    [ -z "${FAKE_SEND_FAIL:-}" ] || [ "$6" = jarvis-t ] || { echo "Error: Terminal session \"$6\" is not active; create it before connecting." >&2; exit 1; }
+    [ -n "${FAKE_SEND_DROP:-}" ] || [ -z "${FAKE_SCREEN_FILE:-}" ] || [ -z "$x" ] || printf '%s\n' "$x" >> "$FAKE_SCREEN_FILE"
+    case " $* " in *" --keys "*) printf '{"terminalId":"%s","keys":1}\n' "$6" ;;
+      *) printf '{"terminalId":"%s","submitted":%s}\n' "$6" "$([ -n "${FAKE_SEND_UNSUBMITTED:-}" ] && echo false || echo true)" ;; esac ;;
   "terminals list") printf '{"sessions":[%s]}\n' "$(printf '%s' "${FAKE_OPEN:-}" | sed -E 's/([^ ]+)/{"terminalId":"\1","exited":false,"title":"shell-\1"}/g; s/ /,/g')" ;;
 esac
 EOT
@@ -126,6 +132,21 @@ EOT
     $J spawn handoffs/briefs/b3.md >/dev/null 2>&1; [ $? = 1 ]; check "refuses a third Claude worker (cap 3, Jarvis included)" $?
     $J spawn handoffs/briefs/b4.md >/dev/null 2>&1; check "OpenCode doesn't count toward the cap" $?
     ! grep 'agent opencode' "$FAKE_LOG" | grep -q -- '--effort'; check "OpenCode gets no --effort" $?
+
+    # jarvis send on Superset: delivered and named, or a non-zero exit with the reason on stderr
+    sf="$tmp/send-screen"; echo '› idle' > "$sf"; : > "$FAKE_LOG"
+    out=$(FAKE_SCREEN_FILE=$sf $J send term-3 'Answers: 1. use $HOME "as is" 2. no' 2>&1)
+    [ $? = 0 ] && grep -q 'terminal term-3 --text Answers: 1. use \$HOME "as is" 2. no --json$' "$FAKE_LOG" \
+      && printf '%s' "$out" | grep -q '^sent to term-3 · opencode worker, running · handoffs/briefs/b4.md$'; check "send: delivered text exits 0 and names the worker it reached" $?
+    FAKE_SCREEN_FILE=$sf $J send term-3 '--force is fine' >/dev/null 2>&1 && grep -q 'terminal term-3 --text=--force is fine --json$' "$FAKE_LOG"; check "send: a text starting with - goes as --text=…" $?
+    out=$(FAKE_SEND_FAIL=1 FAKE_SCREEN_FILE=$sf $J send term-3 'lost' 2>&1 >/dev/null)
+    [ $? = 1 ] && printf '%s' "$out" | grep -q 'Error: Terminal session "term-3" is not active'; check "send: the CLI's refusal exits 1 with its error on stderr" $?
+    out=$(FAKE_SEND_UNSUBMITTED=1 FAKE_SCREEN_FILE=$sf $J send term-3 'lost' 2>&1 >/dev/null)
+    [ $? = 1 ] && printf '%s' "$out" | grep -q 'superset took nothing into term-3'; check "send: JSON saying it wasn't submitted exits 1" $?
+    out=$(FAKE_SEND_DROP=1 FAKE_SCREEN_FILE=$sf JARVIS_SEND_CHECK_SEC=1 $J send term-3 'lost' 2>&1 >/dev/null)
+    [ $? = 1 ] && printf '%s' "$out" | grep -q "screen hasn't changed in 1 s: the text didn't arrive"; check "send: accepted but the screen never changed exits 1" $?
+    FAKE_SCREEN_FILE=$sf $J send term-3 --keys esc >/dev/null && grep -q 'terminal term-3 --keys esc --json$' "$FAKE_LOG"; check "send --keys still goes through" $?
+    FAKE_SCREEN_FILE=$sf $J send not-ours 'hi' 2>/dev/null | grep -q '^sent to not-ours · not a worker jarvis spawned$'; check "send: an id jarvis didn't spawn is named as such" $?
 
     now=$(date +%s)
     echo "{\"model\":{},\"rate_limits\":{\"five_hour\":{\"used_percentage\":40,\"resets_at\":$((now + 4 * 3600))}}}" \
@@ -309,7 +330,7 @@ EOT
         printf '  only if you trust these files. Your trust decision will be saved.\n\n%s\n  2. Quit\n\n  enter continue · esc quit\n' "${2:-› 1. Trust and continue}"
       }
       fp_woke() { grep -q 'terminal jarvis-t --text .*waiting at a prompt' "$FAKE_LOG" && ! grep -q -- '--keys' "$FAKE_LOG"; }
-      fp_approved() { grep -q 'terminal fp --keys enter$' "$FAKE_LOG" && ! grep -q 'terminal jarvis-t --text' "$FAKE_LOG" && [ ! -f handoffs/.jarvis/watch.pending ]; }
+      fp_approved() { grep -q 'terminal fp --keys enter --json$' "$FAKE_LOG" && ! grep -q 'terminal jarvis-t --text' "$FAKE_LOG" && [ ! -f handoffs/.jarvis/watch.pending ]; }
       fp_age() { touch -t "$(date -r "$1" +%Y%m%d%H%M.%S 2>/dev/null || date -d "@$1" +%Y%m%d%H%M.%S)" handoffs/.jarvis/screen-fp; }
       fp_nudged() { sed -i.bak '/^nudged:/d' handoffs/.jarvis/runs/fp; rm -f handoffs/.jarvis/runs/fp.bak; printf 'nudged: %s\n' "$1" >> handoffs/.jarvis/runs/fp; }
 
@@ -725,7 +746,7 @@ $trust"
       ev_tick 'still working'; ev_quiet; check "…after which the screen decides" $?
       touch src/widget.py
       ev_setup claude; ev_at 0 permission permission_prompt; ev_tick "$(cat "$here"/terminals/41-*.txt)"
-      grep -q 'terminal ev --keys enter$' "$FAKE_LOG" && [ "$(wl)" = 'auto edit 1' ] && ev_src edit:event; check "events: …and goes through the fast edit path (source edit:event)" $?
+      grep -q 'terminal ev --keys enter --json$' "$FAKE_LOG" && [ "$(wl)" = 'auto edit 1' ] && ev_src edit:event; check "events: …and goes through the fast edit path (source edit:event)" $?
 
       ev_setup claude; ev_at 180 working; ev_at 120 stop; ev_tick; ev_quiet; check "events: an old stop on a screen not seen before: nothing yet (the first look is a change)" $?
       ev_age $(( $(date +%s) - 120 )) handoffs/.jarvis/screen-ev; ev_tick

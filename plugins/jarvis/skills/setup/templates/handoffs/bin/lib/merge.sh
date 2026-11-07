@@ -169,7 +169,25 @@ cmd_read() {
 
 cmd_send() {
   [ $# -ge 2 ] || die "usage: jarvis send <terminal> <text> | jarvis send <terminal> --keys <k,k>"
-  if [ "$2" = --keys ]; then host send "$1" --keys "${3:-}"; else host send "$1" "$2"; fi
+  local t=$1 sec=${JARVIS_SEND_CHECK_SEC:-3} before after="" n=0 who st
+  if [ "$2" = --keys ]; then host send "$t" --keys "${3:-}"; return; fi
+  before=$(host read "$t" 40 2>/dev/null)
+  host send "$t" "$2" || die "nothing was sent to $t"
+  # whom it reached, so a wrong id shows at once
+  st=$(run_get "$t" state)
+  if [ "$t" = "$(jarvis_terminal)" ]; then who="Jarvis's own terminal"
+  elif [ -n "$st" ]; then who="$(run_get "$t" agent) worker, $st · $(run_get "$t" brief)"
+  else who="not a worker jarvis spawned"; fi
+  # an agent that took the text redraws; a screen that stays exactly as it was got nothing
+  if [ -n "$before" ] && [ "$sec" -gt 0 ] 2>/dev/null; then
+    while [ "$n" -lt $((sec * 2)) ]; do
+      sleep 0.5; after=$(host read "$t" 40 2>/dev/null)
+      [ "$after" != "$before" ] && break
+      n=$((n + 1))
+    done
+    [ "$after" != "$before" ] || die "sent to $t ($who), but its screen hasn't changed in $sec s: the text didn't arrive. Look with: jarvis read $t"
+  fi
+  echo "sent to $t · $who"
 }
 
 cmd_close() { # a worker given up on; a merged one is closed by merge

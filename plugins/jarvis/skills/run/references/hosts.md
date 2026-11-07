@@ -10,11 +10,19 @@ You never call a host directly. These commands work the same on every host:
 ```bash
 handoffs/bin/jarvis spawn <brief.md> [--after <handoff>] [--attach <file>]...
 handoffs/bin/jarvis read  <terminal> [<lines>]       # bottom of a worker's screen (default 80 lines)
-handoffs/bin/jarvis send  <terminal> "<text>"        # types it and presses Enter
+handoffs/bin/jarvis send  <terminal> "<text>"        # types it and presses Enter; prints whom it reached
 handoffs/bin/jarvis send  <terminal> --keys enter    # or esc, tab, shift+tab, up, down, 1, y, ctrl+c, comma-separated
 handoffs/bin/jarvis close <terminal>                 # cancel a worker: close, verify it exited, record; merge closes finished ones
 handoffs/bin/jarvis watch --start                    # the watcher, in a terminal of its own
 ```
+
+`jarvis send <terminal> "<text>"` prints `sent to <terminal> · <agent>
+worker, <state> · <brief>` (or "Jarvis's own terminal", or "not a worker
+jarvis spawned"), so a wrong id shows at once. It exits 1 with the reason on
+stderr when the host refuses the text, or when the terminal's screen stays
+exactly as it was for `JARVIS_SEND_CHECK_SEC` seconds (default 3, 0 turns
+the check off). A busy agent's screen moves anyway, so a pass there only
+means the host took the text; `jarvis read` shows whether it's queued.
 
 ## Which host
 
