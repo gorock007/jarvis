@@ -1,0 +1,473 @@
+{
+ "reviewer_model": "claude-opus-5-5",
+ "effort": "high",
+ "repetitions": 3,
+ "budget_usd": 20.0,
+ "prompt_sha256": "bc667f9facfe7d40e3fc5a044de2c2be7053e6d4b60d6720f31b9e1a3f1cfd45",
+ "schema": {
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+   "verdict",
+   "findings"
+  ],
+  "properties": {
+   "verdict": {
+    "enum": [
+     "commit",
+     "send_back"
+    ]
+   },
+   "findings": {
+    "type": "array",
+    "items": {
+     "type": "object",
+     "additionalProperties": false,
+     "required": [
+      "file",
+      "location",
+      "blocking",
+      "mechanism",
+      "evidence"
+     ],
+     "properties": {
+      "file": {
+       "type": "string"
+      },
+      "location": {
+       "type": "string"
+      },
+      "blocking": {
+       "type": "boolean"
+      },
+      "mechanism": {
+       "type": "string"
+      },
+      "evidence": {
+       "type": "string"
+      }
+     }
+    }
+   }
+  }
+ },
+ "lessons_script_sha256": "b066caeb447f2b1a9c44b13106be4622606032a652ec0df13f9f0ccf8dbd7ff7",
+ "cases": [
+  {
+   "id": "ad5b044",
+   "commit": "ad5b044712def9f0b884b89221eadc58360f361a",
+   "parent": "997bdf141965dab804319dc57f40bca9ee51572e",
+   "commit_time_utc": "2026-11-02T14:23:39+00:00",
+   "handoff": "handoffs/merged/2026-11-03-0118-p1b-watch-fast-paths.md",
+   "brief": "handoffs/briefs/2026-11-03-0032-p1b-watch-fast-paths.md",
+   "changed_paths": [
+    "eval/selftest.sh",
+    "eval/usagetest.sh",
+    "plugins/jarvis/skills/run/SKILL.md",
+    "plugins/jarvis/skills/run/references/lifecycle.md",
+    "plugins/jarvis/skills/setup/templates/handoffs/bin/jarvis",
+    "plugins/jarvis/skills/setup/templates/handoffs/jarvis.conf"
+   ],
+   "whole_files": [],
+   "eligible_sources": {
+    "handoffs": 19,
+    "outcomes": 6,
+    "shadow": 0,
+    "security": 0
+   },
+   "excluded": {
+    "own_brief_or_handoff": 1,
+    "after_cutoff": 44
+   },
+   "lessons": {
+    "status": "applied",
+    "reason": null,
+    "cost_usd": 0.11582400000000001,
+    "sha256": "b1bc89d45a5ba497823d101fc826ac37d1a7eb546ba9d12889761577ee869547",
+    "selected_sha256": "d5f5b19c5b58df480a08c0ac12a6a925dd7001990aa9f2a02b0fcfe39eed0e6d",
+    "selected_bytes": 1849,
+    "selected_entries": 3
+   },
+   "packet": {
+    "baseline_sha256": "195da470fba05b0e2e98f44220ede108b475327e15713b5d98431bfd2db893f1",
+    "treatment_sha256": "ac1094496caa145f09cb96899336676fab26f53619c83574545c826e077c9590",
+    "baseline_bytes": 67122,
+    "treatment_bytes": 68971,
+    "redactions": 1
+   }
+  },
+  {
+   "id": "351ab83",
+   "commit": "351ab83ac38e132aa216b7fdab829d2dbe4c9a17",
+   "parent": "ad5b044712def9f0b884b89221eadc58360f361a",
+   "commit_time_utc": "2026-11-02T14:56:24+00:00",
+   "handoff": "handoffs/merged/2026-11-03-0148-p1b-hardening.md",
+   "brief": "handoffs/briefs/2026-11-03-0145-p1b-hardening.md",
+   "changed_paths": [
+    "eval/selftest.sh",
+    "plugins/jarvis/skills/setup/templates/handoffs/bin/jarvis"
+   ],
+   "whole_files": [],
+   "eligible_sources": {
+    "handoffs": 20,
+    "outcomes": 7,
+    "shadow": 2,
+    "security": 0
+   },
+   "excluded": {
+    "own_brief_or_handoff": 1,
+    "after_cutoff": 43
+   },
+   "lessons": {
+    "status": "applied",
+    "reason": null,
+    "cost_usd": 0.154408,
+    "sha256": "07fa4609cd6a64f5e74902bf16865d6dd055de9795b149c319bd7d0f202d6131",
+    "selected_sha256": "09d1519b444538ce8c687d5b62ead61107c6845926e885ba33180c2d6e71a7d4",
+    "selected_bytes": 2528,
+    "selected_entries": 4
+   },
+   "packet": {
+    "baseline_sha256": "2a6f2f45855f5dff1de5ed8ec964a1cf4c8b8e949eee0c742fdad46dfa46d6c4",
+    "treatment_sha256": "72ead8a74757781459d558468f27204fd5cf8848c0f3e9fa023e528ccbd4dba7",
+    "baseline_bytes": 54461,
+    "treatment_bytes": 56989,
+    "redactions": 1
+   }
+  },
+  {
+   "id": "c7df456",
+   "commit": "c7df45666f24bf6a45c404122b1bc990df25ea0b",
+   "parent": "13c5ddd229d1956cb5820fb680b1bdfcb2f37264",
+   "commit_time_utc": "2026-11-04T10:05:46+00:00",
+   "handoff": "handoffs/merged/2026-11-04-2051-p2a1-verify-engine.md",
+   "brief": "handoffs/briefs/2026-11-04-p2a1-verify-engine.md",
+   "changed_paths": [
+    "eval/verifytest.sh",
+    "plugins/jarvis/skills/setup/templates/handoffs/bin/jarvis",
+    "plugins/jarvis/skills/setup/templates/handoffs/bin/jarvis-verify.py"
+   ],
+   "whole_files": [],
+   "eligible_sources": {
+    "handoffs": 26,
+    "outcomes": 13,
+    "shadow": 7,
+    "security": 0
+   },
+   "excluded": {
+    "own_brief_or_handoff": 1,
+    "after_cutoff": 37
+   },
+   "lessons": {
+    "status": "applied",
+    "reason": null,
+    "cost_usd": 0.185178,
+    "sha256": "617f71577dffd0f0d9a7d5d5196a0f830ee53a4c70874ae358e4e49c2abaac6e",
+    "selected_sha256": "813529bf9e25b3d89fc4e1746e6c621c944666c219dbb90130d488da7a1f1d81",
+    "selected_bytes": 1989,
+    "selected_entries": 3
+   },
+   "packet": {
+    "baseline_sha256": "68db2eabf5df58c6667b4dcfa1850fae2f75c6121db64a71fd01d61b4689c674",
+    "treatment_sha256": "e396e92c9f9017ba64106719518d0518680b760ed00961544b100841c7049f59",
+    "baseline_bytes": 124856,
+    "treatment_bytes": 126845,
+    "redactions": 1
+   }
+  },
+  {
+   "id": "3b1ab75",
+   "commit": "3b1ab75b236c3e1287f696d9fdc007d346f6bc28",
+   "parent": "c7df45666f24bf6a45c404122b1bc990df25ea0b",
+   "commit_time_utc": "2026-11-04T10:44:38+00:00",
+   "handoff": "handoffs/merged/2026-11-04-2134-p2a2-verify-reuse.md",
+   "brief": "handoffs/briefs/2026-11-04-p2a2-verify-reuse.md",
+   "changed_paths": [
+    "eval/locktest.sh",
+    "eval/verifytest.sh",
+    "plugins/jarvis/skills/setup/templates/handoffs/bin/jarvis",
+    "plugins/jarvis/skills/setup/templates/handoffs/bin/jarvis-verify.py"
+   ],
+   "whole_files": [],
+   "eligible_sources": {
+    "handoffs": 27,
+    "outcomes": 14,
+    "shadow": 8,
+    "security": 0
+   },
+   "excluded": {
+    "own_brief_or_handoff": 1,
+    "after_cutoff": 36
+   },
+   "lessons": {
+    "status": "applied",
+    "reason": null,
+    "cost_usd": 0.162194,
+    "sha256": "f8e04bb502d8feb43284e963c9a96c5448b57497f93ab3c5443d74e8d1027245",
+    "selected_sha256": "da487e951011c6562e0f3550c16fc4373420842b1e7531e0da463729c3221bd3",
+    "selected_bytes": 1309,
+    "selected_entries": 2
+   },
+   "packet": {
+    "baseline_sha256": "f999c7f077791382398d60b1b17548092ef16898b14567c666a36f3200bf3c3d",
+    "treatment_sha256": "3cb6bc9d509b4ee639384e71991144574e2fc29226d4d486ad0ecf3f4b5fed95",
+    "baseline_bytes": 75617,
+    "treatment_bytes": 76926,
+    "redactions": 1
+   }
+  },
+  {
+   "id": "5569a05",
+   "commit": "5569a05bff49172fa8654f3eda16d4821d38e120",
+   "parent": "3b1ab75b236c3e1287f696d9fdc007d346f6bc28",
+   "commit_time_utc": "2026-11-04T11:22:14+00:00",
+   "handoff": "handoffs/merged/2026-11-04-2211-p2a3-verify-doctor.md",
+   "brief": "handoffs/briefs/2026-11-04-p2a3-verify-doctor.md",
+   "changed_paths": [
+    "eval/verifytest.sh",
+    "plugins/jarvis/skills/setup/templates/handoffs/bin/jarvis",
+    "plugins/jarvis/skills/setup/templates/handoffs/bin/jarvis-verify.py"
+   ],
+   "whole_files": [],
+   "eligible_sources": {
+    "handoffs": 28,
+    "outcomes": 15,
+    "shadow": 9,
+    "security": 0
+   },
+   "excluded": {
+    "own_brief_or_handoff": 1,
+    "after_cutoff": 35
+   },
+   "lessons": {
+    "status": "applied",
+    "reason": null,
+    "cost_usd": 0.18129800000000001,
+    "sha256": "88824789d0aa31f6e8a0a25391b5682530369f6da83d64c78aafe7e2c7f37781",
+    "selected_sha256": "ce49e5309366e3f03c9b92a7d22b41431a59d288a776995ecf82f7ff95455bee",
+    "selected_bytes": 2025,
+    "selected_entries": 3
+   },
+   "packet": {
+    "baseline_sha256": "d3297e992107026d2b8568ff0936706d14b7856d7a035f6d8edcab3691c05444",
+    "treatment_sha256": "269691d88827855b632c24a0ac68be471f3a54ada010fde09f9c5ca4bbc365f8",
+    "baseline_bytes": 88230,
+    "treatment_bytes": 90255,
+    "redactions": 1
+   }
+  },
+  {
+   "id": "f319d18",
+   "commit": "f319d18de4455719067a40774fb72ded8f54ef2d",
+   "parent": "4aca40abe50e7a3e864805390a39582e3030c7d2",
+   "commit_time_utc": "2026-11-05T01:00:44+00:00",
+   "handoff": "handoffs/merged/2026-11-05-1108-p3a-events-core.md",
+   "brief": "handoffs/briefs/2026-11-05-p3a-events-core.md",
+   "changed_paths": [
+    "eval/selftest.sh",
+    "plugins/jarvis/skills/setup/templates/handoffs/bin/jarvis"
+   ],
+   "whole_files": [],
+   "eligible_sources": {
+    "handoffs": 33,
+    "outcomes": 20,
+    "shadow": 14,
+    "security": 1
+   },
+   "excluded": {
+    "own_brief_or_handoff": 1,
+    "after_cutoff": 30
+   },
+   "lessons": {
+    "status": "applied",
+    "reason": null,
+    "cost_usd": 0.185412,
+    "sha256": "8dbc3038488cfd52b3ab80b9b9c7497a2f72ead8acf6064f9a43e8b3f24e1bf9",
+    "selected_sha256": "2f1a2196133d2878a40dc9f0ec0f24e8dadac4c7b376710d53dfb6eec57780f8",
+    "selected_bytes": 1277,
+    "selected_entries": 2
+   },
+   "packet": {
+    "baseline_sha256": "6bdbb1965f90f92646dcc9806b27ceaf8f5e2ebdcca444336dd9857ed60b9c1f",
+    "treatment_sha256": "ad1756ec84a17238f1fba04638754faceccc7b4f0cd20ec03295bf0b7b9fadec",
+    "baseline_bytes": 81667,
+    "treatment_bytes": 82944,
+    "redactions": 1
+   }
+  },
+  {
+   "id": "9c72433",
+   "commit": "9c72433dd8ed9ade092893c231e4c4cdbd362f20",
+   "parent": "f319d18de4455719067a40774fb72ded8f54ef2d",
+   "commit_time_utc": "2026-11-05T01:42:58+00:00",
+   "handoff": "handoffs/merged/2026-11-05-1230-p3c-codex-opencode-events.md",
+   "brief": "handoffs/briefs/2026-11-05-p3c-codex-opencode-events.md",
+   "changed_paths": [
+    "eval/hook-payloads/README.md",
+    "eval/hook-payloads/codex-notify-arg.json",
+    "eval/hook-payloads/codex-session-end.json",
+    "eval/hook-payloads/codex-stop.json",
+    "eval/hook-payloads/codex-user-prompt-submit.json",
+    "eval/hook-payloads/opencode-events.jsonl",
+    "eval/selftest.sh",
+    "plugins/jarvis/skills/setup/templates/handoffs/bin/jarvis"
+   ],
+   "whole_files": [],
+   "eligible_sources": {
+    "handoffs": 34,
+    "outcomes": 21,
+    "shadow": 15,
+    "security": 1
+   },
+   "excluded": {
+    "own_brief_or_handoff": 1,
+    "after_cutoff": 29
+   },
+   "lessons": {
+    "status": "applied",
+    "reason": null,
+    "cost_usd": 0.19233,
+    "sha256": "e0e56c7e2d57483b17f5983bdfe9f8b9837e3f1a6968be9dcd229fbe4488c884",
+    "selected_sha256": "7bef64343210daa37c757119880a5dff784a21b5dbd7f9f8c09a1616773b00f4",
+    "selected_bytes": 2145,
+    "selected_entries": 3
+   },
+   "packet": {
+    "baseline_sha256": "aaac0b2d226bcbffc4826520d28cac0d18da3f34a3d90174a134baf612b19762",
+    "treatment_sha256": "bc9f3d9ff48a6508e83ca03020f0d60c943bd70e929813eeb2622d254a3042fe",
+    "baseline_bytes": 62409,
+    "treatment_bytes": 64554,
+    "redactions": 20
+   }
+  },
+  {
+   "id": "c8f8e5d",
+   "commit": "c8f8e5db63f44670fbf7996f4c39671cdf76a3ca",
+   "parent": "a2720faee520a72f671eb1307905e01b5e640816",
+   "commit_time_utc": "2026-11-05T02:18:24+00:00",
+   "handoff": "handoffs/merged/2026-11-05-1317-p3e-docs.md",
+   "brief": "handoffs/briefs/2026-11-05-p3e-docs.md",
+   "changed_paths": [
+    "plugins/jarvis/skills/run/SKILL.md",
+    "plugins/jarvis/skills/run/references/handoffs.md",
+    "plugins/jarvis/skills/run/references/hosts.md",
+    "plugins/jarvis/skills/run/references/lifecycle.md",
+    "plugins/jarvis/skills/setup/SKILL.md"
+   ],
+   "whole_files": [
+    "plugins/jarvis/skills/setup/templates/handoffs/bin/jarvis"
+   ],
+   "eligible_sources": {
+    "handoffs": 36,
+    "outcomes": 23,
+    "shadow": 17,
+    "security": 1
+   },
+   "excluded": {
+    "own_brief_or_handoff": 1,
+    "after_cutoff": 27
+   },
+   "lessons": {
+    "status": "applied",
+    "reason": null,
+    "cost_usd": 0.171118,
+    "sha256": "97870b82c5fb5d6e759dba7b9af301219022fb4080dbf47e99b74d4b86173e48",
+    "selected_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "selected_bytes": 0,
+    "selected_entries": 0
+   },
+   "packet": {
+    "baseline_sha256": "e33f011f2f3b00e589a49a237723a41c4f3f56525787474eaf9dd79543d5781a",
+    "treatment_sha256": "e33f011f2f3b00e589a49a237723a41c4f3f56525787474eaf9dd79543d5781a",
+    "baseline_bytes": 250142,
+    "treatment_bytes": 250142,
+    "redactions": 1
+   }
+  },
+  {
+   "id": "6a3438e",
+   "commit": "6a3438ec9924a4a88a261f23873960e6cc6ae8c0",
+   "parent": "b13b7b33995860520e22406df0873d082b84d3c3",
+   "commit_time_utc": "2026-11-05T14:14:12+00:00",
+   "handoff": "handoffs/merged/2026-11-06-0100-p4e-watch-window-fix.md",
+   "brief": "handoffs/briefs/2026-11-06-p4e-watch-window-fix.md",
+   "changed_paths": [
+    "eval/selftest.sh",
+    "plugins/jarvis/skills/setup/templates/handoffs/bin/lib/watch.sh"
+   ],
+   "whole_files": [],
+   "eligible_sources": {
+    "handoffs": 50,
+    "outcomes": 37,
+    "shadow": 30,
+    "security": 3
+   },
+   "excluded": {
+    "own_brief_or_handoff": 1,
+    "after_cutoff": 13
+   },
+   "lessons": {
+    "status": "applied",
+    "reason": null,
+    "cost_usd": 0.15715600000000002,
+    "sha256": "c08ebd4ebc305659153ce87861aae565321d0e5635df4dd3b43d11ffbb25bd50",
+    "selected_sha256": "739b9aae483c9fae3a4829637fd6238680794d5d237545b8b40d14d6d02a43ef",
+    "selected_bytes": 2516,
+    "selected_entries": 4
+   },
+   "packet": {
+    "baseline_sha256": "0f96e9bf76961d543313fb36158f76be619af5f2423c68ebc13ee832f1b45c89",
+    "treatment_sha256": "a9fd2ad032e79720decf8eab0a31b1f0803556766b135e55217b0205e8b8b94c",
+    "baseline_bytes": 42628,
+    "treatment_bytes": 45144,
+    "redactions": 1
+   }
+  },
+  {
+   "id": "1131ecd",
+   "commit": "1131ecdc47b6956d2e325b0ff35d9f17149f8966",
+   "parent": "7a3cafe3100cf3fd0a541c6a49fe02d5096a80a3",
+   "commit_time_utc": "2026-11-07T09:12:05+00:00",
+   "handoff": "handoffs/merged/2026-11-07-2015-p5f-jarvis-permission-rule.md",
+   "brief": "handoffs/briefs/2026-11-07-1840-p5f-jarvis-permission-rule.md",
+   "changed_paths": [
+    "README.md",
+    "docs/how-it-works.md",
+    "plugins/jarvis/skills/setup/SKILL.md",
+    "plugins/jarvis/skills/setup/templates/.claude/settings.json"
+   ],
+   "whole_files": [
+    "plugins/jarvis/skills/setup/templates/handoffs/bin/jarvis",
+    "plugins/jarvis/skills/setup/templates/handoffs/bin/lib/lock.sh",
+    "plugins/jarvis/skills/setup/templates/handoffs/bin/lib/defaults.sh",
+    "plugins/jarvis/skills/setup/templates/handoffs/bin/jarvis-lock.pl"
+   ],
+   "eligible_sources": {
+    "handoffs": 57,
+    "outcomes": 44,
+    "shadow": 32,
+    "security": 4
+   },
+   "excluded": {
+    "own_brief_or_handoff": 0,
+    "after_cutoff": 7
+   },
+   "lessons": {
+    "status": "applied",
+    "reason": null,
+    "cost_usd": 0.172818,
+    "sha256": "f9099fb5651f0ab66caeaaaaaaa6806e63f60a315c3ff635b34e364946be9cea",
+    "selected_sha256": "232b97150c7099acdcc4057d2350d545be54e116058bba5e0875c3a5ad0228c7",
+    "selected_bytes": 1884,
+    "selected_entries": 3
+   },
+   "packet": {
+    "baseline_sha256": "d9e330d751b7a443f6ef52d3152b80c2fddea75094efd6f68d5585f8c95c8780",
+    "treatment_sha256": "0d6208a78a59720527763f44035fdd7c296b756089b13e1a122b668af9b5ca02",
+    "baseline_bytes": 72531,
+    "treatment_bytes": 74415,
+    "redactions": 1
+   }
+  }
+ ]
+}

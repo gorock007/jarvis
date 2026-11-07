@@ -1,0 +1,7 @@
+results/raw/
+results/work/
+*.tmp
+__pycache__/
+# frozen packets and blind outputs copy handoff text from the git-ignored handoffs/: kept local
+fixtures/
+results/
