@@ -103,8 +103,9 @@ of your current session. Either way, `prefix + w` lists the workers. With the
 command above, `tmux attach -t jarvis` gets you back in after you detach or
 log out. Workers run unattended: Claude workers launch with
 `--dangerously-skip-permissions` (Codex with its own bypass flags), and their
-brief is the fence. Setup allows Jarvis's own
-`handoffs/bin/jarvis` calls, so it doesn't ask each time; anything else still asks. Now talk to it:
+brief is the fence. Setup lets Jarvis run its
+read-only commands (status, read, band …) without asking; anything that starts,
+sends, merges or runs a command still asks. Now talk to it:
 
 > Add a dark mode toggle to settings and fix the flaky login test.
 

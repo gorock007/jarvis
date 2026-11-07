@@ -58,8 +58,11 @@ file:
     worker's state; they act only for a worker (`JARVIS_ROLE=worker` from
     spawn, or on Superset and Ultron its run record)
   - switches off plugins this repo doesn't use
-  - allows Jarvis's own `handoffs/bin/jarvis` calls (`permissions.allow`), so
-    its session doesn't ask each time; every other command still asks
+  - allows Jarvis's read-only commands (`permissions.allow`: `start`, `status`,
+    `band`, `sessions`, `resources`, `doctor`, `read *`, `usage *`), so its
+    session doesn't ask for those; everything else still asks (`spawn`,
+    `merge`, `send`, `close`, `lock`, `budget`, `fable`, `doctor --apply`,
+    `leftovers`, `watch`, `start --force`)
 - `.claude/agents/scout.md` and `diff-reviewer.md`: read-only subagents
   pinned to Sonnet.
 
@@ -211,10 +214,12 @@ Then:
   leave them alone and say so.
 - **The hidden `.claude/settings.json`**: merge the template into any existing file
   with `jq`, never overwrite it. Keep the user's keys. Append to existing
-  hook arrays, including the `PreToolUse` Fable guard. Append the two
-  `permissions.allow` rules (`Bash(handoffs/bin/jarvis *)`,
-  `Bash(./handoffs/bin/jarvis *)`) to any existing `permissions.allow`
-  without duplicating them, and keep the user's own rules and every `deny`
+  hook arrays, including the `PreToolUse` Fable guard. Append the template's
+  `permissions.allow` rules (the read-only `handoffs/bin/jarvis` ones, each
+  in the `handoffs/bin/jarvis …` and `./handoffs/bin/jarvis …` spellings) to
+  any existing `permissions.allow` without duplicating them, remove the
+  broad `Bash(handoffs/bin/jarvis *)` and `Bash(./handoffs/bin/jarvis *)`
+  rules if an earlier dev build added them, and keep the user's own rules and every `deny`
   and `ask` entry. Add
   `"<plugin>@<marketplace>": false` to `enabledPlugins` for
   each plugin in the plugins default. If the project already sets a `statusLine`,
@@ -430,10 +435,10 @@ and spawn's May-touch overlap warning. See the `jarvis:run` skill's
    `UserPromptSubmit` entry's `hooks` (keep `hook prompt`), and add the
    `Stop`, `Notification` and `SessionEnd` entries, appending to any the
    user already has. Skip any object whose `command` is already there, so
-   running the step twice adds nothing. Also append the two
-   `permissions.allow` rules from section 3 (skip any already there; keep the
-   user's own rules and `deny`/`ask` entries), so Jarvis's own
-   `handoffs/bin/jarvis` calls stop prompting. The hook entries write a worker's state to its
+   running the step twice adds nothing. Also append the read-only
+   `permissions.allow` rules from section 3 (skip any already there, remove
+   the two broad `jarvis *` rules; keep the user's own rules and `deny`/`ask`
+   entries), so Jarvis's read-only commands stop prompting. The hook entries write a worker's state to its
    event file and do nothing in any other session: only a worker has
    `JARVIS_ROLE` from spawn, or a running run record on Superset or Ultron.
 5. Tell the user: spawn now warns when a new brief's May-touch row meets a
