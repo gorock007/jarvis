@@ -82,7 +82,8 @@ the previous handoff instead of carrying 300k tokens of history.
 **5. Wait without spending.** Jarvis doesn't poll or sleep. `jarvis watch`
 wakes it when a handoff lands, or when a worker hits a usage limit, sits at a
 trust or approval prompt, or shows the same screen for `JARVIS_STALL_MIN`
-minutes (15 by default) with no handoff. If Jarvis has sat idle long enough for its
+minutes (15 by default) with no handoff. A worker whose hooks say it is
+mid-turn gets a longer limit, `JARVIS_BUSY_STALL_MIN` (45), and no nudge. If Jarvis has sat idle long enough for its
 prompt cache to expire, the watcher sends `/clear` first. The fresh session
 then reloads from `OPEN.md` for a fraction of what reloading the old
 conversation would cost.

@@ -405,8 +405,21 @@ EOF
       stale=$(( ($(now) - et) / 60 ))
       [ $(( ($(now) - t) / 60 )) -ge "$JARVIS_STALL_MIN" ] && ! handoff_since "$brief" "$eturn" \
         && watch_stall "$id" event "stall $id event $en $et" "worker $(short "$id") finished its turn ${stale} min ago (hook event: $ek) and has no handoff — read its terminal"
+    elif [ "$ek" = working ] && [ -n "$tail_" ]; then
+      # mid-turn: a frozen screen is normal (a long tool call, a long think, a TUI with no
+      # spinner), so the limit is JARVIS_BUSY_STALL_MIN, timed like the stop branch. A
+      # nudge typed into a busy agent only queues, so this wakes Jarvis directly, once per event
+      [ "$(cat "$scr" 2>/dev/null)" = "$sum" ] || echo "$sum" > "$scr"
+      t=$(mtime "$scr"); [ "$t" -gt "$et" ] || t=$et
+      stale=$(( ($(now) - et) / 60 ))
+      key="stall $id busy $en $et"
+      if [ $(( ($(now) - t) / 60 )) -ge "$JARVIS_BUSY_STALL_MIN" ] && ! handoff_since "$brief" "$eturn" && ! grep -qxF "$key" "$seen"; then
+        echo "$key" >> "$seen"; kinds="$kinds stall"
+        events="$events worker $(short "$id") has been mid-turn ${stale} min (last hook event: working) with a frozen screen and no handoff — read its terminal;"
+        watch_log source stall:busy
+      fi
     elif [ -n "$tail_" ]; then
-      # working, or no hook events: a working agent's screen keeps changing (spinner,
+      # no hook events (or a kind the branches above don't take): a working agent's screen keeps changing (spinner,
       # timer, output); a frozen one with no handoff is stuck at something the patterns
       # above don't know
       if [ "$(cat "$scr" 2>/dev/null)" != "$sum" ]; then

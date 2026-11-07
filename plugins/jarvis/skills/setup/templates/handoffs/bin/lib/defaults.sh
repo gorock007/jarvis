@@ -21,6 +21,7 @@ JARVIS_GUARD_TOKENS=100000
 JARVIS_WATCH_SEC=60
 JARVIS_BATCH_SEC=60      # the watcher holds events this long after the first, then wakes Jarvis once; 0 = at once
 JARVIS_STALL_MIN=15      # unchanged this long: nudge once, then wake after another interval
+JARVIS_BUSY_STALL_MIN=45 # mid-turn (last hook event: working) and unchanged this long: wake, no nudge
 JARVIS_FASTPATH="trust edit nudge"  # remove a word to disable it; empty = wake Jarvis as before
 JARVIS_BUDGET_MIN=90     # a worker's working minutes (watcher ticks its screen changed in)
 JARVIS_BUDGET_USD=15     # its API-equivalent estimate, subagents included

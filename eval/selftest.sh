@@ -766,8 +766,20 @@ $trust"
       ev_setup claude; ev_at 0 stop; ev_tick frozen; ev_age $(( $(date +%s) - 120 )) handoffs/.jarvis/screen-ev; ev_tick frozen
       ev_quiet && ! grep -q '^nudged:' handoffs/.jarvis/runs/ev; check "events: a fresh stop doesn't, even on a screen frozen past JARVIS_STALL_MIN" $?
       ev_setup claude; ev_at 180 working; ev_handoff; ev_at 120 stop; ev_tick; ev_tick; ! grep -q 'Finish the phase\|finished its turn' "$FAKE_LOG"; check "events: a stop after a handoff written this turn doesn't" $?
-      ev_setup claude; ev_at 120 working; ev_tick frozen; ev_age $(( $(date +%s) - 120 )) handoffs/.jarvis/screen-ev; ev_tick frozen
-      ev_nudge && ev_src nudge:screen; check "events: working falls back to the frozen-screen check (source nudge:screen)" $?
+      # mid-turn (last event working): a frozen screen waits for JARVIS_BUSY_STALL_MIN, then wakes Jarvis with no nudge
+      ev_busy() { ev_setup claude; echo 'JARVIS_BUSY_STALL_MIN=3' >> handoffs/jarvis.conf; }
+      ev_busy; ev_at 120 working; ev_tick frozen; ev_age $(( $(date +%s) - 120 )) handoffs/.jarvis/screen-ev; ev_tick frozen
+      ev_quiet && ! grep -q '^nudged:' handoffs/.jarvis/runs/ev; check "events: working + a screen frozen past JARVIS_STALL_MIN but under JARVIS_BUSY_STALL_MIN: no nudge, no wake" $?
+      ev_busy; ev_at 240 working; ev_tick frozen; ev_age $(( $(date +%s) - 240 )) handoffs/.jarvis/screen-ev; ev_tick frozen
+      ev_woke 'has been mid-turn 4 min (last hook event: working) with a frozen screen and no handoff' && [ "$(wl)" = 'woke stall 1' ] && ev_src stall:busy \
+        && ! grep -q 'Finish the phase' "$FAKE_LOG" && ! grep -q '^nudged:' handoffs/.jarvis/runs/ev; check "…past it: wakes Jarvis with no nudge (source stall:busy)" $?
+      ev_tick frozen; ev_quiet; check "…once per event" $?
+      ev_busy; ev_at 240 working; ev_tick frozen; ev_age $(( $(date +%s) - 240 )) handoffs/.jarvis/screen-ev; ev_tick 'output moved'; ev_tick 'output moved'
+      ev_quiet; check "…a screen that changed after the event restarts the clock" $?
+      ev_age $(( $(date +%s) - 180 )) handoffs/.jarvis/screen-ev; ev_tick 'output moved'
+      ev_woke 'has been mid-turn 4 min' && ev_src stall:busy; check "…until that screen too has been frozen JARVIS_BUSY_STALL_MIN" $?
+      ev_busy; ev_at 240 working; ev_handoff; ev_tick frozen; ev_age $(( $(date +%s) - 240 )) handoffs/.jarvis/screen-ev; ev_tick frozen
+      ! grep -q 'mid-turn\|Finish the phase' "$FAKE_LOG"; check "…a handoff written this turn: no busy stall" $?
       ev_setup claude; ev_tick frozen; ev_age $(( $(date +%s) - 120 )) handoffs/.jarvis/screen-ev; ev_tick frozen
       ev_nudge && ev_src nudge:screen; check "events: no events file: today's screen check" $?
       for a in codex opencode; do

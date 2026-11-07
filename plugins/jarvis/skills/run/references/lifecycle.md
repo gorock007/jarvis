@@ -128,7 +128,9 @@ Must not touch, `.claude/`, `.git/`, root `handoffs/` (except an identified,
 explicitly listed handoff from this run), settings, env and credential files.
 Unknown or truncated paths and command approvals wake Jarvis. A frozen worker
 with no handoff gets one nudge after `JARVIS_STALL_MIN`, then wakes Jarvis if
-still frozen for another interval. Remove a word to disable it; `""` disables
+still frozen for another interval. A worker that is mid-turn (last hook event
+`working`) gets no nudge, since typed text only queues there; it wakes Jarvis
+once its screen has been frozen `JARVIS_BUSY_STALL_MIN` (45). Remove a word to disable it; `""` disables
 all three. Actions log `auto` with trust/edit/nudge in `watch.log` plus their
 run, brief and path/prompt and key in `audit.log`; they never enter the batch.
 `jarvis usage` counts only woke/cleared as wake-ups and reports auto-handled
@@ -242,8 +244,13 @@ still reads the screen, for an ended worker too.
   hook is unverified) is not nudged while its screen changes. Then the usual one nudge, and after another interval "worker X
   finished its turn N min ago (hook event: stop|waiting) and has no handoff
   — read its terminal". A fresh stop raises nothing.
-- **`working`, no events, or another agent**: the frozen-screen check, as
-  before.
+- **`working`**: the worker is mid-turn, and a frozen screen is normal there
+  (a long tool call or think). Once both the event and the screen's last
+  change are `JARVIS_BUSY_STALL_MIN` (45) old, with no handoff since the turn
+  began: "worker X has been mid-turn N min (last hook event: working) with a
+  frozen screen and no handoff — read its terminal", once per event, with no
+  nudge (text typed into a busy agent only queues). Logged `source stall:busy`.
+- **No events, or another agent**: the frozen-screen check, as before.
 
 Each raised or auto-handled event also writes a line to `watch.log` naming
 what raised it: `<UTC time>`, a tab, `source`, a tab, `<kind>:<event|screen>`,

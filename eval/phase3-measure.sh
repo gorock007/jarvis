@@ -25,6 +25,7 @@ repo=$(dirname "$here")
 tpl="$repo/plugins/jarvis/skills/setup/templates"
 WATCH_SEC=${P3_WATCH_SEC:-5}
 STALL_MIN=${P3_STALL_MIN:-1}
+BUSY_MIN=$(( STALL_MIN * 45 / 15 ))   # JARVIS_BUSY_STALL_MIN, scaled as the stall is (default 45 to 15)
 REPS=${P3_REPS:-3}
 PAR=${P3_PAR:-15}
 REAL=${P3_REAL:-1}
@@ -99,6 +100,7 @@ run_cell() {
     echo "JARVIS_PUSH=0"
     echo "JARVIS_WATCH_SEC=$WATCH_SEC"
     echo "JARVIS_STALL_MIN=$STALL_MIN"
+    echo "JARVIS_BUSY_STALL_MIN=$BUSY_MIN"
     echo "JARVIS_BATCH_SEC=$batch"
     [ "$scen" = real ] || echo "JARVIS_AGENT_claude='sh \"$work/fake-agent.sh\" $scen $evs \"$BASH\" $HOLD \"$d/t_handoff\"'"
   } >> handoffs/jarvis.conf
@@ -132,7 +134,7 @@ run_cell() {
   esac
   case "$scen" in
     a|b|real) pat='handoff handoffs/p3-' ;;
-    c) pat="hasn't changed|finished its turn" ;;
+    c) pat="hasn't changed|finished its turn|mid-turn" ;;
     d) pat="ended without a handoff|hasn't changed" ;;
   esac
   tw=""; n=0
@@ -195,7 +197,7 @@ if [ -n "$ONLY" ]; then
 fi
 
 total=$(printf '%s\n' $cells | grep -c .)
-echo "phase3-measure: $total runs, tick ${WATCH_SEC}s, stall ${STALL_MIN} min, bash $BASH_VERSION, tmux server $sock"
+echo "phase3-measure: $total runs, tick ${WATCH_SEC}s, stall ${STALL_MIN} min, busy stall ${BUSY_MIN} min, bash $BASH_VERSION, tmux server $sock"
 TM start-server \; new-session -d -s p3-anchor "sleep 86400 # $work" 2>/dev/null
 i=0
 for c in $cells; do
