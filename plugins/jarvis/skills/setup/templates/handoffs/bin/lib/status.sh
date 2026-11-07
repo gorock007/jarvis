@@ -5,6 +5,7 @@
 cmd_start() {
   local me old
   [ -f "$OPEN" ] || die "no $OPEN — run jarvis:setup first"
+  need_host
   me=$(host self)
   [ -n "$me" ] || die "host $HOST gives no id for this terminal — run Jarvis in a Superset terminal, an Ultron session or a tmux pane"
   old=$(jarvis_terminal)

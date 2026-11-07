@@ -151,6 +151,11 @@ EOT
     [ "$(git rev-parse HEAD)" = "$(git -C "$tmp/origin.git" rev-parse HEAD)" ]; check "merge pushes" $?
     grep -q 'terminals close --workspace ws --terminal term-1' "$FAKE_LOG"; check "merge closes the worker" $?
     ! grep -q 'b1.md' handoffs/OPEN.md; check "merge drops the worker from OPEN.md" $?
+    git remote remove origin
+    echo no-remote > no-remote.txt
+    printf '# No remote\nstatus: done\nagent: codex gpt-5.6-sol\n## Files\n- no-remote.txt — created\n' > handoffs/h-no-remote.md
+    out=$($J merge handoffs/h-no-remote.md)
+    [ $? = 0 ] && printf '%s' "$out" | grep -q 'not pushed (no remote)'; check "merge without a remote says it was not pushed" $?
 
     old=$(date -u -r $((now - 70 * 60)) +%Y-%m-%dT%H:%M:%S.000Z 2>/dev/null || date -u -d "@$((now - 70 * 60))" +%Y-%m-%dT%H:%M:%S.000Z)
     printf '{"type":"assistant","timestamp":"%s","message":{"model":"claude-fable-5-1","usage":{"input_tokens":5,"cache_read_input_tokens":240000,"cache_creation_input_tokens":3000}}}\n' "$old" > "$tmp/t.jsonl"

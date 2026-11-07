@@ -16,6 +16,6 @@ Jarvis-only rules live in `handoffs/JARVIS.md`.
 
 ## Checks
 
-{{CHECKS}}
+`{{CHECKS}}`
 
 If the tooling changes, update this line and the same one in `AGENTS.md`.

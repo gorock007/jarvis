@@ -119,7 +119,8 @@ cmd_merge() {
   line="merged $sha · $(printf '%s\n' $files | wc -l | tr -d ' ') files"
 
   if [ "$push" = 1 ]; then
-    if git push -q 2>/dev/null; then line="$line · pushed"; else line="$line · push FAILED (run git push)"; fi
+    if [ -z "$(git remote)" ]; then line="$line · not pushed (no remote)"
+    elif git push -q 2>/dev/null; then line="$line · pushed"; else line="$line · push FAILED (run git push)"; fi
   else
     line="$line · not pushed"
   fi

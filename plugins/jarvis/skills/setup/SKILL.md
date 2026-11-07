@@ -44,7 +44,7 @@ file:
   `jarvis usage`.
 - `handoffs/bin/jev.sh`: optional brief lint and terminal triage. It does
   nothing without a `TYPESAFE_API_KEY`.
-- `.claude/settings.json`, which does six things:
+- the hidden `.claude/` folder, including `settings.json`, which does six things:
   - puts subagents on Sonnet (`CLAUDE_CODE_SUBAGENT_MODEL`)
   - turns off the security-guidance per-stop review, while keeping its
     per-commit review, on Sonnet
@@ -115,14 +115,15 @@ the three questions, plus each default below as a question.
 
 1. **Checks** workers run before handing off. Infer them from the repo
    (`package.json` scripts, `pyproject.toml`, `Makefile`, CI config).
-2. **Claude cap**: how many Claude sessions may run in this checkout at
+2. **Claude sessions cap**: how many may run in this checkout at
    once, **Jarvis included**. Default 3 (Jarvis plus two workers). Spawn also
    enforces 4 machine-wide (every repo, the user's own sessions too) and 2 on
    Opus; Codex and OpenCode don't count. Those two stay defaults in
    `jarvis.conf`.
 3. **Statusline tap**: the repo's statusline becomes `jarvis statusline`. It
-   saves Claude Code's 5-hour reading, machine-wide, so the band is computed,
-   not guessed, then runs the user's own statusline unchanged. **It is
+   saves Claude Code's 5-hour reading, machine-wide, so the band (how much of
+   the 5-hour usage is spent) is computed, not guessed, then runs the user's
+   own statusline unchanged. **It is
    required for the band:** with no tap in any Jarvis repo, nothing writes a
    reading, the band reads amber on every spawn, and the caps stay lowered
    (3 machine-wide, 2 Opus). The default is yes. Ask once more if the user
@@ -148,8 +149,8 @@ valid answer.
   window; red at 75%. The tool's defaults.
 - **Plugins to switch off**: from `jq .enabledPlugins ~/.claude/settings.json`,
   only the plainly unused (Stripe with no payments, Swift LSP in a Python
-  repo): every enabled plugin adds to every session's skill listing, workers
-  pay on every turn. Keep `jarvis` and `security-guidance` on.
+  repo): each enabled plugin adds to every session's start-up tokens. Keep
+  `jarvis` and `security-guidance` on.
 - **Jev**: installed, inert: `handoffs/bin/jev.sh` lints briefs and summarises
   quiet workers, and sends brief text and terminal bottoms (secret-shaped
   strings masked) to TypeSafe only with a `TYPESAFE_API_KEY`. Skip if the user
@@ -157,7 +158,7 @@ valid answer.
 - **Heavy suites**: scan the scripts (`package.json`, `Makefile`, `justfile`,
   CI config) for Docker, compose, testcontainers, e2e, playwright, anything
   called "full": several at once can stall the machine. Propose wrapping each
-  where it's declared, so every caller queues for the same lease:
+  where it's declared, so only one runs at a time:
   `"test:docker": "handoffs/bin/jarvis lock docker -- vitest run --project docker"`.
   Built-in classes: `docker` (one on the machine), `suite` (one per checkout);
   a suite writing shared artifacts in the checkout gets its own
@@ -177,7 +178,7 @@ empty):
 | --- | --- | --- |
 | `{{PROJECT_NAME}}` | CLAUDE.md, AGENTS.md, JARVIS.md | project name |
 | `{{APP_DIR_NOTE}}` | CLAUDE.md, AGENTS.md | e.g. "The app lives at the repo root." or "The app lives in `app/`; read `app/CLAUDE.md` too." |
-| `{{CHECKS}}` | CLAUDE.md, AGENTS.md | the check commands, as a shell line |
+| `{{CHECKS}}` | CLAUDE.md, AGENTS.md | the check commands, inserted verbatim as a shell line; do not send a value containing `&` or `/` through `sed` |
 | `{{JARVIS_ONLY}}` | JARVIS.md, AGENTS.md | a sentence: "applying SQLite migrations, editing `uv.lock`, tagging releases." |
 | `{{VERIFY}}` | JARVIS.md, AGENTS.md | a sentence on how the user checks work |
 | `{{SHARED_FILES}}` | JARVIS.md, AGENTS.md | comma-separated paths |
@@ -203,9 +204,10 @@ Then:
   Skip `jev.sh` if the user said no to Jev.
 - Apply the heavy-suite wrappers the user said yes to in the heavy-suites default, and
   any `JARVIS_LOCK_<class>` lines to `jarvis.conf`.
-- Copy `templates/.claude/agents/` to `<repo>/.claude/agents/`. If the repo
-  already has agents with those names, leave them alone and say so.
-- **`.claude/settings.json`**: merge the template into any existing file
+- Copy the hidden `templates/.claude/agents/` folder to
+  `<repo>/.claude/agents/`. If the repo already has agents with those names,
+  leave them alone and say so.
+- **The hidden `.claude/settings.json`**: merge the template into any existing file
   with `jq`, never overwrite it. Keep the user's keys. Append to existing
   hook arrays, including the `PreToolUse` Fable guard. Add
   `"<plugin>@<marketplace>": false` to `enabledPlugins` for
@@ -259,11 +261,18 @@ superset ws create --project <projectId> --name main --checkout local --local \
 
   In the desktop app: open the project's shared-checkout workspace and
   launch Claude Code on **claude-opus-5-5** / **high** with that first
-  message. Anywhere else, from the repo root:
+  message. Anywhere else, from a plain terminal in the repo root:
 
 ```bash
 tmux new-session -s jarvis \
   "claude --model claude-opus-5-5 --effort high 'You are Jarvis. Use the jarvis:run skill: read handoffs/JARVIS.md and handoffs/OPEN.md, run handoffs/bin/jarvis start, then tell me what is open.'"
+```
+
+  If you are already inside tmux, run just this `claude` command in the
+  current pane:
+
+```bash
+claude --model claude-opus-5-5 --effort high 'You are Jarvis. Use the jarvis:run skill: read handoffs/JARVIS.md and handoffs/OPEN.md, run handoffs/bin/jarvis start, then tell me what is open.'
 ```
 
   Workers then open as windows in that tmux session (`prefix + w` lists

@@ -69,7 +69,7 @@ Several workers edit the same checkout at once, on separate terminals. So:
   - A lock wait is normal. Wait; don't work around it, and never kill the
     holder.
 - **Verification:** {{VERIFY}}
-- **Checks:** run {{CHECKS}} before handing off and report the results. Say
+- **Checks:** run `{{CHECKS}}` before handing off and report the results. Say
   plainly what you didn't check. Never edit a test script while another
   worker may be running it: bash reads a script as it goes, so a mid-run edit
   can replay part of it in that worker's checkout.
