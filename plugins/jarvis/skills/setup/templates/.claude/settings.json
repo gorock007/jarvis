@@ -17,6 +17,14 @@
       "Bash(./handoffs/bin/jarvis read *)",
       "Bash(handoffs/bin/jarvis log *)",
       "Bash(./handoffs/bin/jarvis log *)",
+      "Bash(handoffs/bin/jarvis lessons status)",
+      "Bash(./handoffs/bin/jarvis lessons status)",
+      "Bash(handoffs/bin/jarvis lessons show)",
+      "Bash(./handoffs/bin/jarvis lessons show)",
+      "Bash(handoffs/bin/jarvis lessons show *)",
+      "Bash(./handoffs/bin/jarvis lessons show *)",
+      "Bash(handoffs/bin/jarvis lessons select *)",
+      "Bash(./handoffs/bin/jarvis lessons select *)",
       "Bash(handoffs/bin/jarvis usage *)",
       "Bash(./handoffs/bin/jarvis usage *)"
     ]

@@ -191,6 +191,54 @@ class CoreTests(unittest.TestCase):
             if path.is_file():
                 self.assertEqual(path.stat().st_mode & 0o777, 0o600)
 
+    def test_structured_output_envelope_and_plain_fallbacks(self):
+        # The fake asserts --json-schema and DISABLE_PROMPT_CACHING=1 on every call.
+        for envelope in ("structured", "plain", "fenced"):
+            self.env["LESSONS_FAKE_ENVELOPE"] = envelope
+            ident = self.propose()
+            response = json.loads((self.base / "proposals" / ident / "response.json").read_text())
+            self.assertEqual(len(response["review"]), 1, envelope)
+        # structured_output wins over a prose `result`; no fallback parse of "Done."
+        self.assertEqual(core.generated({"structured_output": {"a": 1}, "result": "Done."}), {"a": 1})
+        # Only one surrounding fence is stripped; nested or partial fences stay invalid.
+        for bad in ("```json\n```json\n{}\n```\n```", "text ```json\n{}\n```", "```python\n{}\n```"):
+            with self.assertRaises(core.Failure):
+                core.generated({"result": bad})
+        with self.assertRaises(core.Failure):
+            core.generated({"structured_output": ["not", "an", "object"]})
+
+    def test_failed_generation_saves_scrubbed_raw_result_privately(self):
+        canary = "sk" + "_" + "rawResultCanary123456789"
+        self.env["LESSONS_FAKE_ENVELOPE"] = "garbage"
+        self.run_cli("propose", mode="valid", success=False)
+        runs = list((self.base / "runs").iterdir())
+        self.assertEqual(len(runs), 1)
+        self.assertEqual(runs[0].stat().st_mode & 0o777, 0o600)
+        run = json.loads(runs[0].read_text())
+        self.assertEqual(run["exit_state"], "failed")
+        self.assertIn("Here is the update", run["raw_result"])
+        self.assertNotIn(canary, run["raw_result"])
+        self.assertNotIn("/Users/someone", run["raw_result"])
+        self.assertIn("[REDACTED]", run["raw_result"])
+        # A success never carries raw_result.
+        self.env["LESSONS_FAKE_ENVELOPE"] = "structured"
+        ident = self.propose()
+        manifest = json.loads((self.base / "proposals" / ident / "manifest.json").read_text())
+        self.assertNotIn("raw_result", manifest["run"])
+
+    def test_source_ids_are_thirteen_characters_and_collisions_refuse(self):
+        self.propose()
+        ids = [s["id"] for s in self.bundle()["sources"]]
+        self.assertTrue(ids)
+        for ident in ids:
+            self.assertEqual(len(ident), 13)
+            self.assertRegex(ident, r"^S[0-9a-f]{12}$")
+        with mock.patch.object(core, "source_id", return_value="S" + "0" * 12):
+            self.handoff(2, "A different handoff body.\n")
+            with mock.patch.dict(os.environ, self.env):
+                with self.assertRaisesRegex(core.Failure, "collision"):
+                    core.Lessons(self.root).propose(True)
+
     def test_invalid_outputs_do_not_advance_or_write_proposal(self):
         for mode in ("unknown", "long", "secret", "unsupported"):
             self.run_cli("propose", mode=mode, success=False)
@@ -308,7 +356,7 @@ class CoreTests(unittest.TestCase):
         mutations = [lambda r: r["review"][0].update(extra="no"),
                      lambda r: r["review"][0].update(id="L000002"),
                      lambda r: r["review"][0].update(scope=["../escape"]),
-                     lambda r: r["review"][0].update(evidence=["S" + "f" * 64]),
+                     lambda r: r["review"][0].update(evidence=["S" + "f" * 12]),
                      lambda r: r["review"][0].update(checked_at="2099-01-01"),
                      lambda r: r["review"][0].update(trigger="bad\nline"),
                      lambda r: r["briefs"].append(r["review"][0]),

@@ -15,6 +15,9 @@ for flag, value in flags.items():
     assert args[args.index(flag) + 1] == value, flag
 for flag in ("--strict-mcp-config", "--disable-slash-commands", "--no-session-persistence"):
     assert flag in args, flag
+schema = json.loads(args[args.index("--json-schema") + 1])
+assert schema["type"] == "object" and schema["required"] == ["review", "briefs", "retired", "review_notes"]
+assert os.environ.get("DISABLE_PROMPT_CACHING") == "1", "prompt caching not disabled in the child"
 assert json.loads(Path(args[args.index("--mcp-config") + 1]).read_text()) == {"mcpServers": {}}
 assert Path(args[args.index("--system-prompt-file") + 1]).read_text().startswith("You prepare a proposed memory update")
 assert not list(Path.cwd().iterdir()), "generation cwd is not empty"
@@ -60,7 +63,18 @@ elif mode == "replacement":
                             "reason": "The supplied evidence supports this correction.", "evidence": replacement["evidence"]}]
 elif mode == "custom":
     response = json.loads(Path(os.environ["LESSONS_FAKE_RESPONSE"]).read_text())
-print(json.dumps({"type": "result", "subtype": "success", "is_error": False,
-                  "result": json.dumps(response), "total_cost_usd": 0.0123,
+envelope = os.environ.get("LESSONS_FAKE_ENVELOPE", "structured")
+extra = {}
+if envelope == "structured":
+    # --json-schema puts the object in structured_output; `result` is prose.
+    extra, text = {"structured_output": response}, "Done."
+elif envelope == "fenced":
+    text = "```json\n" + json.dumps(response) + "\n```"
+elif envelope == "garbage":
+    text = "Here is the update: token=" + "sk" + "_" + "rawResultCanary123456789" + " /Users/someone/private"
+else:
+    text = json.dumps(response)
+print(json.dumps({"type": "result", "subtype": "success", "is_error": False, **extra,
+                  "result": text, "total_cost_usd": 0.0123,
                   "usage": {"input_tokens": 100, "output_tokens": 40, "cache_read_input_tokens": 3},
                   "session_id": "never-persist-this-field"}))

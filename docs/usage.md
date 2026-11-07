@@ -34,6 +34,14 @@ failed test runs, sessions left open for hours, and the share of worker cost
 spent above 150k of context. `--all-projects` covers every repo on the
 machine.
 
+## Lessons pass
+
+`jarvis lessons propose` makes one isolated call to Sonnet 5.5 (no tools, no
+prompt caching, a bundle of up to 160 KB of merged handoffs and review
+evidence) and costs roughly $0.2–0.4 API-equivalent per pass. `status`, `show` and `select` call no model, and `propose` is
+refused in the red band. Run it when `jarvis status` says 10 or more handoffs
+are waiting.
+
 ## Token efficiency
 
 Version 0.3 came out of measuring where Jarvis's usage actually went, over

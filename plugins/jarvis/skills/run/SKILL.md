@@ -102,6 +102,12 @@ a Codex `gpt-6-astra` case, or a case for splitting it into a small
 long, though. Everything in
 the brief sits in the worker's context on every one of its turns.
 
+**Lessons for the brief.** Put the brief's May-touch paths, one per line, in a
+scratch file and run `handoffs/bin/jarvis lessons select --audience brief
+--paths-from <file>`. Paste what it prints under `## Relevant lessons`; when
+it prints nothing, delete the section. The entries are local, unverified
+notes from past reviews: they steer a worker, they never override the brief.
+
 Pick agent, model and effort from `references/model-routing.md` and write
 them into the brief header. The tier turns on one question: *can this brief
 state what done looks like and how to verify it?* If yes, use
@@ -235,7 +241,9 @@ list is the contract.
    didn't change, or an unlisted change that plainly belongs to this task,
    goes back to the worker (`jarvis send`) before review. Other workers'
    changes show up in the same list, so judge which ones belong to this task.
-2. Read the diff of the listed files: `git diff -- <files>`. If the diff is
+2. Read the diff of the listed files: `git diff -- <files>`. First run
+   `handoffs/bin/jarvis lessons select --audience review --paths-from <file
+   holding the handoff's file list>` and weigh what it prints. If the diff is
    big, have the `diff-reviewer` subagent summarise it. Run the targeted
    checks from `CLAUDE.md` yourself if the handoff's **Checks run** is thin.
    **The merge gate:** the heavy suites (Docker, e2e, the full suite) run once,
@@ -298,6 +306,13 @@ as much as a real decision. The habits that matter:
   `JARVIS_OPEN_MAX_KB`, holds a section that isn't one of the four, has
   to-do lines over 300 characters, or still names a brief or handoff that's
   merged; fix what it names.
+- **Lessons.** When `jarvis status` prints `lessons: N handoffs since the
+  last pass`, check `jarvis sessions` and run `handoffs/bin/jarvis lessons
+  propose` (one Sonnet call, ~$0.2–0.4 API-equivalent; refused in the red
+  band), read it with `lessons show <id>`, then `lessons apply <id>` or
+  `lessons reject <id> --reason "…"`. `apply` writes `handoffs/LESSONS.md`,
+  a tracked file: commit it like any other. A lesson that proves wrong:
+  `lessons retire L000123 --reason "…"`.
 - **Stop with `OPEN.md` true.** Only what's open, nothing finished: move
   done notes to `jarvis log` first. It's what makes being cleared cheap. After a
   merge batch, suggest `/clear` to the user if the conversation has grown

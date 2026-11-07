@@ -81,6 +81,7 @@ EOF
   sz=$(wc -c < "$OPEN" | tr -d ' ')
   printf 'OPEN.md: %s question(s) for the user · %s to-do · %s KB\n' "$q" "$n" "$(( (sz + 512) / 1024 ))"
   open_checks "$sz"
+  lessons_hint
   watch_running || echo "watcher: not running — start it: handoffs/bin/jarvis watch --start"
   cmd_leftovers --quiet
   cmd_doctor --quiet
@@ -113,6 +114,19 @@ open_checks() { # $1 = OPEN.md's size in bytes; one line per check that fires, n
 $(awk '/^## /{on = ($0 ~ /^## (To-do|Waiting on Jarvis)/); next} on && /^- / {print NR "\t" $0}' "$OPEN")
 EOF
   [ $n -gt 5 ] && echo "… and $((n - 5)) more"
+  return 0
+}
+
+lessons_hint() { # one line when 10+ merged handoffs are unread by the lessons pass, or a lesson has expired; silent otherwise
+  local out n
+  command -v python3 >/dev/null 2>&1 && [ -f "$BIN/jarvis-lessons.py" ] || return 0
+  out=$(python3 -I "$BIN/jarvis-lessons.py" status 2>/dev/null) || return 0
+  n=$(printf '%s' "$out" | sed -n 's/.*"new_handoffs":\([0-9][0-9]*\).*/\1/p')
+  if [ "${n:-0}" -ge 10 ]; then
+    printf 'lessons: %s handoffs since the last pass — jarvis lessons propose\n' "$n"
+  elif printf '%s' "$out" | grep -q '"expired_ids":\["'; then
+    printf 'lessons: an entry has expired — jarvis lessons propose\n'
+  fi
   return 0
 }
 

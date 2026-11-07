@@ -183,6 +183,16 @@ EOT
     st | grep -Eq 'OPEN.md is [0-9]+ KB'; [ $? != 0 ]; check "…and no size warning under the default limit" $?
     cp "$tmp/OPEN.hyg" handoffs/OPEN.md
 
+    # jarvis lessons: dispatch and the status hint (10 merged handoffs, not 9)
+    $J lessons status 2>/dev/null | grep -q '"new_handoffs":'; check "jarvis lessons status dispatches to jarvis-lessons.py" $?
+    $J lessons bogus >/dev/null 2>&1; [ $? != 0 ]; check "…and an unknown lessons command fails" $?
+    n=$(ls handoffs/merged/*.md 2>/dev/null | wc -l | tr -d ' ')
+    mkdir -p handoffs/merged; for i in $(seq 1 $((9 - n))); do printf '# t\nstatus: done\n' > "handoffs/merged/zz-lessons-$i.md"; done
+    st | grep -q '^lessons: '; [ $? != 0 ]; check "status: no lessons hint with 9 merged handoffs" $?
+    printf '# t\nstatus: done\n' > handoffs/merged/zz-lessons-10.md
+    st | grep -qx 'lessons: 10 handoffs since the last pass — jarvis lessons propose'; check "status: the lessons hint at 10 merged handoffs" $?
+    rm -f handoffs/merged/zz-lessons-*.md; rm -rf handoffs/.jarvis/lessons
+
     old=$(date -u -r $((now - 70 * 60)) +%Y-%m-%dT%H:%M:%S.000Z 2>/dev/null || date -u -d "@$((now - 70 * 60))" +%Y-%m-%dT%H:%M:%S.000Z)
     printf '{"type":"assistant","timestamp":"%s","message":{"model":"claude-fable-5-1","usage":{"input_tokens":5,"cache_read_input_tokens":240000,"cache_creation_input_tokens":3000}}}\n' "$old" > "$tmp/t.jsonl"
     hp() { printf '{"session_id":"s","transcript_path":"%s","prompt":"%s"}' "$tmp/t.jsonl" "$1" | $J hook prompt; }

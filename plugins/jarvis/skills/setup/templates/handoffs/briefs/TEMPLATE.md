@@ -18,6 +18,9 @@ started: <YYYY-MM-DD HH:MM> · terminal: <filled in by jarvis spawn>
 - Must not touch: <paths>
 - Shared files (edit minimally, name in handoff): <paths>
 
+## Relevant lessons
+<optional; Jarvis pastes the output of `jarvis lessons select --audience brief --paths-from <may-touch file>` here, or drops the section when it prints nothing>
+
 ## Phase
 <one phase. A job with several phases gets one brief per phase; the next one
 is spawned with `jarvis spawn <brief> --after <this handoff>`>

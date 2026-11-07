@@ -115,8 +115,9 @@ brief: handoffs/briefs/<file>.md
    must be changed. Anything unlisted that obviously belongs to this task
    goes back to the worker. This is the single most important check, because
    Jarvis commits by the list.
-2. **Diff.** `git diff -- <listed files>`; big diffs go to a Sonnet subagent
-   for a summary. Look for edits to shared files that weren't named.
+2. **Diff.** `git diff -- <listed files>` (first
+   `jarvis lessons select --audience review --paths-from <file list>`); big
+   diffs go to a Sonnet subagent for a summary. Look for edits to shared files that weren't named.
 3. **Checks.** If **Checks run** is thin or says "not run", run them: the
    targeted ones here; heavy suites belong to the merge gate, under the lock
    (`references/lifecycle.md`). When the brief has `bash verify` blocks,

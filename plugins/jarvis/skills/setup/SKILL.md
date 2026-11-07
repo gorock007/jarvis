@@ -26,7 +26,7 @@ file:
   authorization lifetime, the idle limit, and whether merge stops what a
   worker left running, plus spawn's overlap mode and the `--verify` timeout cap. Most
   keys are commented defaults.
-- `handoffs/bin/jarvis`: `start`, `status`, `log`, `spawn`, `merge`, `close`,
+- `handoffs/bin/jarvis`: `start`, `status`, `log`, `lessons`, `spawn`, `merge`, `close`,
   `doctor`, `leftovers`, `lock`, `resources`, `watch`, `band`, `usage`,
   `sessions`, `budget`, `fable`, plus the prompt-guard and PreToolUse hooks
   and the statusline tap. It needs `jq` and, for `usage`, `merge --verify`
@@ -41,6 +41,10 @@ file:
   --verify` and doctor's verification block. It needs `python3`.
 - `handoffs/bin/jarvis-scope.py`: spawn's May-touch overlap check. It needs
   `python3`; without it spawn warns "unknown overlap".
+- `handoffs/bin/jarvis-lessons.py` and `handoffs/bin/lessons-prompt.txt` (the
+  script's trusted prompt, which must sit beside it): the engine behind
+  `jarvis lessons`. It needs `python3` (3.9+) and, for `propose`, `claude`.
+  Setup does not create `handoffs/LESSONS.md`: no file means no lessons.
 - `handoffs/bin/cc_usage_audit.py`: the transcript analyser behind
   `jarvis usage`.
 - `handoffs/bin/jev.sh`: optional brief lint and terminal triage. It does
@@ -60,7 +64,8 @@ file:
     spawn, or on Superset and Ultron its run record)
   - switches off plugins this repo doesn't use
   - allows Jarvis's read-only commands (`permissions.allow`: `start`, `status`,
-    `band`, `sessions`, `resources`, `doctor`, `read *`, `usage *`, and
+    `band`, `sessions`, `resources`, `doctor`, `read *`, `usage *`,
+    `lessons status`, `lessons show [*]`, `lessons select *`, and
     `log *`, which only appends a line to `handoffs/log/`), so its
     session doesn't ask for those; everything else still asks (`spawn`,
     `merge`, `send`, `close`, `lock`, `budget`, `fable`, `doctor --apply`,
@@ -207,7 +212,7 @@ Then:
   (this includes `handoffs/bin/lib/`, which `bin/jarvis` sources and which
   needs no `chmod`, and `handoffs/bin/jarvis-verify.py` and
   `handoffs/bin/jarvis-scope.py`, which run through `python3` and need no
-  `chmod`), and `chmod +x handoffs/bin/jarvis handoffs/bin/jarvis-lock.pl handoffs/bin/jev.sh`.
+  `chmod`, and so do `jarvis-lessons.py` and `lessons-prompt.txt`), and `chmod +x handoffs/bin/jarvis handoffs/bin/jarvis-lock.pl handoffs/bin/jev.sh`.
   Skip `jev.sh` if the user said no to Jev.
 - Apply the heavy-suite wrappers the user said yes to in the heavy-suites default, and
   any `JARVIS_LOCK_<class>` lines to `jarvis.conf`.
@@ -217,7 +222,7 @@ Then:
 - **The hidden `.claude/settings.json`**: merge the template into any existing file
   with `jq`, never overwrite it. Keep the user's keys. Append to existing
   hook arrays, including the `PreToolUse` Fable guard. Append the template's
-  `permissions.allow` rules (the read-only `handoffs/bin/jarvis` ones and `log *`, each
+  `permissions.allow` rules (the read-only `handoffs/bin/jarvis` ones, `log *` and the `lessons` ones, each
   in the `handoffs/bin/jarvis …` and `./handoffs/bin/jarvis …` spellings) to
   any existing `permissions.allow` without duplicating them, remove the
   broad `Bash(handoffs/bin/jarvis *)` and `Bash(./handoffs/bin/jarvis *)`
@@ -232,7 +237,8 @@ Then:
   at the top of it: "This project runs the Jarvis workflow — see the root
   `CLAUDE.md` and `AGENTS.md`."
 - `.gitignore`: add `handoffs/.jev/` and `handoffs/.jarvis/`, which hold
-  local logs, readings and watcher state. The rest of `handoffs/` is tracked
+  local logs, readings, watcher state and the lessons store (proposals and
+  their raw results; private, never committed). The rest of `handoffs/` is tracked
   on purpose. It is the project's memory.
 
 ## 4. Verify and hand over
@@ -443,7 +449,11 @@ and spawn's May-touch overlap warning. See the `jarvis:run` skill's
    entries), so Jarvis's read-only commands stop prompting. The hook entries write a worker's state to its
    event file and do nothing in any other session: only a worker has
    `JARVIS_ROLE` from spawn, or a running run record on Superset or Ultron.
-5. Tell the user: spawn now warns when a new brief's May-touch row meets a
+5. Lessons: copy `handoffs/bin/jarvis-lessons.py` and `handoffs/bin/lessons-prompt.txt`
+   (both, side by side), the brief template's optional `## Relevant lessons`
+   section, and the `lessons status`/`show`/`select` allow rules; create no
+   `handoffs/LESSONS.md` (`jarvis lessons propose` makes it, after review).
+6. Tell the user: spawn now warns when a new brief's May-touch row meets a
    running worker's, and warns "unknown" for a row with prose around its
    paths (`JARVIS_OVERLAP=refuse` makes both a refusal); a brief can mark
    commands as ```` ```bash verify class=light timeout=300 ```` blocks for

@@ -15,6 +15,9 @@
 #                                      and the ones idle for hours you may want to close
 #   jarvis log "<text>"                append a dated line to handoffs/log/YYYY-MM.md (finished
 #                                      notes; nothing reads it at session start); merge commits it
+#   jarvis lessons status|propose|show|apply|reject|retire|select
+#                                      reviewed lessons from merged handoffs (jarvis-lessons.py,
+#                                      handoffs/LESSONS.md); propose makes one Sonnet call
 #   jarvis read <terminal> [<lines>]   the bottom of a worker's screen
 #   jarvis send <terminal> <text>      type into a worker's terminal and press Enter
 #   jarvis send <terminal> --keys <k,k> press keys: enter, esc, tab, shift+tab, up, 1, y, ctrl+c…
@@ -168,6 +171,7 @@ case "$cmd" in
   start) cmd_start "$@" ;;
   status) cmd_status ;;
   log) cmd_log "$@" ;;
+  lessons) exec python3 -I "$BIN/jarvis-lessons.py" "$@" ;;
   sessions) cmd_sessions ;;
   _claim) cap_claim "$@" ;; # spawn's cap check, run by jarvis-lock.pl under the spawn lease
   band) cmd_band ;;

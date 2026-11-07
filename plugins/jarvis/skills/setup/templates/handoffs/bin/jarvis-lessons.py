@@ -23,14 +23,36 @@ import time
 
 MODEL = "claude-sonnet-5-5"
 BUNDLE_CAP = 160000
+RAW_CAP = 65536
+OVERHEAD_TOKENS = 2000  # the trusted prompt and CLI framing; a 155 KB bundle measured 71k input = bytes/2.2
 FILE_CAP = 12288
 DELIVERY_CAP = 3072
 ACTIVE_KEYS = ("id", "date", "checked_at", "scope", "trigger", "lesson", "evidence", "supersedes")
 RETIRE_KEYS = ("id", "action", "replacement", "reason", "evidence")
 LESSON_ID = re.compile(r"L[0-9]{6}\Z")
-SOURCE_ID = re.compile(r"S[0-9a-f]{64}\Z")
+# Twelve hex digits: the model has to copy up to three of these exactly.
+SOURCE_ID = re.compile(r"S[0-9a-f]{12}\Z")
 HASH = re.compile(r"[0-9a-f]{64}\Z")
 REDACTED = "[REDACTED]"
+# Output contract passed as --json-schema; the strict validator still runs on the result.
+_STRING = {"type": "string"}
+_IDS = {"type": "array", "items": _STRING}
+_ACTIVE = {"type": "array", "items": {
+    "type": "object", "additionalProperties": False, "required": list(ACTIVE_KEYS),
+    "properties": {"id": _STRING, "date": _STRING, "checked_at": _STRING, "scope": _IDS, "trigger": _STRING,
+                   "lesson": _STRING, "evidence": _IDS, "supersedes": {"type": ["string", "null"]}}}}
+SCHEMA = {
+    "type": "object", "additionalProperties": False,
+    "required": ["review", "briefs", "retired", "review_notes"],
+    "properties": {
+        "review": _ACTIVE, "briefs": _ACTIVE,
+        "retired": {"type": "array", "items": {
+            "type": "object", "additionalProperties": False, "required": list(RETIRE_KEYS),
+            "properties": {"id": _STRING, "action": {"enum": ["superseded", "removed", "expired"]},
+                           "replacement": {"type": ["string", "null"]}, "reason": _STRING, "evidence": _IDS}}},
+        "review_notes": _IDS,
+    },
+}
 
 
 class Failure(Exception):
@@ -48,6 +70,23 @@ def dump(value):
 
 def sha(value):
     return hashlib.sha256(value if isinstance(value, bytes) else value.encode("utf-8")).hexdigest()
+
+
+def source_id(kind, text):
+    return "S" + sha(kind + "\n" + text)[:12]
+
+
+def generated(outer):
+    """The model's JSON: `structured_output` when --json-schema produced it (headless docs),
+    else `result`, with one surrounding ```json fence stripped."""
+    if "structured_output" in outer:
+        response = outer["structured_output"]
+        require(isinstance(response, dict), "invalid structured output")
+        return response
+    text = outer.get("result")
+    require(isinstance(text, str), "invalid JSON")
+    fenced = re.fullmatch(r"\s*```json[ \t]*\n(.*?)\n?```\s*", text, re.S)
+    return loads(fenced.group(1) if fenced else text)
 
 
 def utcdate():
@@ -373,7 +412,9 @@ class Lessons:
 
         def source(kind, text, path, brief=None, location=None, **extra):
             safe = scrub(text)
-            ident = "S" + sha(kind + "\n" + safe)
+            ident = source_id(kind, safe)
+            require(ident not in sources or (sources[ident]["kind"], sources[ident]["text"]) == (kind, safe),
+                    "source ID collision " + ident + "; refusing, nothing written")
             sources[ident] = {"id": ident, "kind": kind, "provenance": "local-unverified", "text": safe}
             records[ident] = clean({"id": ident, "kind": kind, "path": path,
                                     "sha256": sha(text), "brief": brief, "location": location,
@@ -453,7 +494,7 @@ class Lessons:
                     continue
                 item = loads(saved)
                 keys(item, ("source", "record"))
-                require(item["source"]["id"] == ident and "S" + sha(item["source"]["kind"] + "\n" + item["source"]["text"]) == ident,
+                require(item["source"]["id"] == ident and source_id(item["source"]["kind"], item["source"]["text"]) == ident,
                         "corrupt evidence snapshot")
                 sources[ident], records[ident] = clean(item["source"]), clean(item["record"])
             included.append(ident)
@@ -513,9 +554,9 @@ class Lessons:
                    "queued_evidence": len(set(log_ids) - seen - set(included)),
                    "new_evidence": len(set(log_ids) - seen), "source_ids": included,
                    "bundle_bytes": size, "warnings": warnings, "model": MODEL,
-                   "estimated_input_tokens": math.ceil(size / 3),
-                   "estimated_cost_usd": round(math.ceil(size / 3) * 2 / 1000000 + 8000 * 10 / 1000000, 4),
-                   "estimate_note": "planning estimate; excludes prompt/CLI overhead; budget threshold $0.50 may overshoot"}
+                   "estimated_input_tokens": math.ceil(size / 2.2) + OVERHEAD_TOKENS,
+                   "estimated_cost_usd": round((math.ceil(size / 2.2) + OVERHEAD_TOKENS) * 2 / 1000000 + 8000 * 10 / 1000000, 4),
+                   "estimate_note": "planning estimate: bytes/2.2 plus fixed CLI/prompt overhead, uncached; budget threshold $0.50 may overshoot"}
         work = bool(selected or set(included) & (set(log_ids) - seen) or any(expired(r, self.as_of) for r in self.rows)
                     or any(c["changed_paths"] or c["missing_scopes"] for c in bundle["scope_changes"]))
         return clean(bundle), clean(cursor), clean(summary), work
@@ -563,17 +604,21 @@ class Lessons:
                            "--setting-sources", "", "--strict-mcp-config", "--mcp-config", str(workdir / "mcp.json"),
                            "--disable-slash-commands", "--tools", "", "--disallowedTools", "mcp__*",
                            "--no-session-persistence", "--max-turns", "1", "--max-budget-usd", "0.50",
-                           "--system-prompt-file", str(workdir / "system.txt")]
+                           "--system-prompt-file", str(workdir / "system.txt"), "--json-schema", dump(SCHEMA)]
+                # One-shot call: a cache write would cost double the input rate and never be read.
+                # DISABLE_PROMPT_CACHING=1 (https://code.claude.com/docs/en/env-vars), child's env only.
+                env = {**os.environ, "DISABLE_PROMPT_CACHING": "1"}
                 # run() kills and reaps only its own child on timeout. Never signal
                 # a discovered PID, process pattern, or unrelated session.
                 try:
                     result = subprocess.run(command, input=dump(bundle), cwd=str(workdir / "cwd"),
-                                            text=True, capture_output=True, timeout=300)
+                                            text=True, capture_output=True, timeout=300, env=env)
                 except subprocess.TimeoutExpired:
                     run["exit_state"] = "timeout"
                     raise Failure("generation timed out after 300 seconds; own child stopped") from None
-            # Keep returned accounting even when schema validation subsequently
-            # fails. Raw result/error text and session identifiers are never saved.
+            # Keep returned accounting even when validation subsequently fails. On a
+            # failure the scrubbed result text goes in the private run record as
+            # raw_result, so Jarvis can see why. Session identifiers are never saved.
             outer = loads(result.stdout) if result.stdout.strip() else {}
             require(isinstance(outer, dict), "invalid generation envelope")
             cost = outer.get("total_cost_usd")
@@ -587,10 +632,16 @@ class Lessons:
                         if isinstance(v, dict) or (type(v) in (int, float) and math.isfinite(v) and v >= 0)}
 
             run["usage"] = numeric(usage)
-            require(result.returncode == 0, "generation failed (including unsupported flags); no retry or apply")
-            require(outer.get("is_error") is not True and outer.get("subtype", "success") == "success", "generation returned an error")
-            response = loads(outer.get("result"))
-            next_number = validate(response, bundle)
+            try:
+                require(result.returncode == 0, "generation failed (including unsupported flags); no retry or apply")
+                require(outer.get("is_error") is not True and outer.get("subtype", "success") == "success", "generation returned an error")
+                response = generated(outer)
+                next_number = validate(response, bundle)
+            except Failure:
+                text = outer.get("result") if isinstance(outer.get("result"), str) else dump(outer.get("structured_output"))
+                if text and text != "null":
+                    run["raw_result"] = scrub(text)[:RAW_CAP]
+                raise
             run["exit_state"] = "success"
         finally:
             run["duration_seconds"] = round(time.monotonic() - started, 3)
@@ -603,8 +654,11 @@ class Lessons:
         directory = self.base + "/proposals/" + ident
         for src, rec in zip(bundle["sources"], bundle["manifest"]["records"]):
             rel = self.base + "/sources/" + src["id"][1:] + ".json"
-            if read(self.root, rel) is None:
+            saved = read(self.root, rel)
+            if saved is None:
                 atomic(self.root, rel, dump({"source": src, "record": rec}) + "\n")
+            else:
+                require(loads(saved)["source"] == src, "source ID collision " + src["id"] + "; refusing")
         atomic(self.root, directory + "/manifest.json", dump(manifest) + "\n")
         atomic(self.root, directory + "/response.json", dump(response) + "\n")
         atomic(self.root, directory + "/LESSONS.md", rendered)
