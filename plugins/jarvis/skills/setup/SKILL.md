@@ -1,6 +1,6 @@
 ---
 name: setup
-description: Install or upgrade the Jarvis workflow in the current repo — a main agent ("Jarvis") the user talks to, which delegates building to worker agents (Claude Code, Codex, OpenCode or any agent CLI) on separate terminals — in Superset, Ultron or tmux — with usage-aware model routing (Claude Code opus/sonnet/haiku, Codex astra/sol/terra/luna, OpenCode free models; Fable only when the user authorizes one brief), machine-wide caps on concurrent Claude sessions, worker budgets, a shared-checkout worker contract, a handoff/OPEN.md system, and handoffs/bin/jarvis (spawn, status, merge, a model-free watcher, an idle-reload guard, usage reporting). Writes CLAUDE.md, AGENTS.md, handoffs/ and .claude/. Use whenever the user says "set up Jarvis", "add the Jarvis workflow", "update Jarvis in this repo", "make this repo use workers", "orchestrate with Superset terminals", "run workers in tmux", or wants one coordinating agent plus parallel workers. Needs a host for the workers: Superset, Ultron, or tmux anywhere else.
+description: Install or upgrade the Jarvis workflow in the current repo — a main agent ("Jarvis") the user talks to, which delegates building to worker agents (Claude Code, Codex, OpenCode or any agent CLI) on separate terminals — in Superset, Ultron or tmux — with usage-aware model routing (Claude Code opus/sonnet/haiku, Codex astra/sol/terra/luna, OpenCode free models; Fable only when the user authorizes one brief), machine-wide caps on concurrent Claude sessions, worker budgets, a shared-checkout worker contract, a handoff/OPEN.md system, and handoffs/bin/jarvis (spawn, status, merge, a model-free watcher, an idle-reload guard, usage reporting). Writes CLAUDE.md, AGENTS.md, handoffs/ and .claude/. Asks three questions (`advanced` asks all). Use whenever the user says "set up Jarvis", "add the Jarvis workflow", "update Jarvis in this repo", "make this repo use workers", "orchestrate with Superset terminals", "run workers in tmux", or wants one coordinating agent plus parallel workers. Needs a host for the workers: Superset, Ultron, or tmux anywhere else.
 ---
 
 # jarvis:setup — install the Jarvis workflow into a repo
@@ -105,72 +105,73 @@ placeholders mean.
   project-specific rule they already hold. Show the user the diff before
   writing.
 
-## 2. Interview — one batch, then build
+## 2. Interview — three questions, then build
 
-Ask everything in one message, with your best guess pre-filled from the repo
-so the user can just say "yes":
+Ask three questions and show the rest as defaults, in one message. For "set
+up Jarvis, advanced" or the argument `--advanced`, ask all 13 as one batch:
+the three questions, plus each default below as a question.
 
-1. **Project name** (default: repo directory name).
-2. **Where the app lives**: repo root, or a subfolder (`app/`, `web/`)? If
-   it's a subfolder, workers should read that folder's own
-   CLAUDE.md/AGENTS.md too.
-3. **Checks** workers run before handing off. Infer them from the repo
+**Questions** (best guess pre-filled so the user can say "yes"):
+
+1. **Checks** workers run before handing off. Infer them from the repo
    (`package.json` scripts, `pyproject.toml`, `Makefile`, CI config).
-4. **Things only Jarvis may do besides git**: applying DB migrations,
-   deploying, cutting releases, editing lockfiles, touching real user data.
-5. **How the user verifies work**: a phone build, a browser at a URL, CLI
-   commands from the handoff, or tests only.
-6. **Shared files** workers must edit minimally: root layout, design
-   tokens, `package.json`/`pyproject.toml`, global config.
-7. **Claude caps**: how many Claude sessions may run in this checkout at
-   once, **Jarvis included**. The default is 3 (Jarvis plus two workers).
-   Spawn also enforces 4 machine-wide, counting every repo and the user's
-   own sessions, and 2 on Opus. When the 5-hour window ran out, 11 were
-   running at once. Codex and OpenCode don't count. Only the per-checkout
-   number is asked here; the others are defaults in `jarvis.conf`.
-8. **Free tier**: is the user happy sending mechanical work to OpenCode's
-   free models? What must never go there? In most repos that's real
-   credentials, production data and proprietary logic. Free models are
-   served by third parties.
-9. **Usage bands**: the defaults are amber at 50%, or when on pace to use
-   the whole 5-hour window, and red at 75%. Ask whether those suit.
-10. **Plugins to switch off here.** List the user's globally enabled plugins
-    (`jq .enabledPlugins ~/.claude/settings.json`) and propose switching off
-    the ones this repo plainly doesn't use (Stripe in a repo with no
-    payments, Swift LSP in a Python repo). Every enabled plugin adds to every
-    session's skill listing, and workers pay for it on every turn. Keep
-    `jarvis` and `security-guidance` on.
-11. **Statusline tap**: the repo's statusline becomes `jarvis statusline`.
-    It saves Claude Code's 5-hour reading, machine-wide, so the band is
-    computed, not guessed, then runs the user's own statusline unchanged.
-    **It is required for the band:** with no tap in any Jarvis repo, nothing
-    writes a reading, the band reads amber on every spawn, and the caps stay
-    lowered (3 machine-wide, 2 Opus). The default is yes. Ask once more if the
-    user says no, and say that.
-12. **Jev (optional)**: `handoffs/bin/jev.sh` lints briefs before a spawn
-    and makes `jarvis status` show one line per quiet worker. It sends brief
-    text and the bottom of worker terminals to TypeSafe, with secret-shaped
-    strings masked. It needs a `TYPESAFE_API_KEY` (docs.typesafe.ai).
-    Install it anyway (it's inert without a key) unless the user says no.
-13. **Heavy suites.** Look through the project's scripts (`package.json`,
-    `Makefile`, `justfile`, CI config) for suites that are heavy: Docker,
-    compose, testcontainers, e2e, playwright, anything called "full". Several
-    workers running one at once can stall the machine. Propose wrapping each
-    where it's declared, so every caller (any agent, the user, CI) queues for
-    the same lease:
-    `"test:docker": "handoffs/bin/jarvis lock docker -- vitest run --project docker"`.
-    Built-in classes are `docker` (one on the machine) and `suite` (one per
-    checkout). A suite that writes shared artifacts in the checkout (build
-    output, a dev database) gets a class of its own as a `JARVIS_LOCK_<class>`
-    line in `jarvis.conf`. Show each change. Edit the project's scripts only
-    on the user's yes. A suite that writes logs into the checkout should
-    write them to an ignored folder, or `--reuse` never matches.
+2. **Claude cap**: how many Claude sessions may run in this checkout at
+   once, **Jarvis included**. Default 3 (Jarvis plus two workers). Spawn also
+   enforces 4 machine-wide (every repo, the user's own sessions too) and 2 on
+   Opus; Codex and OpenCode don't count. Those two stay defaults in
+   `jarvis.conf`.
+3. **Statusline tap**: the repo's statusline becomes `jarvis statusline`. It
+   saves Claude Code's 5-hour reading, machine-wide, so the band is computed,
+   not guessed, then runs the user's own statusline unchanged. **It is
+   required for the band:** with no tap in any Jarvis repo, nothing writes a
+   reading, the band reads amber on every spawn, and the caps stay lowered
+   (3 machine-wide, 2 Opus). The default is yes. Ask once more if the user
+   says no, and say that.
 
-Skip any question the repo answers unambiguously, and say what you assumed.
+**Defaults (change any of these?)**: in the same message, one line each: the
+value it will write and how it was derived (one clause). "Yes" to all is a
+valid answer.
+
+- **Project name**: the repo directory name.
+- **Where the app lives**: repo root, or the subfolder (`app/`, `web/`) that
+  holds the manifest; then workers also read its own CLAUDE.md/AGENTS.md.
+- **Only Jarvis may do, besides git**: DB migrations, deploys and releases
+  where the repo has them, lockfile edits, touching real user data.
+- **How the user verifies**: from the repo's shape: a browser at a URL (web
+  app), a phone build (mobile), CLI commands from the handoff (CLI or
+  library), else the checks only.
+- **Shared files** workers edit minimally: the root layout, design tokens,
+  `package.json`/`pyproject.toml` and global config that exist.
+- **Free tier**: OpenCode's free models for mechanical work; never:
+  credentials, production data, proprietary logic (third parties serve them).
+- **Usage bands**: amber at 50%, or when on pace to use the whole 5-hour
+  window; red at 75%. The tool's defaults.
+- **Plugins to switch off**: from `jq .enabledPlugins ~/.claude/settings.json`,
+  only the plainly unused (Stripe with no payments, Swift LSP in a Python
+  repo): every enabled plugin adds to every session's skill listing, workers
+  pay on every turn. Keep `jarvis` and `security-guidance` on.
+- **Jev**: installed, inert: `handoffs/bin/jev.sh` lints briefs and summarises
+  quiet workers, and sends brief text and terminal bottoms (secret-shaped
+  strings masked) to TypeSafe only with a `TYPESAFE_API_KEY`. Skip if the user
+  says no.
+- **Heavy suites**: scan the scripts (`package.json`, `Makefile`, `justfile`,
+  CI config) for Docker, compose, testcontainers, e2e, playwright, anything
+  called "full": several at once can stall the machine. Propose wrapping each
+  where it's declared, so every caller queues for the same lease:
+  `"test:docker": "handoffs/bin/jarvis lock docker -- vitest run --project docker"`.
+  Built-in classes: `docker` (one on the machine), `suite` (one per checkout);
+  a suite writing shared artifacts in the checkout gets its own
+  `JARVIS_LOCK_<class>` line in `jarvis.conf`. Show each change. **"Yes" to the
+  defaults doesn't apply it:** edit the scripts only on an explicit yes to the
+  wrapping. Logs a suite writes into the checkout go to an ignored folder, or
+  `--reuse` never matches.
+
+Say what you assumed where the repo didn't answer.
 
 ## 3. Write the files
 
-Replace the placeholders:
+Replace the placeholders, each from an answer or its default (none stays
+empty):
 
 | Placeholder | In | Becomes |
 | --- | --- | --- |
@@ -200,7 +201,7 @@ Then:
   `handoffs/bin/jarvis-scope.py`, which run through `python3` and need no
   `chmod`), and `chmod +x handoffs/bin/jarvis handoffs/bin/jarvis-lock.pl handoffs/bin/jev.sh`.
   Skip `jev.sh` if the user said no to Jev.
-- Apply the heavy-suite wrappers the user said yes to in question 13, and
+- Apply the heavy-suite wrappers the user said yes to in the heavy-suites default, and
   any `JARVIS_LOCK_<class>` lines to `jarvis.conf`.
 - Copy `templates/.claude/agents/` to `<repo>/.claude/agents/`. If the repo
   already has agents with those names, leave them alone and say so.
@@ -208,7 +209,7 @@ Then:
   with `jq`, never overwrite it. Keep the user's keys. Append to existing
   hook arrays, including the `PreToolUse` Fable guard. Add
   `"<plugin>@<marketplace>": false` to `enabledPlugins` for
-  each plugin from question 10. If the project already sets a `statusLine`,
+  each plugin in the plugins default. If the project already sets a `statusLine`,
   put its command in `handoffs/jarvis.conf` as `JARVIS_STATUSLINE_CMD='…'`
   so the tap still runs it. The tap reads the user-level statusline by
   itself. If the user said no to the tap, leave `statusLine` out.
@@ -352,7 +353,7 @@ This release adds the run registry, verified close, `jarvis doctor` and
    the merge gate and the new loop lines to `handoffs/JARVIS.md`, and the
    new **Checks** wording to `handoffs/briefs/TEMPLATE.md`. Keep the
    project's own rules.
-4. Do the heavy-suite step (section 2, question 13): find the suites,
+4. Do the heavy-suite step (section 2, heavy suites): find the suites,
    propose the wrappers, and edit only on the user's yes.
 5. Tell the user: merge now closes every worker of a brief and checks it
    exited; `jarvis close` cancels a worker the same way; `status` ends with
@@ -371,7 +372,7 @@ the band fail closed, adds worker budgets and extends `jarvis usage`.
    `JARVIS_MAX_CLAUDE` stays as it is.
 3. Merge the template `.claude/settings.json`: it adds the `PreToolUse`
    Fable guard. Check the statusline tap is there too: **without it the band
-   reads amber** (section 2, question 11).
+   reads amber** (section 2, statusline tap).
 4. Update `AGENTS.md` (the budget rule), `handoffs/JARVIS.md` (the budget
    rules section) and `handoffs/briefs/TEMPLATE.md` (the model list and the
    `budget:` line). Keep the project's own rules.
