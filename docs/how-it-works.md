@@ -117,7 +117,7 @@ Two rules keep the shared checkout safe:
 | `handoffs/briefs/` | Briefs Jarvis writes, plus `TEMPLATE.md` |
 | `handoffs/merged/` | Reviewed handoffs, committed together with the work they describe |
 | `handoffs/bin/jev.sh` | Optional Jev helper. Does nothing without a `TYPESAFE_API_KEY`. Its log, `handoffs/.jev/`, is git-ignored. |
-| `.claude/settings.json` | Subagents on `sonnet`; security-guidance reviews once per commit instead of after every stop; the idle guard, the Fable guard and the statusline tap; plugins this repo doesn't use switched off. Merged into any settings you already have. |
+| `.claude/settings.json` | Subagents on `sonnet`; security-guidance reviews once per commit instead of after every stop; the idle guard, the Fable guard and the statusline tap; plugins this repo doesn't use switched off; Jarvis's own `handoffs/bin/jarvis` calls allowed without a prompt. Merged into any settings you already have. |
 | `.claude/agents/scout.md` | Read-only explorer subagent pinned to `sonnet`. Answers in under 300 words. |
 | `.claude/agents/diff-reviewer.md` | Read-only diff reviewer subagent pinned to `sonnet` |
 

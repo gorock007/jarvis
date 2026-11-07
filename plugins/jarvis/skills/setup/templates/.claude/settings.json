@@ -1,4 +1,10 @@
 {
+  "permissions": {
+    "allow": [
+      "Bash(handoffs/bin/jarvis *)",
+      "Bash(./handoffs/bin/jarvis *)"
+    ]
+  },
   "env": {
     "CLAUDE_CODE_SUBAGENT_MODEL": "sonnet",
     "ENABLE_STOP_REVIEW": "0",
