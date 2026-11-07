@@ -31,6 +31,7 @@ Where the two disagree, this file wins.
 ```bash
 handoffs/bin/jarvis start                    # claim this terminal, then status
 handoffs/bin/jarvis status                   # band, workers, new handoffs, git: one screen
+handoffs/bin/jarvis log "<text>"             # a finished note to handoffs/log/YYYY-MM.md, not OPEN.md
 handoffs/bin/jarvis spawn handoffs/briefs/<file>.md   # lint, band + cap + overlap checks, spawn, record
 handoffs/bin/jarvis merge handoffs/<file>.md --check  # file list vs git status, diff stat
 handoffs/bin/jarvis merge handoffs/<file>.md --check --verify [--reuse]  # also run its verify blocks, isolated

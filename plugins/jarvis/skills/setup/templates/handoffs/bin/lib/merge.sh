@@ -100,6 +100,7 @@ cmd_merge() {
   [ $old_tracked = 1 ] && set -- "$@" "$ho"
   [ -n "$brief" ] && [ -f "$brief" ] && set -- "$@" "$brief"
   [ -f "$OPEN" ] && set -- "$@" "$OPEN"
+  [ -f "$H/log/$(date +%Y-%m).md" ] && set -- "$@" "$H/log/$(date +%Y-%m).md"   # jarvis log's month file
   git add -A -- "$@" || die "git add failed"
 
   title=$(sed -n '1s/^#[[:space:]]*//p' "$dest")

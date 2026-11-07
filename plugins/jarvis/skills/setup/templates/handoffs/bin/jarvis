@@ -13,6 +13,8 @@
 #                                      JARVIS_OVERLAP=warn | refuse), spawn, record
 #   jarvis sessions                    the Claude sessions counting toward the caps, machine-wide,
 #                                      and the ones idle for hours you may want to close
+#   jarvis log "<text>"                append a dated line to handoffs/log/YYYY-MM.md (finished
+#                                      notes; nothing reads it at session start); merge commits it
 #   jarvis read <terminal> [<lines>]   the bottom of a worker's screen
 #   jarvis send <terminal> <text>      type into a worker's terminal and press Enter
 #   jarvis send <terminal> --keys <k,k> press keys: enter, esc, tab, shift+tab, up, 1, y, ctrl+c…
@@ -165,6 +167,7 @@ cmd="${1:-}"
 case "$cmd" in
   start) cmd_start "$@" ;;
   status) cmd_status ;;
+  log) cmd_log "$@" ;;
   sessions) cmd_sessions ;;
   _claim) cap_claim "$@" ;; # spawn's cap check, run by jarvis-lock.pl under the spawn lease
   band) cmd_band ;;

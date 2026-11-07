@@ -18,14 +18,15 @@ file:
   brief then hand off, and the handoff format.
 - `handoffs/JARVIS.md`: this project's rules for Jarvis. Only Jarvis reads
   it.
-- `handoffs/OPEN.md` (Jarvis's pending list), `briefs/`, `merged/`, and the
-  brief and handoff templates.
+- `handoffs/OPEN.md` (Jarvis's pending list), `briefs/`, `merged/`, `log/`
+  (`jarvis log`'s month files: finished notes, read by nothing at session
+  start), and the brief and handoff templates.
 - `handoffs/jarvis.conf`: the Claude caps (per checkout, machine-wide, Opus),
   the band thresholds and burn-rate limits, worker budgets, the Fable
   authorization lifetime, the idle limit, and whether merge stops what a
   worker left running, plus spawn's overlap mode and the `--verify` timeout cap. Most
   keys are commented defaults.
-- `handoffs/bin/jarvis`: `start`, `status`, `spawn`, `merge`, `close`,
+- `handoffs/bin/jarvis`: `start`, `status`, `log`, `spawn`, `merge`, `close`,
   `doctor`, `leftovers`, `lock`, `resources`, `watch`, `band`, `usage`,
   `sessions`, `budget`, `fable`, plus the prompt-guard and PreToolUse hooks
   and the statusline tap. It needs `jq` and, for `usage`, `merge --verify`
@@ -59,7 +60,8 @@ file:
     spawn, or on Superset and Ultron its run record)
   - switches off plugins this repo doesn't use
   - allows Jarvis's read-only commands (`permissions.allow`: `start`, `status`,
-    `band`, `sessions`, `resources`, `doctor`, `read *`, `usage *`), so its
+    `band`, `sessions`, `resources`, `doctor`, `read *`, `usage *`, and
+    `log *`, which only appends a line to `handoffs/log/`), so its
     session doesn't ask for those; everything else still asks (`spawn`,
     `merge`, `send`, `close`, `lock`, `budget`, `fable`, `doctor --apply`,
     `leftovers`, `watch`, `start --force`)
@@ -215,7 +217,7 @@ Then:
 - **The hidden `.claude/settings.json`**: merge the template into any existing file
   with `jq`, never overwrite it. Keep the user's keys. Append to existing
   hook arrays, including the `PreToolUse` Fable guard. Append the template's
-  `permissions.allow` rules (the read-only `handoffs/bin/jarvis` ones, each
+  `permissions.allow` rules (the read-only `handoffs/bin/jarvis` ones and `log *`, each
   in the `handoffs/bin/jarvis …` and `./handoffs/bin/jarvis …` spellings) to
   any existing `permissions.allow` without duplicating them, remove the
   broad `Bash(handoffs/bin/jarvis *)` and `Bash(./handoffs/bin/jarvis *)`

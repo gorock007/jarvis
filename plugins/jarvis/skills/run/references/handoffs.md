@@ -135,6 +135,11 @@ One file, four lists: **Questions for the user**, **Running workers**,
 **Waiting on Jarvis**, **To-do**. At the top are the current Jarvis terminal
 id (`jarvis start`) and the usage band (`jarvis status`). `jarvis spawn`
 and `jarvis merge` maintain **Running workers**. Jarvis can be `/clear`ed
-between batches, so this file must always hold what a fresh session needs. Every state change above is a one-line edit here. Jarvis never
+between batches, so this file must always hold what a fresh session needs. Every state change above is a one-line edit here.
+It holds only what's open: finished notes, session logs and "landed" records
+go to `jarvis log "<text>"` (`handoffs/log/YYYY-MM.md`, committed by merge,
+read by nothing at start). `jarvis status` prints its size and flags it over
+`JARVIS_OPEN_MAX_KB` (16), an extra `## ` section, to-do lines over 300
+characters, and lines naming a brief or handoff already merged. Jarvis never
 reconstructs state by scanning folders or terminals; if `OPEN.md` is wrong,
 fix `OPEN.md`.

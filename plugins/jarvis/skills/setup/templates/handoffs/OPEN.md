@@ -4,7 +4,8 @@ Jarvis reads this first, every session, and keeps it current. One line per
 item; an item goes in when it opens and comes out when it's done. Don't
 rebuild "what's pending" by searching the handoff folders. Before Jarvis
 stops, this file must hold everything a fresh session needs: `jarvis watch`
-may `/clear` Jarvis after a long idle.
+may `/clear` Jarvis after a long idle. Finished notes go to `jarvis log`,
+not here.
 
 Jarvis session: <terminal id — `handoffs/bin/jarvis start` writes it>
 Usage band: <green | amber | red> — `handoffs/bin/jarvis status` writes it from the statusline reading

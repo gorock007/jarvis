@@ -252,7 +252,7 @@ list is the contract.
    `OPEN.md` in one commit, with a `Co-Authored-By` trailer for the worker.
    Then it pushes, closes every worker terminal of the brief, waits for each
    agent to exit (stopping one that doesn't, when `JARVIS_REAP=1`), and drops
-   the `OPEN.md` lines. A failed close or a survivor is printed on the merge
+   the `OPEN.md` lines. It also commits this month's `jarvis log` file. A failed close or a survivor is printed on the merge
    line; deal with it, or run `jarvis doctor`. It also stops what the worker
    left running: browsers, servers and
    jobs whose command line names that worker's scratch folder. Anything the
@@ -289,7 +289,17 @@ as much as a real decision. The habits that matter:
 - **Read narrowly:** `rg -n "…" -C3`, `head`, `sed -n '40,80p'`,
   `git diff --stat` before `git diff`. Filter verbose output at the source
   (`pytest -q 2>&1 | tail -30`) and put the filtered form in the brief.
-- **Stop with `OPEN.md` true.** It's what makes being cleared cheap. After a
+- **Finished notes go to `jarvis log`, not `OPEN.md`.** `OPEN.md` is read
+  at every session start, so it holds only what's open, one short line per
+  item. A session log, a decision record or a "landed" note goes to
+  `handoffs/bin/jarvis log "<text>"` (a dated line in
+  `handoffs/log/YYYY-MM.md`, which `jarvis merge` commits and nothing reads
+  at start). `jarvis status` prints the file's size and says when it's over
+  `JARVIS_OPEN_MAX_KB`, holds a section that isn't one of the four, has
+  to-do lines over 300 characters, or still names a brief or handoff that's
+  merged; fix what it names.
+- **Stop with `OPEN.md` true.** Only what's open, nothing finished: move
+  done notes to `jarvis log` first. It's what makes being cleared cheap. After a
   merge batch, suggest `/clear` to the user if the conversation has grown
   past ~150k and nothing in it is still undecided.
 - **Never switch `/model` mid-session.** A switch rewrites the whole cache.

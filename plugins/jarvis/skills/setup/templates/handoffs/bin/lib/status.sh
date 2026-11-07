@@ -19,7 +19,7 @@ cmd_start() {
 }
 
 cmd_status() {
-  local b line id brief ho ids="" n=0 changed claimed unclaimed
+  local b line id brief ho ids="" n=0 changed claimed unclaimed sz
   [ -f "$OPEN" ] || die "no $OPEN — run jarvis:setup first"
 
   b=$(band)
@@ -78,8 +78,51 @@ EOF
     "$changed" "$unclaimed" "$(git log -1 --format='last commit %h %ar' 2>/dev/null)"
   n=$(awk '/^## /{on = ($0 ~ /^## To-do/); next} on && /^- /' "$OPEN" | wc -l | tr -d ' ')
   q=$(awk '/^## /{on = ($0 ~ /^## Questions for the user/); next} on && /^- /' "$OPEN" | wc -l | tr -d ' ')
-  printf 'OPEN.md: %s question(s) for the user · %s to-do\n' "$q" "$n"
+  sz=$(wc -c < "$OPEN" | tr -d ' ')
+  printf 'OPEN.md: %s question(s) for the user · %s to-do · %s KB\n' "$q" "$n" "$(( (sz + 512) / 1024 ))"
+  open_checks "$sz"
   watch_running || echo "watcher: not running — start it: handoffs/bin/jarvis watch --start"
   cmd_leftovers --quiet
   cmd_doctor --quiet
+}
+
+open_checks() { # $1 = OPEN.md's size in bytes; one line per check that fires, nothing when clean
+  local n=0 no text name merged
+  [ "$1" -gt $((JARVIS_OPEN_MAX_KB * 1024)) ] && printf 'OPEN.md is %s KB (limit %s): move finished notes to jarvis log; one line per item\n' \
+    "$(( ($1 + 512) / 1024 ))" "$JARVIS_OPEN_MAX_KB"
+  awk '/^## /{t = $0; sub(/[[:space:]]+$/, "", t)
+    if (t != "## Questions for the user" && t != "## Running workers" && t != "## Waiting on Jarvis" && t != "## To-do")
+      printf "OPEN.md has a section that belongs in the log: \"%s\"\n", t}' "$OPEN"
+  n=$(awk '/^## /{on = ($0 ~ /^## To-do/); next} on && /^- / && length($0) > 300' "$OPEN" | wc -l | tr -d ' ')
+  [ "$n" = 1 ] && echo "1 to-do line over 300 characters"
+  [ "$n" -gt 1 ] && echo "$n to-do lines over 300 characters"
+  # a To-do or Waiting-on-Jarvis line still naming a brief or handoff that's merged
+  # shellcheck disable=SC2016 # the backticks are literal: a brief field may be `quoted`
+  merged=$(sed -n 's/^brief:[[:space:]]*`\{0,1\}\([^[:space:]`]*\).*/\1/p' "$H"/merged/*.md 2>/dev/null)
+  n=0
+  while IFS="$TAB" read -r no text; do
+    for name in $(printf '%s' "$text" | grep -oE "$H/(briefs/)?[A-Za-z0-9._-]+\.md"); do
+      case "$name" in
+        "$H"/briefs/*) printf '%s\n' "$merged" | grep -qxF "$name" || continue ;;
+        *) [ ! -e "$name" ] && [ -f "$H/merged/${name#"$H"/}" ] || continue ;;
+      esac
+      n=$((n + 1)); [ $n -le 5 ] && echo "OPEN.md line $no names $name, already merged"
+      break
+    done
+  done <<EOF
+$(awk '/^## /{on = ($0 ~ /^## (To-do|Waiting on Jarvis)/); next} on && /^- / {print NR "\t" $0}' "$OPEN")
+EOF
+  [ $n -gt 5 ] && echo "… and $((n - 5)) more"
+  return 0
+}
+
+cmd_log() { # jarvis log "<text>": one line on this month's log; the text is data, written as given
+  local now month f
+  [ -n "$*" ] || die "usage: jarvis log '<text>'"
+  now=$(date '+%Y-%m-%d %H:%M'); month=$(printf '%s' "$now" | cut -c1-7)
+  f="$H/log/$month.md"
+  mkdir -p "$H/log" || die "can't make $H/log"
+  [ -f "$f" ] || printf '# Jarvis log %s\n\n' "$month" > "$f"
+  printf -- '- %s · %s\n' "$now" "$(printf '%s' "$*" | tr '\n\r' '  ')" >> "$f" || die "can't write $f"
+  echo "logged: $f"
 }

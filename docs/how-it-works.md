@@ -109,10 +109,11 @@ Two rules keep the shared checkout safe:
 | `AGENTS.md` | The worker rules, read by Claude Code, Codex and OpenCode: git rules, shared-file rules, ask once, one brief then hand off, handoff format |
 | `handoffs/JARVIS.md` | Jarvis's rules for this project: what only Jarvis may do, how you verify work, shared files, budget rules. Only Jarvis reads it. |
 | `handoffs/jarvis.conf` | The Claude caps, band thresholds, worker budgets, idle limit, whether merge stops leftover processes |
-| `handoffs/bin/jarvis` | `start`, `status`, `spawn`, `merge`, `close`, `doctor`, `leftovers`, `lock`, `resources`, `watch`, `band`, `usage`, `sessions`, `budget`, `fable`, plus the idle guard and Fable guard hooks and the statusline tap |
+| `handoffs/bin/jarvis` | `start`, `status`, `log`, `spawn`, `merge`, `close`, `doctor`, `leftovers`, `lock`, `resources`, `watch`, `band`, `usage`, `sessions`, `budget`, `fable`, plus the idle guard and Fable guard hooks and the statusline tap |
 | `handoffs/bin/jarvis-lock.pl` | The lease behind `jarvis lock` (needs `perl`, which macOS ships) |
 | `handoffs/bin/cc_usage_audit.py` | Prices your local Claude Code transcripts for `jarvis usage` |
-| `handoffs/OPEN.md` | The one pending list: Jarvis's terminal, usage band, running workers, questions for you, to-do |
+| `handoffs/OPEN.md` | The one pending list: Jarvis's terminal, usage band, running workers, questions for you, to-do. Only what's open; `jarvis status` warns when it grows past 16 KB |
+| `handoffs/log/` | `jarvis log`'s month files (`YYYY-MM.md`): finished notes and session logs, committed by `jarvis merge`, read by nothing at session start |
 | `handoffs/TEMPLATE.md` | Handoff format |
 | `handoffs/briefs/` | Briefs Jarvis writes, plus `TEMPLATE.md` |
 | `handoffs/merged/` | Reviewed handoffs, committed together with the work they describe |

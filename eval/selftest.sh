@@ -157,6 +157,32 @@ EOT
     out=$($J merge handoffs/h-no-remote.md)
     [ $? = 0 ] && printf '%s' "$out" | grep -q 'not pushed (no remote)'; check "merge without a remote says it was not pushed" $?
 
+    # OPEN.md hygiene: jarvis log, the size guard, the shape and stale-line checks
+    lf="handoffs/log/$(date +%Y-%m).md"; rm -rf handoffs/log
+    $J log 'first $(touch pwned) `touch pwned2` note' >/dev/null && $J log "second note" >/dev/null
+    [ "$(head -n 1 "$lf")" = "# Jarvis log $(date +%Y-%m)" ] && [ "$(grep -c '^- [0-9-]* [0-9:]* · ' "$lf")" = 2 ]; check "jarvis log creates the month file and appends dated lines" $?
+    grep -qF -- '· first $(touch pwned) `touch pwned2` note' "$lf" && [ ! -e pwned ] && [ ! -e pwned2 ]; check "…and writes \$(…) and backticks literally, never running them" $?
+    $J log >/dev/null 2>&1; [ $? != 0 ]; check "…and refuses an empty note" $?
+    echo log-merge > log-merge.txt
+    printf '# Log merge\nstatus: done\nagent: codex gpt-5.6-sol\n## Files\n- log-merge.txt — created\n' > handoffs/h-log.md
+    $J merge handoffs/h-log.md >/dev/null && git show --name-only --format= HEAD | grep -qxF "$lf"; check "merge commits this month's log file" $?
+    st() { $J status 2>/dev/null; }
+    out=$(st); printf '%s' "$out" | grep -Eq '^OPEN.md: .* to-do · [0-9]+ KB$' \
+      && ! printf '%s' "$out" | grep -Eq 'OPEN.md is [0-9]+ KB|belongs in the log|over 300 characters|already merged'; check "status: a clean OPEN.md shows its size and none of the hygiene lines" $?
+    cp handoffs/OPEN.md "$tmp/OPEN.hyg"
+    awk 'BEGIN{l = "- "; for (i = 0; i < 40; i++) l = l "long to-do text "} {print} /^## To-do/{print l; print l; print "- check handoffs/briefs/b1.md again"; print "- review handoffs/h1.md"}' "$tmp/OPEN.hyg" > handoffs/OPEN.md
+    printf '\n## 2026-11-05 · B1 landed\n- done\n' >> handoffs/OPEN.md
+    echo 'JARVIS_OPEN_MAX_KB=1' >> handoffs/jarvis.conf
+    out=$(st)
+    printf '%s' "$out" | grep -Eq '^OPEN.md is [0-9]+ KB \(limit 1\): move finished notes to jarvis log; one line per item$'; check "status warns when OPEN.md is over JARVIS_OPEN_MAX_KB" $?
+    printf '%s' "$out" | grep -qxF 'OPEN.md has a section that belongs in the log: "## 2026-11-05 · B1 landed"'; check "status flags a section that isn't one of the four" $?
+    printf '%s' "$out" | grep -qx '2 to-do lines over 300 characters'; check "status counts to-do lines over 300 characters" $?
+    printf '%s' "$out" | grep -Eq '^OPEN.md line [0-9]+ names handoffs/briefs/b1.md, already merged$' \
+      && printf '%s' "$out" | grep -Eq '^OPEN.md line [0-9]+ names handoffs/h1.md, already merged$'; check "status flags to-do lines naming a merged brief or handoff" $?
+    sed -i.bak '/^JARVIS_OPEN_MAX_KB=1$/d' handoffs/jarvis.conf && rm -f handoffs/jarvis.conf.bak
+    st | grep -Eq 'OPEN.md is [0-9]+ KB'; [ $? != 0 ]; check "…and no size warning under the default limit" $?
+    cp "$tmp/OPEN.hyg" handoffs/OPEN.md
+
     old=$(date -u -r $((now - 70 * 60)) +%Y-%m-%dT%H:%M:%S.000Z 2>/dev/null || date -u -d "@$((now - 70 * 60))" +%Y-%m-%dT%H:%M:%S.000Z)
     printf '{"type":"assistant","timestamp":"%s","message":{"model":"claude-fable-5-1","usage":{"input_tokens":5,"cache_read_input_tokens":240000,"cache_creation_input_tokens":3000}}}\n' "$old" > "$tmp/t.jsonl"
     hp() { printf '{"session_id":"s","transcript_path":"%s","prompt":"%s"}' "$tmp/t.jsonl" "$1" | $J hook prompt; }

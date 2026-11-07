@@ -15,6 +15,8 @@
       "Bash(./handoffs/bin/jarvis doctor)",
       "Bash(handoffs/bin/jarvis read *)",
       "Bash(./handoffs/bin/jarvis read *)",
+      "Bash(handoffs/bin/jarvis log *)",
+      "Bash(./handoffs/bin/jarvis log *)",
       "Bash(handoffs/bin/jarvis usage *)",
       "Bash(./handoffs/bin/jarvis usage *)"
     ]
