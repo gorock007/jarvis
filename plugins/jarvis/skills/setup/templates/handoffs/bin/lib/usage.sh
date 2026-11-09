@@ -3,7 +3,7 @@
 # ---------------------------------------------------------------- usage
 
 cmd_usage() {
-  local audit since_arg json merged ignored over r wakes reading
+  local audit since_arg until_arg json merged ignored over r wakes reading
   have python3 || die "python3 is needed for jarvis usage"
   have jq || die "jq is needed for jarvis usage"
   audit="$(cd "$(dirname "$0")" && pwd)/cc_usage_audit.py"
@@ -18,7 +18,8 @@ cmd_usage() {
     "$@"
   json=$(python3 "$audit" "$@" --json) || exit 1
   since_arg=$(printf '%s' "$json" | jq -r '.period[0]')
-  merged=$(git log --since="$since_arg" --diff-filter=A --name-only --format= -- "$H/merged/*.md" 2>/dev/null | grep -c '\.md$')
+  until_arg=$(printf '%s' "$json" | jq -r '.period[1]')
+  merged=$(git log --since="$since_arg" --until="$until_arg" --diff-filter=A --name-only --format= -- "$H/merged/*.md" 2>/dev/null | grep -c '\.md$')
   # Ignored, untracked handoffs have no merge commit: approximate with file mtime.
   # Keep the Git count intact, and never count tracked handoffs a second time.
   ignored=$(git ls-files -z --others --ignored --exclude-standard -- "$H/merged/*.md" | python3 -c '
@@ -29,7 +30,7 @@ for path in sys.stdin.buffer.read().split(b"\0"):
     if path and os.path.isfile(path) and start <= os.path.getmtime(path) <= end:
         count += 1
 print(count)
-' "$since_arg" "$(printf '%s' "$json" | jq -r '.period[1]')") || exit 1
+' "$since_arg" "$until_arg") || exit 1
   merged=$((merged + ignored))
   # this checkout's runs that reached a budget (spawn epoch, paused or not), from the run registry
   over=$(for r in "$RUNS"/*; do

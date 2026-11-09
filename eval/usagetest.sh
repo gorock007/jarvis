@@ -11,6 +11,8 @@ audit="$tpl/handoffs/bin/cc_usage_audit.py"
 tmp=$(mktemp -d "${TMPDIR:-/tmp}/jarvis-usagetest.XXXXXX")
 trap 'rm -rf "$tmp"' EXIT HUP INT TERM
 export JARVIS_HOME="$tmp/jh" # Never read the caller's machine-wide subscription state.
+# Fixture commits need an identity; a CI runner has none configured.
+export GIT_AUTHOR_NAME=usagetest GIT_AUTHOR_EMAIL=usagetest@example.invalid GIT_COMMITTER_NAME=usagetest GIT_COMMITTER_EMAIL=usagetest@example.invalid
 fails=0
 ok() { echo "  ok    $1"; }
 bad() { echo "  FAIL  $1"; fails=$((fails + 1)); }
@@ -210,6 +212,24 @@ out=$(cd "$ignored_repo" && HOME="$home" "$BASH" handoffs/bin/jarvis usage \
   --since 2026-01-02T11:00:00+11:00 --until 2026-01-04T11:00:00+11:00)
 printf '%s' "$out" | grep -q '^  merged handoffs: 1 (1 by file mtime) · cost per merged handoff:'
 check "ignored archive without Git history counts only files within both window bounds" $?
+
+# A tracked archive is bounded the same way: merges after --until don't count.
+tracked_repo="$tmp/tracked"
+mkdir -p "$tracked_repo"
+(
+  cd "$tracked_repo" || exit 1
+  git init -q
+  cp -R "$tpl/handoffs" .
+  for day in 1 3 5; do
+    printf 'status: done\n' > "handoffs/merged/day-$day.md"
+    git add -A && GIT_AUTHOR_DATE="2026-01-0${day}T12:00:00Z" GIT_COMMITTER_DATE="2026-01-0${day}T12:00:00Z" git commit -qm "day $day"
+  done
+)
+out=$(cd "$tracked_repo" && HOME="$home" "$BASH" handoffs/bin/jarvis usage \
+  --root "$tmp/ignored-transcripts" --project="$proj" \
+  --since 2026-01-02T11:00:00+11:00 --until 2026-01-04T11:00:00+11:00)
+printf '%s' "$out" | grep -q '^  merged handoffs: 1 · cost per merged handoff:'
+check "tracked archive counts only merge commits within both window bounds" $?
 
 # Even under an ignore rule, a tracked handoff must never enter the fallback.
 printf '/handoffs/merged/\n' >> "$repo/.git/info/exclude"

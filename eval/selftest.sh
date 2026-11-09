@@ -1349,10 +1349,12 @@ if command -v tmux >/dev/null 2>&1 && command -v jq >/dev/null 2>&1; then
         "$a" "$fb" "$fb" "$a" "$(sed -n "s/^JARVIS_AGENT_$a='\\(.*\\)'\$/\\1/p" "$tpl/handoffs/bin/lib/defaults.sh")"
     done >> handoffs/jarvis.conf
     evs() { jq -r '.kind + ":" + .detail' "handoffs/.jarvis/events/$1.jsonl" 2>/dev/null | tr '\n' ' '; }
-    if python3 -c 'import tomllib' 2>/dev/null; then
-      # fake codex: each -c hooks.<Event> parsed as TOML, its commands run with the event's payload
+    py=$(command -v python3)
+    if [ -n "$py" ] && "$py" -c 'import tomllib' 2>/dev/null; then
+      # fake codex: each -c hooks.<Event> parsed as TOML, its commands run with the event's payload.
+      # The python3 just checked, by path: the pane's PATH can name an older one without tomllib.
       cat > "$fb/codex" <<EOF
-#!/usr/bin/env python3
+#!$py
 import json, subprocess, sys, tomllib
 hooks, a = {}, sys.argv[1:]
 for i, x in enumerate(a[:-1]):
@@ -1377,7 +1379,9 @@ EOF
       shows_t "$tx" '^fake codex hooks: PermissionRequest SessionEnd Stop UserPromptSubmit | --dangerously-bypass-hook-trust$' \
         && [ "$(evs 2026-10-20-1200-tx)" = 'working: stop:ok permission: ended:other ' ] \
         && [ "$(jq -r .run "handoffs/.jarvis/events/2026-10-20-1200-tx.jsonl" | sort -u)" = "$tx" ]
-      check "…its hooks reach jarvis hook event with Codex's payloads: working, stop, permission, ended" $?
+      rc=$?; check "…its hooks reach jarvis hook event with Codex's payloads: working, stop, permission, ended" $rc
+      # on a failure, what the fake codex printed and what reached the events file
+      [ $rc = 0 ] || { [ -n "$tx" ] && T read "$tx" 10 | sed 's/^/        | /'; echo "        events: $(evs 2026-10-20-1200-tx)"; }
     else
       echo "  (Codex hook checks skipped: python3 has no tomllib)"
     fi

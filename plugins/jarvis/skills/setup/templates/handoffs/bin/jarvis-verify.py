@@ -864,9 +864,10 @@ class Verify:
                     self.owner = read_rec(os.path.join(self.attempt, "owner")) or self.owner
                     self.stop_group(self.owner.get("pgid"), self.owner.get("pgid_start"), self.a.grace, direct=False)
                     self.remove_attempt()
-                    self.save_result(status="interrupted", finished=int(time.time()), ended_ns=time.time_ns(),
+                    now = time.time_ns()
+                    self.save_result(status="interrupted", finished=now // 10 ** 9, ended_ns=now,
                                      note="the verifier died; its watchdog cleaned up")
-                    self.record(True, [("verify_status", "interrupted"), ("verify_finished", int(time.time()))])
+                    self.record(True, [("verify_status", "interrupted"), ("verify_finished", now // 10 ** 9)])
             finally:
                 os._exit(0)
         os.close(r)
@@ -1848,6 +1849,7 @@ def main():
             code, msg = 2, msg or "cleanup failed"
     status = {0: "passed", 1: "failed", 124: "timeout", 75: "error"}.get(code, "interrupted" if code in SIGCODE.values() else "error")
     reused = v.reused if code == 0 else None
+    ended_ns = time.time_ns()   # one clock read: the run record and the result must name the same finish
     if v.results and os.path.isdir(v.results):
         n = v.result.get("check")
         if reused:
@@ -1857,7 +1859,7 @@ def main():
                   ("verify_log", os.path.join(STATE_DIR, "verify-results", orig, "check-%s.log" % r.get("check", "1")))]
         else:
             log = os.path.join(v.results_rel, "check-%s.log" % n) if n else v.results_rel
-            kv = [("verify_status", status), ("verify_finished", int(time.time())), ("verify_exit", code),
+            kv = [("verify_status", status), ("verify_finished", ended_ns // 10 ** 9), ("verify_exit", code),
                   ("verify_check", n or ""), ("verify_reused", "0"), ("verify_log", log)]
         kv += [("verify_tree", getattr(v, "tree_id", "")), ("verify_key", v.key or "")]
         rc = v.record(True, kv)
@@ -1868,8 +1870,8 @@ def main():
             if code == 0:
                 code, status, reused, msg = 2, "error", None, "the pass couldn't be recorded"
         extra = {"reused_from": reused[0], "pass_finished": reused[1]["finished"]} if reused else {}
-        v.save_result(status="reused" if reused else status, exit=code, finished=int(time.time()),
-                      ended_ns=time.time_ns(), cleanup="ok" if clean else "failed", message=msg.split("\n")[0], **extra)
+        v.save_result(status="reused" if reused else status, exit=code, finished=ended_ns // 10 ** 9,
+                      ended_ns=ended_ns, cleanup="ok" if clean else "failed", message=msg.split("\n")[0], **extra)
     where = (" · " + v.results_rel) if v.results else ""
     if reused:
         orig, r = reused
