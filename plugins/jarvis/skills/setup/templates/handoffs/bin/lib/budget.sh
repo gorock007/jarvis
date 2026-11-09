@@ -46,7 +46,7 @@ budget_limits() { # $1 = brief, $2 = run (optional): sets BL_min BL_usd BL_ctx B
 }
 
 budget_find() { # $1 = run: its session when the prompt hook recorded none, from Claude Code's session records
-  local sp brief d st sid cwd
+  local sp brief d sid cwd
   sp=$(run_get "$1" spawned); brief=$(run_get "$1" brief)
   case "$sp" in ""|*[!0-9]*) return 0 ;; esac
   have jq || return 0
@@ -55,7 +55,7 @@ budget_find() { # $1 = run: its session when the prompt hook recorded none, from
     [ -f "$1" ] || continue
     jq -r --argjson t $(( (sp - 5) * 1000 )) \
       'select(type == "object" and (.startedAt // 0) >= $t and .sessionId != null) | "\(.startedAt) \(.sessionId) \(.cwd // "")"' "$@" 2>/dev/null
-  done | sort -n | while read -r st sid cwd; do
+  done | sort -n | while read -r _ sid cwd; do
     [ "$(cd "$cwd" 2>/dev/null && proj_root "$(pwd -P)")" = "$ROOTP" ] || continue
     [ "$(brief_of_session "$sid")" = "$brief" ] && { echo "$sid"; break; }
   done

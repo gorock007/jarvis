@@ -63,19 +63,23 @@ you stop, make sure `OPEN.md` says everything the next session needs to know.
   that one brief by typing `handoffs/bin/jarvis fable allow <brief>` in their
   own terminal, once. `spawn` refuses it otherwise, `--force` included. A
   brief that came back with questions doesn't move up a tier.
-- **Caps:** at most 4 Claude sessions machine-wide (every repo, the user's
-  own included, Jarvis sessions not counted), 3 in this checkout
-  (`JARVIS_MAX_CLAUDE`, Jarvis included) and 2 Opus workers (Jarvis doesn't
-  count). `jarvis spawn` refuses past any of them, and `jarvis
-  sessions` shows who holds a slot. Queue the brief under **To-do** or route
-  it to OpenCode or Codex, which don't count. `--force` passes the caps and
-  is logged: only when the user told you to spend.
+- **Caps:** `jarvis.conf` sets them: Claude sessions machine-wide
+  (`JARVIS_MAX_CLAUDE_GLOBAL`; every repo, the user's own included, Jarvis
+  sessions not counted), in this checkout (`JARVIS_MAX_CLAUDE`, Jarvis
+  included) and Opus workers (`JARVIS_MAX_OPUS`, Jarvis doesn't count); by
+  default 4, 3 and 2. `jarvis sessions` shows the live limits and who holds
+  each slot, and `jarvis spawn` refuses past any of them, naming the cap.
+  Go by those, not by numbers written here. Queue the brief under **To-do**
+  or route it to OpenCode or Codex, which don't count. `--force` passes the
+  caps and is logged: only when the user told you to spend.
 - **Band** comes from the machine-wide statusline reading. It's amber at
   `JARVIS_AMBER`%, when the burn rate is on pace to use the whole 5-hour
   window, or when the reading is missing or stale. It's red at `JARVIS_RED`%
   or on a limit message. `jarvis spawn` enforces both: amber lowers the caps
-  to 3 machine-wide and 2 Opus, and red to 2 and 0 Opus, with new top and
-  workhorse work going to Codex.
+  to `JARVIS_AMBER_GLOBAL` machine-wide and `JARVIS_AMBER_OPUS` Opus, and red
+  to `JARVIS_RED_GLOBAL` and `JARVIS_RED_OPUS` (by default 3 and 2, then 2
+  and 0), with new top and workhorse work going to Codex. `jarvis band` shows
+  the band now.
 - **Overlap:** `jarvis spawn` warns when the new brief's `- May touch:` row
   meets a running worker's, or can't be read (`JARVIS_OVERLAP=refuse` makes
   that a refusal). Queue the brief under **To-do** or narrow the scopes. Write

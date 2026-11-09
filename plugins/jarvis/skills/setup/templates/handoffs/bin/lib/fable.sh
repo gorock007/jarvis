@@ -27,7 +27,9 @@
 
 FABLE_DIR="${JARVIS_HOME:-$HOME/.jarvis}/fable"
 FABLE_ALLOWED='["opus","sonnet","haiku"]'   # the backstop's availableModels: aliases cover the full ids
+# shellcheck disable=SC2034 # read by lib/host-*.sh
 FABLE_SETTINGS='{"availableModels":["opus","sonnet","haiku","fable"]}'   # added to one authorized launch
+# shellcheck disable=SC2034 # read by lib/spawn.sh and lib/host-superset.sh
 FABLE_SUPERSET_MSG="Superset can't pass --settings to a single launch, so under the backstop an authorized fable worker would run on Opus. Set JARVIS_FABLE_SUPERSET_AGENT in $H/jarvis.conf (see the comment there), run Jarvis on tmux or Ultron, or use worker: codex, model: gpt-6-astra"
 FABLE_REMAP_VARS="ANTHROPIC_MODEL ANTHROPIC_DEFAULT_OPUS_MODEL ANTHROPIC_DEFAULT_SONNET_MODEL ANTHROPIC_DEFAULT_HAIKU_MODEL ANTHROPIC_SMALL_FAST_MODEL CLAUDE_CODE_SUBAGENT_MODEL"
 FABLE_WHY=""
@@ -193,6 +195,7 @@ fable_final() {
   [ -n "$u" ] || fable_refuse - "$5" "final check: no authorization used up for this run" \
     "fable needs your authorization: no authorization was used up for run '$5'. Spawn it with handoffs/bin/jarvis spawn after the user runs handoffs/bin/jarvis fable allow <brief> — or use worker: codex, model: gpt-6-astra"
   printf 'launched: %s\n' "$(now)" >> "$u" 2>/dev/null || fable_refuse - "$5" "final check: can't mark the record launched" "can't write $u"
+  # shellcheck disable=SC2034 # read by lib/host-*.sh
   FABLE_LIFT=1
 }
 

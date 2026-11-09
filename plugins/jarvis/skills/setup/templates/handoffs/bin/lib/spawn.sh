@@ -177,6 +177,7 @@ spawn_go() { # $1 brief, $2 worker, $3 model, $4 effort, $5 canon, $6 force, $7 
   [ "$canon" = fable ] && fable_consume "$brief" "$name"
   # taken before the host starts the agent, so the agent's own start time is never earlier
   spawned=$(now)
+  # shellcheck disable=SC2034 # read by lib/host-tmux.sh
   SPAWN_BRIEF=$brief   # for a host that writes the launch line (tmux): not exported
   id=$(host spawn "$worker" "$model" "$effort" "$prompt" "$name" "$@") \
     || die "spawn failed on $HOST (a failed Claude spawn can mean the red band)"

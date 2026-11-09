@@ -60,8 +60,8 @@ worker_sessions() { # "<brief> <session id>" for each worker session something s
 }
 
 resumed_sid() { # $1 = brief, $2 = session id, $3 = claude_here lines: a live process of it started after the brief's run ended?
-  local pid ps sid st r e
-  while read -r pid ps sid st; do
+  local pid ps sid r e
+  while read -r pid ps sid _; do
     [ -n "$pid" ] && [ "$sid" = "$2" ] || continue
     r=$(run_by_start "$1" "$ps")
     if [ -n "$r" ]; then e=$(run_get "$r" ended); else e=$(merged_at "$(doc_merged "$1")"); fi

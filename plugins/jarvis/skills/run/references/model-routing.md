@@ -236,9 +236,9 @@ thresholds are in `handoffs/jarvis.conf`.
 
 | Band | Routing and caps |
 | --- | --- |
-| **Green: under 50%, and not on pace to use the window** | The table above, unchanged. Light and trivial work still prefers OpenCode, because free work is free in every band. Caps: 4 machine-wide (Jarvis sessions not counted), 3 here, 2 Opus workers (section 5). |
-| **Amber: 50% and over, burning fast, a reading that is missing or stale, or 7-day at 80%+** | Caps drop to **3 machine-wide and 2 Opus workers** (Jarvis sessions not counted in either). Fable stays unavailable unless authorized, as in every band. Light and trivial tiers are unchanged. Jarvis keeps its model. |
-| **Red: 75% and over, about to run out, a usage-limit message in a worker, a failed Claude spawn, or 7-day at 95%+** | Caps drop to **2 machine-wide and no new Opus**. New top-tier and workhorse briefs go to **Codex** (`gpt-6-astra` / `gpt-5.6-sol`). Claude Code is kept for Jarvis and for workers already in flight. Fable is refused even when authorized. Anything OpenCode can safely take, it takes. Tell the user plainly that you've moved the fleet and why. |
+| **Green: under `JARVIS_AMBER`% (50 by default), and not on pace to use the window** | The table above, unchanged. Light and trivial work still prefers OpenCode, because free work is free in every band. Caps by default (jarvis.conf): 4 machine-wide (Jarvis sessions not counted), 3 here, 2 Opus workers (section 5). |
+| **Amber: `JARVIS_AMBER`% and over, burning fast, a reading that is missing or stale, or 7-day at 80%+** | Caps drop to the amber values, by default (jarvis.conf) **3 machine-wide and 2 Opus workers** (Jarvis sessions not counted in either). Fable stays unavailable unless authorized, as in every band. Light and trivial tiers are unchanged. Jarvis keeps its model. |
+| **Red: `JARVIS_RED`% (75 by default) and over, about to run out, a usage-limit message in a worker, a failed Claude spawn, or 7-day at 95%+** | Caps drop to the red values, by default (jarvis.conf) **2 machine-wide and no new Opus**. New top-tier and workhorse briefs go to **Codex** (`gpt-6-astra` / `gpt-5.6-sol`). Claude Code is kept for Jarvis and for workers already in flight. Fable is refused even when authorized. Anything OpenCode can safely take, it takes. Tell the user plainly that you've moved the fleet and why. |
 
 The band fails closed. **No reading, an unreadable one, or one older than
 `JARVIS_STALE_MIN` (30) minutes whose window hasn't reset reads as amber**,
@@ -313,7 +313,8 @@ actual pace.
 ## 5. The Claude caps (separate from usage)
 
 `jarvis spawn` refuses a Claude worker that would put the machine past any of
-three caps (`handoffs/jarvis.conf`):
+three caps (`handoffs/jarvis.conf`). The numbers below are the defaults;
+`jarvis sessions` and spawn's refusal show the live ones.
 
 | Cap | Green | Amber | Red | Setting |
 | --- | --- | --- | --- | --- |

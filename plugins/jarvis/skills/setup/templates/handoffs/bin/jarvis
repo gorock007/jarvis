@@ -104,6 +104,7 @@ if [ "${1:-}" = _spawn ] && [ -n "${JARVIS_SPAWN_RAN:-}" ]; then
 fi
 
 ROOT=$(git rev-parse --show-toplevel 2>/dev/null) || ROOT="${CLAUDE_PROJECT_DIR:-$PWD}"
+# shellcheck disable=SC2034 # read only by lib/*.sh
 JARVIS_CALLER_PWD=$PWD   # `lock` runs its command where it was called from
 # In `merge --verify`'s worktree a lock is the original checkout's lease, not the
 # worktree's: the verifier's ownership manifest ($JARVIS_VERIFY_CONTEXT) names that
@@ -137,6 +138,7 @@ cd "$ROOT" || exit 0
 H=handoffs
 # shellcheck disable=SC2034 # read only by lib/*.sh
 OPEN="$H/OPEN.md"
+# shellcheck disable=SC2034 # read only by lib/*.sh
 STATE="$H/.jarvis"
 BIN="$H/bin"
 
@@ -145,10 +147,13 @@ BIN="$H/bin"
 . "$JARVIS_LIB/defaults.sh" || exit 1
 # shellcheck disable=SC1090
 [ -f "$H/jarvis.conf" ] && . "$H/jarvis.conf"
+# shellcheck disable=SC2034 # WS, PROJ, CLAUDE_DIR, JHOME: read only by lib/*.sh
+{
 WS="${SUPERSET_WORKSPACE_ID:-}"
 PROJ=$(printf '%s' "$ROOT" | sed 's#[^A-Za-z0-9]#-#g')   # Claude Code's name for this checkout
 CLAUDE_DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
 JHOME="${JARVIS_HOME:-$HOME/.jarvis}"   # machine-wide: the usage reading and its history, the spawn lease, pending spawns
+}
 ROOTP=$(pwd -P)                         # this checkout as session records name it
 # shellcheck disable=SC2034 # read only by lib/*.sh
 TAB=$(printf '\t')

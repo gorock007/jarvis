@@ -135,11 +135,12 @@ handoffs/bin/jarvis spawn handoffs/briefs/<file>.md --after handoffs/merged/<pre
   even when authorized. `--force` never passes the Fable checks. Separately,
   red refuses new top or workhorse Claude work and names the Codex tier to
   use instead; `--force` can pass that one. See `model-routing.md`.
-- **The caps.** It refuses a Claude worker that would pass 4 sessions
-  machine-wide (Jarvis sessions not counted), 3 in this checkout (Jarvis
-  included) or 2 Opus workers (Jarvis doesn't count; 3 and 2 in amber, 2 and
-  0 in red), counting every repo's sessions and the user's own. The refusal lists
-  who holds each slot, and `jarvis sessions` shows them any time. Queue the
+- **The caps.** It refuses a Claude worker that would pass the machine-wide
+  cap (Jarvis sessions not counted), this checkout's (Jarvis included) or the
+  Opus-worker cap (Jarvis doesn't count), counting every repo's sessions and
+  the user's own. They come from `jarvis.conf`: by default 4, 3 and 2, with
+  3 and 2 in amber and 2 and 0 in red. The refusal names the live limits and
+  who holds each slot, and `jarvis sessions` shows them any time; go by those. Queue the
   brief under **To-do**, or route it to OpenCode or Codex if it passes their
   tests. Don't `--force` past a cap to go faster. The caps exist because
   parallel Claude sessions burn a day's usage in a 5-hour window.
@@ -327,3 +328,8 @@ force-pushing, rewriting history, running anything against production, or
 spending money. Everything else is your call, including which worker to
 spawn, which model, and how to split the work. Say what you decided in one
 line and keep going.
+
+A rule end users will see (money and rounding, what data is shown, names in
+a UI) is a product decision, however small. When the user asked to be asked,
+it goes to them in your next batch of questions, never into a brief as
+settled.

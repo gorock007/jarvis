@@ -1,5 +1,6 @@
 # shellcheck shell=bash
 # Sourced by bin/jarvis; not run on its own.
+# shellcheck disable=SC2034 # every setting here is read by bin/jarvis or another lib/*.sh
 JARVIS_MAX_CLAUDE=3      # Claude sessions at once in this checkout, Jarvis included; Codex/OpenCode don't count
 JARVIS_MAX_CLAUDE_GLOBAL=4  # active Claude sessions on the whole machine, any repo, the user's own included; Jarvis sessions don't count
 JARVIS_MAX_OPUS=2        # of those, Opus workers (or Fable, or a model that can't be told); Jarvis doesn't count

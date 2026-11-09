@@ -12,6 +12,10 @@ bash demo/record.sh               # real run: Opus Jarvis + two workers, about 1
 DEMO_DRY=1 bash demo/record.sh    # fake Jarvis and workers: no model, about 1 min
 ```
 
+**Before a real run:** Jarvis and its workers run with `--permission-mode bypassPermissions` under your
+own HOME (the same mode workers always use), on fixed scripted input in the throwaway `/tmp` repo.
+`DEMO_DRY=1` runs no model at all.
+
 Needs tmux, git, jq, perl, python3, asciinema, agg and ffmpeg (`brew install asciinema agg`).
 Knobs: `DEMO_LIMIT_MIN`, `DEMO_OUT`, `DEMO_KEEP=1`, `DEMO_RENDER=0`.
 
