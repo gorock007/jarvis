@@ -63,13 +63,15 @@ file:
     worker's state; they act only for a worker (`JARVIS_ROLE=worker` from
     spawn, or on Superset and Ultron its run record)
   - switches off plugins this repo doesn't use
-  - allows the security-reviewed Jarvis commands (`permissions.allow`: the
-    read-only `band`, `sessions`, `resources`, exact `doctor`, `read *`, exact
-    `usage`, `lessons status`, and `lessons show [*]`, plus `log *`, which can
-    only append one sanitized line to the fixed `handoffs/log/YYYY-MM.md`), so
-    its session doesn't ask for those; everything else still asks (`start`,
-    `status`, `spawn`, `merge`, `send`, `close`, `lock`, `budget`, `fable`,
-    `doctor --apply`, `lessons select`, `leftovers`, `watch`)
+  - allows the security-reviewed Jarvis commands (`permissions.allow`: exact
+    `start` and `status`, which write only Jarvis's own `OPEN.md` and state and
+    take no arguments; the read-only `band`, `sessions`, `resources`, exact
+    `doctor`, `read *`, exact `usage`, `lessons status`, and `lessons show [*]`;
+    plus `log *`, which can only append one sanitized line to the fixed
+    `handoffs/log/YYYY-MM.md`), so its session doesn't ask for those;
+    everything else still asks (`start --force`, `spawn`, `merge`, `send`,
+    `close`, `lock`, `budget`, `fable`, `doctor --apply`, `lessons select`,
+    `leftovers`, `watch`)
 - `.claude/agents/scout.md` and `diff-reviewer.md`: read-only subagents
   pinned to Sonnet.
 
@@ -226,7 +228,7 @@ Then:
   `handoffs/bin/jarvis …` and `./handoffs/bin/jarvis …` spellings) to any
   existing `permissions.allow` without duplicating them. Remove Jarvis's broad
   `Bash(handoffs/bin/jarvis *)` / `Bash(./handoffs/bin/jarvis *)` rules and its
-  retired `start`, `status`, `lessons select *`, and `usage *` rules if an
+  retired `lessons select *` and `usage *` rules if an
   earlier build added them; exact `usage` replaces `usage *`. Keep the user's
   other rules and every `deny` and `ask` entry. Add
   `"<plugin>@<marketplace>": false` to `enabledPlugins` for
@@ -446,8 +448,8 @@ and spawn's May-touch overlap warning. See the `jarvis:run` skill's
    user already has. Skip any object whose `command` is already there, so
    running the step twice adds nothing. Also append the reviewed
    `permissions.allow` rules from section 3 (skip any already there; remove
-   the broad `jarvis *` rules and Jarvis's retired `start`, `status`, `lessons
-   select *`, and `usage *` rules; keep the user's other rules and `deny`/`ask`
+   the broad `jarvis *` rules and Jarvis's retired `lessons select *` and
+   `usage *` rules; keep the user's other rules and `deny`/`ask`
    entries), so the reviewed commands stop prompting. The hook entries write a worker's state to its
    event file and do nothing in any other session: only a worker has
    `JARVIS_ROLE` from spawn, or a running run record on Superset or Ultron.

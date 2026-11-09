@@ -1485,7 +1485,7 @@ python3 - "$tpl/.claude/settings.json" <<'PY'
 import json, sys
 allow = json.load(open(sys.argv[1], encoding="utf-8"))["permissions"]["allow"]
 paths = ("handoffs/bin/jarvis ", "./handoffs/bin/jarvis ")
-commands = ("band", "sessions", "resources", "doctor", "read *", "log *",
+commands = ("start", "status", "band", "sessions", "resources", "doctor", "read *", "log *",
             "lessons status", "lessons show", "lessons show *", "usage")
 expected = ["Bash(" + path + command + ")" for command in commands for path in paths]
 raise SystemExit(0 if allow == expected else 1)

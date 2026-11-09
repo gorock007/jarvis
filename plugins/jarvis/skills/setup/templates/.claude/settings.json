@@ -1,6 +1,10 @@
 {
   "permissions": {
     "allow": [
+      "Bash(handoffs/bin/jarvis start)",
+      "Bash(./handoffs/bin/jarvis start)",
+      "Bash(handoffs/bin/jarvis status)",
+      "Bash(./handoffs/bin/jarvis status)",
       "Bash(handoffs/bin/jarvis band)",
       "Bash(./handoffs/bin/jarvis band)",
       "Bash(handoffs/bin/jarvis sessions)",
