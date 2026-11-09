@@ -1,10 +1,6 @@
 {
   "permissions": {
     "allow": [
-      "Bash(handoffs/bin/jarvis start)",
-      "Bash(./handoffs/bin/jarvis start)",
-      "Bash(handoffs/bin/jarvis status)",
-      "Bash(./handoffs/bin/jarvis status)",
       "Bash(handoffs/bin/jarvis band)",
       "Bash(./handoffs/bin/jarvis band)",
       "Bash(handoffs/bin/jarvis sessions)",
@@ -23,10 +19,8 @@
       "Bash(./handoffs/bin/jarvis lessons show)",
       "Bash(handoffs/bin/jarvis lessons show *)",
       "Bash(./handoffs/bin/jarvis lessons show *)",
-      "Bash(handoffs/bin/jarvis lessons select *)",
-      "Bash(./handoffs/bin/jarvis lessons select *)",
-      "Bash(handoffs/bin/jarvis usage *)",
-      "Bash(./handoffs/bin/jarvis usage *)"
+      "Bash(handoffs/bin/jarvis usage)",
+      "Bash(./handoffs/bin/jarvis usage)"
     ]
   },
   "env": {

@@ -63,13 +63,13 @@ file:
     worker's state; they act only for a worker (`JARVIS_ROLE=worker` from
     spawn, or on Superset and Ultron its run record)
   - switches off plugins this repo doesn't use
-  - allows Jarvis's read-only commands (`permissions.allow`: `start`, `status`,
-    `band`, `sessions`, `resources`, `doctor`, `read *`, `usage *`,
-    `lessons status`, `lessons show [*]`, `lessons select *`, and
-    `log *`, which only appends a line to `handoffs/log/`), so its
-    session doesn't ask for those; everything else still asks (`spawn`,
-    `merge`, `send`, `close`, `lock`, `budget`, `fable`, `doctor --apply`,
-    `leftovers`, `watch`, `start --force`)
+  - allows the security-reviewed Jarvis commands (`permissions.allow`: the
+    read-only `band`, `sessions`, `resources`, exact `doctor`, `read *`, exact
+    `usage`, `lessons status`, and `lessons show [*]`, plus `log *`, which can
+    only append one sanitized line to the fixed `handoffs/log/YYYY-MM.md`), so
+    its session doesn't ask for those; everything else still asks (`start`,
+    `status`, `spawn`, `merge`, `send`, `close`, `lock`, `budget`, `fable`,
+    `doctor --apply`, `lessons select`, `leftovers`, `watch`)
 - `.claude/agents/scout.md` and `diff-reviewer.md`: read-only subagents
   pinned to Sonnet.
 
@@ -222,12 +222,13 @@ Then:
 - **The hidden `.claude/settings.json`**: merge the template into any existing file
   with `jq`, never overwrite it. Keep the user's keys. Append to existing
   hook arrays, including the `PreToolUse` Fable guard. Append the template's
-  `permissions.allow` rules (the read-only `handoffs/bin/jarvis` ones, `log *` and the `lessons` ones, each
-  in the `handoffs/bin/jarvis …` and `./handoffs/bin/jarvis …` spellings) to
-  any existing `permissions.allow` without duplicating them, remove the
-  broad `Bash(handoffs/bin/jarvis *)` and `Bash(./handoffs/bin/jarvis *)`
-  rules if an earlier dev build added them, and keep the user's own rules and every `deny`
-  and `ask` entry. Add
+  narrowly reviewed `permissions.allow` rules (each in the
+  `handoffs/bin/jarvis …` and `./handoffs/bin/jarvis …` spellings) to any
+  existing `permissions.allow` without duplicating them. Remove Jarvis's broad
+  `Bash(handoffs/bin/jarvis *)` / `Bash(./handoffs/bin/jarvis *)` rules and its
+  retired `start`, `status`, `lessons select *`, and `usage *` rules if an
+  earlier build added them; exact `usage` replaces `usage *`. Keep the user's
+  other rules and every `deny` and `ask` entry. Add
   `"<plugin>@<marketplace>": false` to `enabledPlugins` for
   each plugin in the plugins default. If the project already sets a `statusLine`,
   put its command in `handoffs/jarvis.conf` as `JARVIS_STATUSLINE_CMD='…'`
@@ -443,15 +444,17 @@ and spawn's May-touch overlap warning. See the `jarvis:run` skill's
    `UserPromptSubmit` entry's `hooks` (keep `hook prompt`), and add the
    `Stop`, `Notification` and `SessionEnd` entries, appending to any the
    user already has. Skip any object whose `command` is already there, so
-   running the step twice adds nothing. Also append the read-only
-   `permissions.allow` rules from section 3 (skip any already there, remove
-   the two broad `jarvis *` rules; keep the user's own rules and `deny`/`ask`
-   entries), so Jarvis's read-only commands stop prompting. The hook entries write a worker's state to its
+   running the step twice adds nothing. Also append the reviewed
+   `permissions.allow` rules from section 3 (skip any already there; remove
+   the broad `jarvis *` rules and Jarvis's retired `start`, `status`, `lessons
+   select *`, and `usage *` rules; keep the user's other rules and `deny`/`ask`
+   entries), so the reviewed commands stop prompting. The hook entries write a worker's state to its
    event file and do nothing in any other session: only a worker has
    `JARVIS_ROLE` from spawn, or a running run record on Superset or Ultron.
 5. Lessons: copy `handoffs/bin/jarvis-lessons.py` and `handoffs/bin/lessons-prompt.txt`
    (both, side by side), the brief template's optional `## Relevant lessons`
-   section, and the `lessons status`/`show`/`select` allow rules; create no
+   section, and the `lessons status`/`show` allow rules; `lessons select`
+   prompts because `--paths-from` reads a supplied file. Create no
    `handoffs/LESSONS.md` (`jarvis lessons propose` makes it, after review).
 6. Tell the user: spawn now warns when a new brief's May-touch row meets a
    running worker's, and warns "unknown" for a row with prose around its

@@ -1478,6 +1478,20 @@ echo "fable gate (eval/fabletest.sh)"; "$BASH" "$here/fabletest.sh" 2>&1 | tee "
 echo "claude caps and band (eval/captest.sh)"; "$BASH" "$here/captest.sh" 2>&1 | tee "$tmp/cap.out"; grep -q '^captest: all passed' "$tmp/cap.out" || { n=$(grep -c '^  FAIL' "$tmp/cap.out"); fails=$((fails + (n > 0 ? n : 1))); }
 echo "worker budgets (eval/budgettest.sh)"; "$BASH" "$here/budgettest.sh" 2>&1 | tee "$tmp/budget.out"; grep -q '^budgettest: all passed' "$tmp/budget.out" || { n=$(grep -c '^  FAIL' "$tmp/budget.out"); fails=$((fails + (n > 0 ? n : 1))); }
 echo "jarvis usage (eval/usagetest.sh)"; "$BASH" "$here/usagetest.sh" 2>&1 | tee "$tmp/usage.out"; grep -q '^usagetest: all passed' "$tmp/usage.out" || { n=$(grep -c '^  FAIL' "$tmp/usage.out"); fails=$((fails + (n > 0 ? n : 1))); }
+
+# Keep setup's no-prompt surface equal to the security-reviewed command set.
+echo "setup permission allowlist"
+python3 - "$tpl/.claude/settings.json" <<'PY'
+import json, sys
+allow = json.load(open(sys.argv[1], encoding="utf-8"))["permissions"]["allow"]
+paths = ("handoffs/bin/jarvis ", "./handoffs/bin/jarvis ")
+commands = ("band", "sessions", "resources", "doctor", "read *", "log *",
+            "lessons status", "lessons show", "lessons show *", "usage")
+expected = ["Bash(" + path + command + ")" for command in commands for path in paths]
+raise SystemExit(0 if allow == expected else 1)
+PY
+check "only reviewed Jarvis commands are allowed without a prompt, in both path spellings" $?
+
 rm -rf "$tmp"
 echo; [ "$fails" = 0 ] && echo "selftest: all passed" || { echo "selftest: $fails failed"; exit 1; }
 exit # inside the group: bash never reads past it
