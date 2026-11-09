@@ -62,7 +62,7 @@ url_path() { # a file path as a URL's path: % first; # and ? would end it, \ rea
 #   OPENCODE_CONFIG_CONTENT (its plugin list adds to the user's); none if that's set.
 # Superset and Ultron launch these agents themselves: the screen path stays.
 tmux_event_lines() { # $1 = agent
-  local j e c
+  local j e c v
   [ -n "${SPAWN_BRIEF:-}" ] || return 0
   j=$(tmux_sq "$ROOT/$BIN/jarvis")
   case "$1" in
@@ -70,7 +70,9 @@ tmux_event_lines() { # $1 = agent
       printf 'codex() { command codex'
       for e in UserPromptSubmit:working Stop:stop PermissionRequest:permission SessionEnd:ended; do
         c=$(printf '%s hook event %s' "$j" "${e#*:}" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g')   # a TOML string
-        printf ' -c %s' "$(tmux_sq "hooks.${e%%:*}=[{hooks=[{type=\"command\",command=\"$c\",timeout=10}]}]")"
+        # built by assignment from single quotes: a {a,b} in a quoted word was brace-expanded on CI's macOS bash
+        v='[{hooks=[{type="command",command="'"$c"'",timeout=10}]}]'
+        printf ' -c %s' "$(tmux_sq "hooks.${e%%:*}=$v")"
       done
       echo ' "$@"; }' ;;
     opencode)
