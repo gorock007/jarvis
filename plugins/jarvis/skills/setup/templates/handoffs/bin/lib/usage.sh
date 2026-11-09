@@ -3,12 +3,15 @@
 # ---------------------------------------------------------------- usage
 
 cmd_usage() {
-  local audit since_arg json merged over r wakes
+  local audit since_arg json merged ignored over r wakes reading
   have python3 || die "python3 is needed for jarvis usage"
   have jq || die "jq is needed for jarvis usage"
   audit="$(cd "$(dirname "$0")" && pwd)/cc_usage_audit.py"
   [ -f "$audit" ] || die "no $audit — re-run jarvis:setup"
-  set -- --project="$PROJ" --repo-root="$ROOT" --usage-file="$STATE/usage.json" --top=5 \
+  # Match band's account-wide reading, with the same repo-local fallback.
+  reading="$JHOME/usage.json"
+  [ -s "$reading" ] || reading="$STATE/usage.json"
+  set -- --project="$PROJ" --repo-root="$ROOT" --usage-file="$reading" --top=5 \
     --role worker='^You are a Jarvis worker' \
     --role-tool orchestrator='superset agents create|ultron agent spawn|handoffs/bin/jarvis (start|status|spawn|merge|send|read|close)' \
     --bash-category coordination='terminals (read|send|list|close)|term (read|send|list|close)|chat send|tmux |handoffs/|OPEN\.md|jev\.sh|bin/jarvis' \
@@ -16,6 +19,18 @@ cmd_usage() {
   json=$(python3 "$audit" "$@" --json) || exit 1
   since_arg=$(printf '%s' "$json" | jq -r '.period[0]')
   merged=$(git log --since="$since_arg" --diff-filter=A --name-only --format= -- "$H/merged/*.md" 2>/dev/null | grep -c '\.md$')
+  # Ignored, untracked handoffs have no merge commit: approximate with file mtime.
+  # Keep the Git count intact, and never count tracked handoffs a second time.
+  ignored=$(git ls-files -z --others --ignored --exclude-standard -- "$H/merged/*.md" | python3 -c '
+import datetime as dt, os, sys
+start, end = (dt.datetime.fromisoformat(t).timestamp() for t in sys.argv[1:])
+count = 0
+for path in sys.stdin.buffer.read().split(b"\0"):
+    if path and os.path.isfile(path) and start <= os.path.getmtime(path) <= end:
+        count += 1
+print(count)
+' "$since_arg" "$(printf '%s' "$json" | jq -r '.period[1]')") || exit 1
+  merged=$((merged + ignored))
   # this checkout's runs that reached a budget (spawn epoch, paused or not), from the run registry
   over=$(for r in "$RUNS"/*; do
     [ -f "$r" ] && r=${r##*/} && [ -n "$(run_get "$r" budget)$(run_get "$r" budget_was)" ] || continue
@@ -37,7 +52,7 @@ cmd_usage() {
   else
     wakes="wake-ups (this repo): no watcher log yet"
   fi
-  printf '%s' "$json" | jq -r --argjson merged "$merged" --argjson over "${over:-[]}" --arg wakes "$wakes" '
+  printf '%s' "$json" | jq -r --argjson merged "$merged" --argjson ignored "$ignored" --argjson over "${over:-[]}" --arg wakes "$wakes" '
     def usd: "$" + ((. * 100 | round) / 100 | tostring);
     def age:
       if . < 3600 then ((. / 60 | floor | tostring) + "m")
@@ -55,7 +70,7 @@ cmd_usage() {
       "  coordinating (Jarvis + its subagents): \($coord | usd)",
       "  building (workers + their subagents):  \($build | usd)",
       "  coordinating ÷ building: \(if $build > 0 then ($coord / $build * 100 | round) / 100 else "n/a" end)   (target ≤ 0.3)",
-      "  merged handoffs: \($merged_count) · cost per merged handoff: \(if $merged_count > 0 then (($coord + $build) / $merged_count) | usd else "n/a" end)",
+      "  merged handoffs: \($merged_count)\(if $scope == "this repo" and $ignored > 0 then " (\($ignored) by file mtime)" else "" end) · cost per merged handoff: \(if $merged_count > 0 then (($coord + $build) / $merged_count) | usd else "n/a" end)",
       "  worst 5-hour window: \(.peak_window_usd | usd) · most sessions in one 10-min slot: \(.peak_concurrent_sessions_10min)",
       (if has("machine_peak_concurrent_sessions_10min") then "  machine-wide peak across all projects: \(.machine_peak_concurrent_sessions_10min) sessions / 10 min" else empty end),
       "  cache reloads after idle (Jarvis): \([.reloads[] | select(.role == "orchestrator" and .cause == "after idle")] | "\(map(.turns) | add // 0) turns, \(map(.usd) | add // 0 | usd)")",

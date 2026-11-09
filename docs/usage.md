@@ -34,6 +34,19 @@ failed test runs, sessions left open for hours, and the share of worker cost
 spent above 150k of context. `--all-projects` covers every repo on the
 machine.
 
+`jarvis usage` selects the same subscription reading as `jarvis band`: the
+machine-wide file (`JARVIS_HOME/usage.json`, default `~/.jarvis/usage.json`),
+falling back to `handoffs/.jarvis/usage.json` when that file is missing or empty.
+For this repo's merged-handoff count, Git history remains authoritative for
+tracked files. Ignored, untracked Markdown files in `handoffs/merged/` also
+count when their modification times fall within the report window; the report
+labels this approximate portion. Editing or copying those files can change
+that estimate. Run records are not counted because several attempts can lead
+to one handoff. Wake-ups come from `handoffs/.jarvis/watch.log`; a missing log
+means no recorded events, not that no watcher is running. Older watchers may
+need restarting after an upgrade before they write events; quiet ticks do
+not create a log.
+
 ## Lessons pass
 
 `jarvis lessons propose` makes one isolated call to Sonnet 5.5 (no tools, no

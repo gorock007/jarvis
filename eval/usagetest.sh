@@ -10,6 +10,7 @@ tpl="$here/../plugins/jarvis/skills/setup/templates"
 audit="$tpl/handoffs/bin/cc_usage_audit.py"
 tmp=$(mktemp -d "${TMPDIR:-/tmp}/jarvis-usagetest.XXXXXX")
 trap 'rm -rf "$tmp"' EXIT HUP INT TERM
+export JARVIS_HOME="$tmp/jh" # Never read the caller's machine-wide subscription state.
 fails=0
 ok() { echo "  ok    $1"; }
 bad() { echo "  FAIL  $1"; fails=$((fails + 1)); }
@@ -23,6 +24,8 @@ repo=$(cd "$repo" && pwd -P)
   cd "$repo" || exit 1
   git init -q
   cp -R "$tpl/handoffs" .
+  sed -e 's/{{MAX_CLAUDE}}/3/' -e 's/{{AMBER}}/50/' -e 's/{{RED}}/75/' \
+    "$tpl/handoffs/jarvis.conf" > handoffs/jarvis.conf
   mkdir -p handoffs/.jarvis/runs
   printf '# alpha done\nstatus: done\nbrief: handoffs/briefs/alpha.md\n' > handoffs/merged/alpha-handoff.md
   printf '# delta awaiting merge\nstatus: done\nbrief: handoffs/briefs/delta.md\n' > handoffs/delta-handoff.md
@@ -164,6 +167,82 @@ out=$(
 )
 printf '%s' "$out" | grep -q '^    wake-ups (this repo): 2 · per merged handoff [0-9.n/a]* · handoff 1, prompt 1, stall 1, limit 0, budget 0 · auto-handled: trust 2, edit 1, nudge 1$'
 check "jarvis usage counts only woke/cleared, once per reason, and auto actions separately within the window" $?
+
+# Usage-report regressions: tracked history, ignored archives, and band's reading.
+printf '%s' "$out" | grep -q '^  merged handoffs: 1 · cost per merged handoff:'
+check "tracked merge count is unchanged and has no mtime annotation" $?
+python3 - "$repo/handoffs/merged/alpha-handoff.md" <<'PY'
+import os, sys
+os.utime(sys.argv[1], (1, 1))
+PY
+out=$(cd "$repo" && HOME="$home" "$BASH" handoffs/bin/jarvis usage --days 2)
+printf '%s' "$out" | grep -q '^  merged handoffs: 1 · cost per merged handoff:'
+check "tracked merge count uses its commit even when file mtime is outside the window" $?
+
+ignored_repo="$tmp/ignored"
+mkdir -p "$ignored_repo"
+(
+  cd "$ignored_repo" || exit 1
+  git init -q
+  cp -R "$tpl/handoffs" .
+  printf '/handoffs/\n' >> .git/info/exclude
+  python3 - <<'PY'
+import datetime as dt, os
+for name, day in (("old", 1), ("recent with spaces", 3), ("future", 5)):
+    path = "handoffs/merged/" + name + ".md"
+    with open(path, "w") as f:
+        f.write("status: done\n")
+    stamp = dt.datetime(2026, 1, day, tzinfo=dt.timezone.utc).timestamp()
+    os.utime(path, (stamp, stamp))
+PY
+)
+mkdir -p "$tmp/ignored-transcripts/$proj"
+python3 - "$pdir/alpha-two.jsonl" "$tmp/ignored-transcripts/$proj/sample.jsonl" <<'PY'
+import json, sys
+with open(sys.argv[1]) as src, open(sys.argv[2], "w") as dst:
+    for line in src:
+        record = json.loads(line)
+        record["timestamp"] = "2026-01-03T12:00:00Z"
+        dst.write(json.dumps(record) + "\n")
+PY
+out=$(cd "$ignored_repo" && HOME="$home" "$BASH" handoffs/bin/jarvis usage \
+  --root "$tmp/ignored-transcripts" --project="$proj" \
+  --since 2026-01-02T11:00:00+11:00 --until 2026-01-04T11:00:00+11:00)
+printf '%s' "$out" | grep -q '^  merged handoffs: 1 (1 by file mtime) · cost per merged handoff:'
+check "ignored archive without Git history counts only files within both window bounds" $?
+
+# Even under an ignore rule, a tracked handoff must never enter the fallback.
+printf '/handoffs/merged/\n' >> "$repo/.git/info/exclude"
+printf 'status: done\n' > "$repo/handoffs/merged/ignored.md"
+out=$(cd "$repo" && HOME="$home" "$BASH" handoffs/bin/jarvis usage --days 2)
+printf '%s' "$out" | grep -q '^  merged handoffs: 2 (1 by file mtime) · cost per merged handoff:'
+check "mixed archive adds ignored files without double-counting tracked handoffs" $?
+printf '%s' "$out" | grep -q '^    wake-ups (this repo): 2 · per merged handoff 1.00 '
+check "wake-ups per merged handoff uses the combined archive count" $?
+
+mkdir -p "$JARVIS_HOME"
+python3 - "$repo/handoffs/.jarvis/usage.json" "$JARVIS_HOME/usage.json" <<'PY'
+import json, sys, time
+now = int(time.time())
+for path, hours, pct in ((sys.argv[1], 313, 42), (sys.argv[2], 31, 73)):
+    with open(path, "w") as f:
+        json.dump({"ts": now - hours * 3600 - 9 * 60,
+                   "five_hour": {"used_percentage": pct, "resets_at": now - 3600},
+                   "seven_day": {"used_percentage": 61}}, f)
+PY
+out=$(cd "$repo" && HOME="$home" "$BASH" handoffs/bin/jarvis usage --days 2)
+band_out=$(cd "$repo" && HOME="$home" "$BASH" handoffs/bin/jarvis band)
+printf '%s' "$out" | grep -q '^subscription usage: 5h 73% · 7d 61% · reading 31h9m old$' \
+  && printf '%s' "$band_out" | grep -q 'the last reading is 31h09m old'
+check "usage and band prefer the same machine reading and agree on age units" $?
+for state in empty missing; do
+  if [ "$state" = empty ]; then : > "$JARVIS_HOME/usage.json"; else rm "$JARVIS_HOME/usage.json"; fi
+  out=$(cd "$repo" && HOME="$home" "$BASH" handoffs/bin/jarvis usage --days 2)
+  band_out=$(cd "$repo" && HOME="$home" "$BASH" handoffs/bin/jarvis band)
+  printf '%s' "$out" | grep -q '^subscription usage: 5h 42% · 7d 61% · reading 313h9m old$' \
+    && printf '%s' "$band_out" | grep -q 'the last reading is 313h09m old'
+  check "usage and band fall back to the repo reading when the machine file is $state" $?
+done
 
 echo
 if [ "$fails" = 0 ]; then echo "usagetest: all passed"; else echo "usagetest: $fails failed"; exit 1; fi
