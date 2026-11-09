@@ -1360,7 +1360,10 @@ hooks, a = {}, sys.argv[1:]
 for i, x in enumerate(a[:-1]):
     if x == "-c" and a[i + 1].startswith("hooks."):
         k, v = a[i + 1][6:].split("=", 1)
-        hooks[k] = tomllib.loads("v = " + v)["v"]
+        try:
+            hooks[k] = tomllib.loads("v = " + v)["v"]
+        except Exception:
+            print("fake codex: unparsable -c value: " + repr(v)); raise
 print("fake codex hooks: " + " ".join(sorted(hooks)) + " | " + " ".join(x for x in a if x.startswith("--dangerously-bypass-hook")))
 for ev, f in (("UserPromptSubmit", "user-prompt-submit"), ("Stop", "stop"), ("PermissionRequest", ""), ("SessionEnd", "session-end")):
     stdin = open("$here/hook-payloads/codex-%s.json" % f).read() if f else "{}"
@@ -1381,7 +1384,7 @@ EOF
         && [ "$(jq -r .run "handoffs/.jarvis/events/2026-10-20-1200-tx.jsonl" | sort -u)" = "$tx" ]
       rc=$?; check "…its hooks reach jarvis hook event with Codex's payloads: working, stop, permission, ended" $rc
       # on a failure, what the fake codex printed and what reached the events file
-      [ $rc = 0 ] || { [ -n "$tx" ] && T read "$tx" 10 | sed 's/^/        | /'; echo "        events: $(evs 2026-10-20-1200-tx)"; }
+      [ $rc = 0 ] || { [ -n "$tx" ] && T read "$tx" 40 | sed 's/^/        | /'; echo "        events: $(evs 2026-10-20-1200-tx)"; grep '^codex()' handoffs/.jarvis/launch/tx.sh | sed 's/^/        launch: /'; }
     else
       echo "  (Codex hook checks skipped: python3 has no tomllib)"
     fi
