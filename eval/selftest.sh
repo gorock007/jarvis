@@ -100,6 +100,8 @@ case "$1 $2" in
   "terminals send") x=; p=   # answers as the real CLI does: JSON, or the error on stderr and exit 1
     for a in "$@"; do [ "$p" != --text ] || x=$a; case "$a" in --text=*) x=${a#--text=} ;; esac; p=$a; done
     [ -z "${FAKE_SEND_FAIL:-}" ] || [ "$6" = jarvis-t ] || { echo "Error: Terminal session \"$6\" is not active; create it before connecting." >&2; exit 1; }
+    [ -z "${FAKE_SEND_FAIL_ONCE:-}" ] || [ -e "$FAKE_SEND_FAIL_ONCE" ] || { : > "$FAKE_SEND_FAIL_ONCE"; echo "Error: Terminal session \"$6\" is not active; create it before connecting." >&2; exit 1; }
+    [ -z "${FAKE_SEND_EMPTY:-}" ] || exit 0   # a busy terminal that answers nothing
     [ -n "${FAKE_SEND_DROP:-}" ] || [ -z "${FAKE_SCREEN_FILE:-}" ] || [ -z "$x" ] || printf '%s\n' "$x" >> "$FAKE_SCREEN_FILE"
     case " $* " in *" --keys "*) printf '{"terminalId":"%s","keys":1}\n' "$6" ;;
       *) printf '{"terminalId":"%s","submitted":%s}\n' "$6" "$([ -n "${FAKE_SEND_UNSUBMITTED:-}" ] && echo false || echo true)" ;; esac ;;
@@ -111,7 +113,7 @@ EOT
   ln -s "$BASH" "$tmp/fake/bash"
   (
     cd "$sb" || exit 1
-    export PATH="$tmp/fake:$PATH" FAKE_LOG="$tmp/fake.log" SUPERSET_WORKSPACE_ID=ws SUPERSET_TERMINAL_ID=jarvis-t
+    export PATH="$tmp/fake:$PATH" FAKE_LOG="$tmp/fake.log" SUPERSET_WORKSPACE_ID=ws SUPERSET_TERMINAL_ID=jarvis-t JARVIS_SEND_RETRY_SEC=0
     unset TYPESAFE_API_KEY
     git init -q && git remote add origin "$tmp/origin.git"
     cp -R "$tpl/handoffs" . && sed -e 's/{{MAX_CLAUDE}}/3/' -e 's/{{AMBER}}/50/' -e 's/{{RED}}/75/' "$tpl/handoffs/jarvis.conf" > handoffs/jarvis.conf
@@ -139,8 +141,13 @@ EOT
     [ $? = 0 ] && grep -q 'terminal term-3 --text Answers: 1. use \$HOME "as is" 2. no --json$' "$FAKE_LOG" \
       && printf '%s' "$out" | grep -q '^sent to term-3 · opencode worker, running · handoffs/briefs/b4.md$'; check "send: delivered text exits 0 and names the worker it reached" $?
     FAKE_SCREEN_FILE=$sf $J send term-3 '--force is fine' >/dev/null 2>&1 && grep -q 'terminal term-3 --text=--force is fine --json$' "$FAKE_LOG"; check "send: a text starting with - goes as --text=…" $?
+    [ "$(grep -c 'terminals send' "$FAKE_LOG")" = 2 ]; check "send: a normal send goes once (two sends, two calls)" $?
     out=$(FAKE_SEND_FAIL=1 FAKE_SCREEN_FILE=$sf $J send term-3 'lost' 2>&1 >/dev/null)
     [ $? = 1 ] && printf '%s' "$out" | grep -q 'Error: Terminal session "term-3" is not active'; check "send: the CLI's refusal exits 1 with its error on stderr" $?
+    : > "$FAKE_LOG"; out=$(FAKE_SEND_FAIL_ONCE="$tmp/send-failed-once" FAKE_SCREEN_FILE=$sf $J send term-3 'retried' 2>&1)
+    [ $? = 0 ] && [ "$(grep -c 'terminals send' "$FAKE_LOG")" = 2 ] && printf '%s' "$out" | grep -q '^sent to term-3'; check "send: a first \"not active\" refusal is retried once and delivered" $?
+    : > "$FAKE_LOG"; out=$(FAKE_SEND_EMPTY=1 FAKE_SCREEN_FILE=$sf $J send term-3 'lost' 2>&1 >/dev/null)
+    [ $? = 1 ] && [ "$(grep -c 'terminals send' "$FAKE_LOG")" = 2 ] && printf '%s' "$out" | grep -q 'superset took nothing into term-3: no output' && printf '%s' "$out" | grep -q 'nothing was sent to term-3'; check "send: no output twice is a failure" $?
     out=$(FAKE_SEND_UNSUBMITTED=1 FAKE_SCREEN_FILE=$sf $J send term-3 'lost' 2>&1 >/dev/null)
     [ $? = 1 ] && printf '%s' "$out" | grep -q 'superset took nothing into term-3'; check "send: JSON saying it wasn't submitted exits 1" $?
     out=$(FAKE_SEND_DROP=1 FAKE_SCREEN_FILE=$sf JARVIS_SEND_CHECK_SEC=1 $J send term-3 'lost' 2>&1 >/dev/null)

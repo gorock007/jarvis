@@ -38,13 +38,22 @@ superset_read() {
     | { have jq && jq -r '.text // empty' || cat; }
 }
 
-superset_send() { # the CLI's error stays on stderr; JSON that says nothing went in is a failure too
-  local out
+superset_send() { # the CLI's error stays on stderr; no output, or JSON that says nothing went in, is a failure too
   if [ "${2:-}" = --keys ]; then set -- "$1" --keys "${3:-}"
   # a text that starts with "-" is taken for an option and refused unless it is --text=…
   else case "$2" in -*) set -- "$1" "--text=$2" ;; *) set -- "$1" --text "$2" ;; esac
   fi
+  # a busy terminal can refuse or answer nothing once and take it a moment later; every failure
+  # here means nothing went in, so one retry can't type it twice
+  superset_send_once "$@" && return 0
+  sleep "${JARVIS_SEND_RETRY_SEC:-2}"
+  superset_send_once "$@"
+}
+
+superset_send_once() {
+  local out
   out=$(superset terminals send --workspace "$WS" --terminal "$@" --json) || return 1
+  [ -n "$out" ] || { echo "superset took nothing into $1: no output" >&2; return 1; }
   case "$out" in
     '{'*) have jq || return 0
       printf '%s' "$out" | jq -e '.submitted == true or (.keys // 0) > 0' >/dev/null 2>&1 \

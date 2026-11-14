@@ -44,6 +44,7 @@ case "$1 $2" in
   "agents create") n=$(( $(cat "$FAKE_LOG.n" 2>/dev/null || echo 0) + 1 )); echo "$n" > "$FAKE_LOG.n"
     printf '{"kind":"terminal","sessionId":"term-%s"}\n' "$n" ;;
   "terminals read") jq -n --arg t "$(cat "$SCREENS/$6" 2>/dev/null || echo 'Working… esc to interrupt')" '{text: $t}' ;;
+  "terminals send") case " $* " in *" --keys "*) printf '{"keys":1}\n' ;; *) printf '{"submitted":true}\n' ;; esac ;;   # the real CLI always answers JSON
   "terminals list") printf '{"sessions":[]}\n' ;;
 esac
 EOT
