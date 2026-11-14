@@ -14,7 +14,8 @@
 #   jarvis sessions                    the Claude sessions counting toward the caps, machine-wide,
 #                                      and the ones idle for hours you may want to close
 #   jarvis log "<text>"                append a dated line to handoffs/log/YYYY-MM.md (finished
-#                                      notes; nothing reads it at session start); merge commits it
+#                                      notes; nothing reads it at session start); merge commits it.
+#                                      With JARVIS_OWNER set: handoffs/log/YYYY-MM.<owner>.md
 #   jarvis lessons status|propose|show|apply|reject|retire|select
 #                                      reviewed lessons from merged handoffs (jarvis-lessons.py,
 #                                      handoffs/LESSONS.md); propose makes one Sonnet call
@@ -147,6 +148,27 @@ BIN="$H/bin"
 . "$JARVIS_LIB/defaults.sh" || exit 1
 # shellcheck disable=SC1090
 [ -f "$H/jarvis.conf" ] && . "$H/jarvis.conf"
+# Team mode: one person's own settings, untracked (docs/teams.md); $STATE/local.conf is
+# where an early hand patch kept them. Their JARVIS_ROLE is the team role, lead or
+# contributor: it goes to TEAM_ROLE, and a worker's JARVIS_ROLE=worker from spawn stays.
+# shellcheck disable=SC2034 # read only by lib/*.sh
+TEAM_CONF=""; TEAM_ROLE=lead
+# shellcheck disable=SC2034
+if [ -f "$H/jarvis.local.conf" ] || [ -f "$STATE/local.conf" ]; then
+  JARVIS_M=${JARVIS_ROLE+set}; JARVIS_ENV_ROLE=${JARVIS_ROLE:-}; unset JARVIS_ROLE
+  for JARVIS_M_F in "$H/jarvis.local.conf" "$STATE/local.conf"; do
+    # shellcheck disable=SC1090
+    [ -f "$JARVIS_M_F" ] && . "$JARVIS_M_F" && TEAM_CONF="$TEAM_CONF${TEAM_CONF:+ }$JARVIS_M_F"
+  done
+  TEAM_ROLE=${JARVIS_ROLE:-lead}; unset JARVIS_ROLE
+  [ -n "$JARVIS_M" ] && export JARVIS_ROLE="$JARVIS_ENV_ROLE"
+fi
+# shellcheck disable=SC2034
+if [ -n "${JARVIS_OPEN:-}" ]; then OPEN=$JARVIS_OPEN
+elif [ -n "${JARVIS_OWNER:-}" ]; then
+  case "$JARVIS_OWNER" in *[!A-Za-z0-9._-]*|.*) echo "jarvis: JARVIS_OWNER=$JARVIS_OWNER: use letters, digits, . _ or - (it names handoffs/OPEN.<owner>.md)" >&2; exit 1 ;; esac
+  OPEN="$H/OPEN.$JARVIS_OWNER.md"
+fi
 # shellcheck disable=SC2034 # WS, PROJ, CLAUDE_DIR, JHOME: read only by lib/*.sh
 {
 WS="${SUPERSET_WORKSPACE_ID:-}"

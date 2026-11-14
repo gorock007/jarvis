@@ -13,6 +13,28 @@ changed_paths() { # every changed/untracked path, renames as their new path
   git status --porcelain -uall 2>/dev/null | cut -c4- | sed -e 's/.* -> //' -e 's/^"//' -e 's/"$//'
 }
 
+default_branch() { # origin/HEAD's target, else main, else master
+  local b
+  b=$(git symbolic-ref -q --short refs/remotes/origin/HEAD 2>/dev/null) && [ -n "$b" ] && { printf '%s' "${b#origin/}"; return; }
+  for b in main master; do
+    git show-ref -q --verify "refs/heads/$b" || git show-ref -q --verify "refs/remotes/origin/$b" && { printf '%s' "$b"; return; }
+  done
+  printf main
+}
+
+# A merge that will push first takes what teammates pushed: fetch, then fast-forward
+# only (never a stash, never a merge commit); dies before anything moves when it can't
+catch_up() {
+  local up behind
+  up=$(git rev-parse -q --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null) && [ -n "$up" ] || return 0
+  git fetch -q 2>/dev/null || { echo "merge: git fetch failed, so not caught up with $up first"; return 0; }
+  behind=$(git rev-list --count 'HEAD..@{u}' 2>/dev/null) || return 0
+  [ "${behind:-0}" -gt 0 ] || return 0
+  git merge -q --ff-only '@{u}' >/dev/null 2>&1 \
+    || die "origin has commits this checkout can't fast-forward to ($behind on $up): merge or wait for the overlapping handoff, then git merge --ff-only @{u} (nothing merged)"
+  echo "merge: fast-forwarded $behind commit(s) from $up first"
+}
+
 verify_die() { echo "jarvis merge: $*" >&2; exit 2; }
 
 verify_exec() { # $1 = handoff, $2 = 1 for --reuse: its brief's verify blocks on HEAD + its listed changes, in a worktree of their own
@@ -31,7 +53,7 @@ verify_exec() { # $1 = handoff, $2 = 1 for --reuse: its brief's verify blocks on
 
 cmd_merge() {
   local ho="" check=0 msg="" outcome="" reason="" push="$JARVIS_PUSH" keep=0 force=0 verify=0 reuse=0 copt=""
-  local status brief agent files f bad=0 skipped other title dest trailer sha runs r frag note old_tracked=0 closed line rec
+  local status brief agent files f b cur bad=0 skipped other title dest trailer sha runs r frag note old_tracked=0 closed line rec
   while [ $# -gt 0 ]; do
     case "$1" in
       --check) check=1; shift ;;
@@ -89,6 +111,16 @@ cmd_merge() {
 
   [ "$status" = blocked ] && die "status is blocked — answer its questions first"
   [ $bad = 1 ] && [ $force = 0 ] && die "file list doesn't match git status — send it back, or --force"
+  case "$TEAM_ROLE" in
+    lead) ;;
+    contributor)
+      b=$(default_branch); cur=$(git symbolic-ref -q --short HEAD 2>/dev/null)
+      [ -n "$cur" ] || die "contributor Jarvis: HEAD is detached. Start a branch first: git switch -c ${JARVIS_OWNER:-<name>}/<topic> origin/$b"
+      [ "$cur" != "$b" ] \
+        || die "contributor Jarvis: never commit on $b. Start a branch first: git switch -c ${JARVIS_OWNER:-<name>}/<topic> origin/$b" ;;
+    *) die "JARVIS_ROLE=$TEAM_ROLE in $TEAM_CONF: give lead or contributor" ;;
+  esac
+  [ "$push" = 1 ] && [ -n "$(git remote)" ] && catch_up
 
   mkdir -p "$H/merged"
   dest="$H/merged/$(basename "$ho")"
@@ -99,7 +131,7 @@ cmd_merge() {
   [ $old_tracked = 1 ] && set -- "$@" "$ho"
   [ -n "$brief" ] && [ -f "$brief" ] && set -- "$@" "$brief"
   [ -f "$OPEN" ] && set -- "$@" "$OPEN"
-  [ -f "$H/log/$(date +%Y-%m).md" ] && set -- "$@" "$H/log/$(date +%Y-%m).md"   # jarvis log's month file
+  f=$(log_file "$(date +%Y-%m)"); [ -f "$f" ] && set -- "$@" "$f"   # jarvis log's month file (an owner's own in team mode)
   # git add refuses an ignored, untracked path (a repo keeping handoffs/ local):
   # leave those out, before anything moves; check-ignore skips tracked ones
   skipped=""
@@ -133,6 +165,9 @@ cmd_merge() {
 
   if [ "$push" = 1 ]; then
     if [ -z "$(git remote)" ]; then line="$line · not pushed (no remote)"
+    elif [ "$TEAM_ROLE" = contributor ]; then
+      if git push -q -u origin HEAD 2>/dev/null; then line="$line · pushed $(git symbolic-ref -q --short HEAD)"
+      else line="$line · push FAILED (run git push -u origin HEAD)"; fi
     elif git push -q 2>/dev/null; then line="$line · pushed"; else line="$line · push FAILED (run git push)"; fi
   else
     line="$line · not pushed"
@@ -166,7 +201,7 @@ cmd_merge() {
       "$BIN/jev.sh" outcome "$brief" "$outcome" ${reason:+"$reason"} >/dev/null 2>&1
     fi
   fi
-  echo "$line · OPEN.md updated in the same commit"
+  echo "$line · ${OPEN##*/} updated in the same commit"
   [ -n "$note" ] && echo "$note"
   [ -n "$brief" ] && [ -f "$brief" ] && merge_leftovers "$brief" "$dest" "$closed"
   return 0

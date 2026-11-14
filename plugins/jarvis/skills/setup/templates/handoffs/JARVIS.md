@@ -25,6 +25,7 @@ Where the two disagree, this file wins.
 - **Shared files** workers must edit minimally and name in the handoff:
   {{SHARED_FILES}}
 - **Never send to OpenCode's free models:** {{FREE_TIER_NEVER}}
+- **Team mode:** if `jarvis status` prints a `role:` line, your notes file is the one it names, not `OPEN.md`, and a contributor commits only on a branch. See the jarvis plugin's `docs/teams.md`.
 
 ## The loop
 

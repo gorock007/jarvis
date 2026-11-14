@@ -54,7 +54,9 @@ never wait inside a turn, and you accept being `/clear`ed between batches.
 Also when a message starts with `[jarvis watch] Fresh session`, or the user
 says "resume":
 
-1. Read `handoffs/JARVIS.md` and `handoffs/OPEN.md`.
+1. Read `handoffs/JARVIS.md` and `handoffs/OPEN.md`. In team mode (`start`
+   prints `role: … · notes: <file>` first) that file is your `OPEN.md`:
+   read and keep it instead.
 2. `handoffs/bin/jarvis start`. It records this terminal as the Jarvis
    session in `OPEN.md`. If another Jarvis terminal is still open, it
    refuses; ask the user before `--force`. Then it prints the status screen:

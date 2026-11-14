@@ -116,11 +116,18 @@ $sid"; regm="$regm$sid $m
 
 heavy() { case "$1" in opus|fable|unknown) return 0 ;; esac; return 1; } # counts toward the Opus cap
 
-jarvis_sids() { # $1 = a project root: the session ids of its Jarvis coordinator, one a line (none without one)
-  local t
-  t=$(sed -n 's/^Jarvis session:[[:space:]]*//p' "$1/$OPEN" 2>/dev/null | head -n 1 | awk '{print $1}' | grep -v '^<')
-  case "$t" in ""|*/*|.*) return 0 ;; esac
-  cat "$1/$STATE/sessions/$t" 2>/dev/null
+jarvis_sids() { # $1 = a project root: the session ids of its Jarvis coordinators, one a line (none without one)
+  local t f
+  # every notes file there: in team mode each person's Jarvis has its own (docs/teams.md);
+  # and this one's own, wherever JARVIS_OPEN puts it
+  set -- "$1" "$1/$H"/OPEN*.md
+  case "$OPEN" in "$H"/OPEN*.md|/*) ;; *) [ "$1" = "$ROOTP" ] && set -- "$@" "$1/$OPEN" ;; esac
+  for f in "${@:2}"; do
+    [ -f "$f" ] || continue
+    t=$(sed -n 's/^Jarvis session:[[:space:]]*//p' "$f" 2>/dev/null | head -n 1 | awk '{print $1}' | grep -v '^<')
+    case "$t" in ""|*/*|.*) continue ;; esac
+    cat "$1/$STATE/sessions/$t" 2>/dev/null
+  done
   have jq && jq -r '.session_id // empty' "$1/$STATE/session.json" 2>/dev/null
   return 0
 }
@@ -210,7 +217,7 @@ cap_claim() {
   elif [ "$N_HERE" -ge "$CAP_P" ]; then
     cap="this checkout"; n=$N_HERE; lim=$CAP_P
     who="$(printf '%s\n' "$CAP_LINES" | awk -F'\t' -v p="$ROOTP" '$3 == p' | cap_holders)
-  OPEN.md: Jarvis + $((N_OPEN - 1)) running Claude worker(s)"
+  ${OPEN##*/}: Jarvis + $((N_OPEN - 1)) running Claude worker(s)"
   elif heavy "$canon" && [ "$N_OPUS" -ge "$CAP_O" ]; then
     cap="Opus"; n=$N_OPUS; lim=$CAP_O
     who=$(printf '%s\n' "$CAP_LINES" | awk -F'\t' -v j="$CAP_JARVIS" \
@@ -225,8 +232,8 @@ cap_claim() {
         printf 'jarvis: Claude cap reached: %s, %s of %s' "$cap" "$n" "$lim"
         if [ "$CAP_BAND" = green ]; then echo; else echo " (band $CAP_BAND: caps lowered)"; fi
         echo "held by:"
-        printf '%s\n' "${who:-  the count in OPEN.md}" | grep -v '^$'
-        printf 'Options: queue it under To-do in OPEN.md; route it to Codex or OpenCode; or close one of your own idle sessions (handoffs/bin/jarvis sessions lists them)'
+        printf '%s\n' "${who:-  the count in ${OPEN##*/}}" | grep -v '^$'
+        printf 'Options: queue it under To-do in %s; route it to Codex or OpenCode; or close one of your own idle sessions (handoffs/bin/jarvis sessions lists them)' "${OPEN##*/}"
         [ "$cap" = Opus ] && printf '; or give it model: sonnet'
         echo ". --force passes this cap (logged)."
       } >&2
@@ -264,7 +271,7 @@ cmd_sessions() {
   done <<LINES
 $CAP_LINES
 LINES
-  [ "$N_OPEN" -gt 1 ] && echo "  (OPEN.md here: Jarvis + $((N_OPEN - 1)) running Claude worker(s))"
+  [ "$N_OPEN" -gt 1 ] && echo "  (${OPEN##*/} here: Jarvis + $((N_OPEN - 1)) running Claude worker(s))"
   # open for hours and idle: they cost nothing, but they're the user's to close
   t=$(now)
   old=$(printf '%s\n' "$CAP_IDLE" | awk -F'\t' -v t="$t" 'NF >= 7 && $6 > 0 && t * 1000 - $6 > 8 * 3600000')

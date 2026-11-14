@@ -21,6 +21,24 @@ sends those tasks to Claude models.
 Jarvis terminal is still open, it refuses, and Jarvis asks you before taking
 over.
 
+**Several people each run a Jarvis in one repo**
+Use team mode: each person puts `JARVIS_OWNER=<name>` (and
+`JARVIS_ROLE=contributor`, unless they're the lead) in an untracked
+`handoffs/jarvis.local.conf`, and gets their own notes file,
+`handoffs/OPEN.<name>.md`, and their own `jarvis log` file,
+`handoffs/log/YYYY-MM.<name>.md`. See [teams.md](teams.md).
+
+**`contributor Jarvis: never commit on main`** (or `HEAD is detached`)
+A contributor's merge commits only on a named branch. Run
+`git switch -c <name>/<topic> origin/main` and merge again. See
+[teams.md](teams.md#the-contributor-loop).
+
+**`origin has commits this checkout can't fast-forward to`**
+A merge that will push catches up with its upstream first, fast-forward
+only. A teammate's commit touches a file with uncommitted changes here, or
+your branch has diverged. Nothing was moved. Merge the overlapping handoff
+first, or wait for it, then `git merge --ff-only @{u}` and merge again.
+
 **My message was stopped: "Jarvis has been idle … min"**
 That's the idle guard. Jarvis's prompt cache has expired, so your message
 would have paid to write its whole context again. Type `/clear` and then

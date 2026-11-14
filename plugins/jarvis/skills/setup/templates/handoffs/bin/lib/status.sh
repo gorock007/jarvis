@@ -4,6 +4,7 @@
 
 cmd_start() {
   local me old
+  [ -f "$OPEN" ] || [ -z "$TEAM_CONF" ] || open_new || die "can't write $OPEN"
   [ -f "$OPEN" ] || die "no $OPEN — run jarvis:setup first"
   need_host
   me=$(host self)
@@ -20,7 +21,9 @@ cmd_start() {
 
 cmd_status() {
   local b line id brief ho ids="" n=0 changed claimed unclaimed sz
+  [ -f "$OPEN" ] || [ -z "$TEAM_CONF" ] || die "no $OPEN — run jarvis start, which makes it"
   [ -f "$OPEN" ] || die "no $OPEN — run jarvis:setup first"
+  [ -z "$TEAM_CONF" ] || team_line
 
   b=$(band)
   printf 'band: %s\n' "$(printf '%s' "$b" | tr '\t' ' ' | sed 's/ /: /')"
@@ -64,7 +67,7 @@ EOF
   # handoffs on disk that no running worker accounts for
   for ho in "$H"/*.md; do
     [ -f "$ho" ] || continue
-    case "$(basename "$ho")" in OPEN.md|TEMPLATE.md|JARVIS.md|LESSONS.md) continue ;; esac
+    case "$(basename "$ho")" in OPEN.md|OPEN.*.md|OPEN-*.md|TEMPLATE.md|JARVIS.md|LESSONS.md) continue ;; esac
     brief=$(field brief "$ho")
     running_lines | grep -q "${brief:-@@none@@}" && continue
     echo "handoff not tied to a running worker: $ho ($(field status "$ho"))"
@@ -79,7 +82,7 @@ EOF
   n=$(awk '/^## /{on = ($0 ~ /^## To-do/); next} on && /^- /' "$OPEN" | wc -l | tr -d ' ')
   q=$(awk '/^## /{on = ($0 ~ /^## Questions for the user/); next} on && /^- /' "$OPEN" | wc -l | tr -d ' ')
   sz=$(wc -c < "$OPEN" | tr -d ' ')
-  printf 'OPEN.md: %s question(s) for the user · %s to-do · %s KB\n' "$q" "$n" "$(( (sz + 512) / 1024 ))"
+  printf '%s: %s question(s) for the user · %s to-do · %s KB\n' "${OPEN##*/}" "$q" "$n" "$(( (sz + 512) / 1024 ))"
   open_checks "$sz"
   lessons_hint
   watch_running || echo "watcher: not running — start it: handoffs/bin/jarvis watch --start"
@@ -88,12 +91,12 @@ EOF
 }
 
 open_checks() { # $1 = OPEN.md's size in bytes; one line per check that fires, nothing when clean
-  local n=0 no text name merged
-  [ "$1" -gt $((JARVIS_OPEN_MAX_KB * 1024)) ] && printf 'OPEN.md is %s KB (limit %s): move finished notes to jarvis log; one line per item\n' \
-    "$(( ($1 + 512) / 1024 ))" "$JARVIS_OPEN_MAX_KB"
-  awk '/^## /{t = $0; sub(/[[:space:]]+$/, "", t)
+  local n=0 no text name merged on=${OPEN##*/}
+  [ "$1" -gt $((JARVIS_OPEN_MAX_KB * 1024)) ] && printf '%s is %s KB (limit %s): move finished notes to jarvis log; one line per item\n' \
+    "$on" "$(( ($1 + 512) / 1024 ))" "$JARVIS_OPEN_MAX_KB"
+  awk -v on="$on" '/^## /{t = $0; sub(/[[:space:]]+$/, "", t)
     if (t != "## Questions for the user" && t != "## Running workers" && t != "## Waiting on Jarvis" && t != "## To-do")
-      printf "OPEN.md has a section that belongs in the log: \"%s\"\n", t}' "$OPEN"
+      printf "%s has a section that belongs in the log: \"%s\"\n", on, t}' "$OPEN"
   n=$(awk '/^## /{on = ($0 ~ /^## To-do/); next} on && /^- / && length($0) > 300' "$OPEN" | wc -l | tr -d ' ')
   [ "$n" = 1 ] && echo "1 to-do line over 300 characters"
   [ "$n" -gt 1 ] && echo "$n to-do lines over 300 characters"
@@ -107,7 +110,7 @@ open_checks() { # $1 = OPEN.md's size in bytes; one line per check that fires, n
         "$H"/briefs/*) printf '%s\n' "$merged" | grep -qxF "$name" || continue ;;
         *) [ ! -e "$name" ] && [ -f "$H/merged/${name#"$H"/}" ] || continue ;;
       esac
-      n=$((n + 1)); [ $n -le 5 ] && echo "OPEN.md line $no names $name, already merged"
+      n=$((n + 1)); [ $n -le 5 ] && echo "$on line $no names $name, already merged"
       break
     done
   done <<EOF
@@ -115,6 +118,35 @@ $(awk '/^## /{on = ($0 ~ /^## (To-do|Waiting on Jarvis)/); next} on && /^- / {pr
 EOF
   [ $n -gt 5 ] && echo "… and $((n - 5)) more"
   return 0
+}
+
+# Team mode (a local conf): this person's role, branch and notes file, and the notes
+# file jarvis start makes when it isn't there yet
+team_line() {
+  printf 'role: %s · branch: %s · notes: %s\n' "$TEAM_ROLE" "$(git symbolic-ref -q --short HEAD 2>/dev/null || echo "(detached)")" "$OPEN"
+}
+
+open_new() {
+  mkdir -p "$(dirname "$OPEN")" || return 1
+  cat > "$OPEN" <<'EOF' || return 1
+# Open items
+
+Jarvis reads this first, every session, and keeps it current. One line per
+item. Finished notes go to `jarvis log`, not here. Team mode: this is one
+person's notes file, and each teammate's Jarvis keeps its own.
+
+Jarvis session: <terminal id — `handoffs/bin/jarvis start` writes it>
+Usage band: <green | amber | red> — `handoffs/bin/jarvis status` writes it from the statusline reading
+
+## Questions for the user
+
+## Running workers
+
+## Waiting on Jarvis
+
+## To-do
+EOF
+  echo "made $OPEN"
 }
 
 lessons_hint() { # one line when 10+ merged handoffs are unread by the lessons pass, or a lesson has expired; silent otherwise
@@ -130,11 +162,15 @@ lessons_hint() { # one line when 10+ merged handoffs are unread by the lessons p
   return 0
 }
 
+log_file() { # $1 = YYYY-MM: jarvis log's month file; team mode's owner gets one of their own
+  printf '%s' "$H/log/$1${JARVIS_OWNER:+.$JARVIS_OWNER}.md"
+}
+
 cmd_log() { # jarvis log "<text>": one line on this month's log; the text is data, written as given
   local now month f
   [ -n "$*" ] || die "usage: jarvis log '<text>'"
   now=$(date '+%Y-%m-%d %H:%M'); month=$(printf '%s' "$now" | cut -c1-7)
-  f="$H/log/$month.md"
+  f=$(log_file "$month")
   mkdir -p "$H/log" || die "can't make $H/log"
   [ -f "$f" ] || printf '# Jarvis log %s\n\n' "$month" > "$f"
   printf -- '- %s · %s\n' "$now" "$(printf '%s' "$*" | tr '\n\r' '  ')" >> "$f" || die "can't write $f"

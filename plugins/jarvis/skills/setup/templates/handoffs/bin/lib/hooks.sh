@@ -46,7 +46,7 @@ hook_prompt() {
     *fable*) price=20 ;; *opus-5-5*) price=8 ;; *opus*) price=10 ;; *sonnet*) price=4 ;; *haiku*) price=2 ;; *) price=10 ;;
   esac
   usd=$(awk -v t="$ctx" -v p="$price" 'BEGIN{printf "%.2f", t * p / 1000000}')
-  jq -n --arg r "Jarvis has been idle ${gap} min, so its prompt cache has expired: this message would write all $((ctx / 1000))k tokens of context again (about \$${usd} at API prices). Cheaper: /clear, then \"resume\" — Jarvis reloads from handoffs/OPEN.md. To go ahead anyway, send your message again." \
+  jq -n --arg r "Jarvis has been idle ${gap} min, so its prompt cache has expired: this message would write all $((ctx / 1000))k tokens of context again (about \$${usd} at API prices). Cheaper: /clear, then \"resume\" — Jarvis reloads from $OPEN. To go ahead anyway, send your message again." \
     '{decision: "block", reason: $r}'
 }
 

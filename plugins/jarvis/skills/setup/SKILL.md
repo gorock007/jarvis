@@ -241,7 +241,9 @@ Then:
   `CLAUDE.md` and `AGENTS.md`."
 - `.gitignore`: add `handoffs/.jev/` and `handoffs/.jarvis/`, which hold
   local logs, readings, watcher state and the lessons store (proposals and
-  their raw results; private, never committed). The rest of `handoffs/` is tracked
+  their raw results; private, never committed), and
+  `handoffs/jarvis.local.conf` (one person's team-mode settings, see the
+  plugin's `docs/teams.md`). The rest of `handoffs/` is tracked
   on purpose. It is the project's memory.
 
 ## 4. Verify and hand over
@@ -464,6 +466,36 @@ and spawn's May-touch overlap warning. See the `jarvis:run` skill's
    commands as ```` ```bash verify class=light timeout=300 ```` blocks for
    `merge --check --verify`, and a pass there is a pre-merge observation,
    not an approval.
+
+## 10. Upgrading a repo set up with jarvis 1.0
+
+This release brings team mode into the plugin: several people in one repo,
+each with their own Jarvis in their own clone, set by an untracked
+`handoffs/jarvis.local.conf` (`JARVIS_OWNER`, `JARVIS_OPEN`, `JARVIS_ROLE`).
+With `JARVIS_OWNER` set, the notes file is `handoffs/OPEN.<owner>.md` and
+`jarvis log` writes `handoffs/log/YYYY-MM.<owner>.md`. Every merge that pushes now fetches and fast-forwards to its upstream first,
+and stops before moving anything when it can't. See the plugin's
+`docs/teams.md`. Without a local conf nothing else changes.
+
+1. Replace `handoffs/bin/lib/` whole with the template's (copy it to
+   `handoffs/bin/lib.new`, then
+   `rm -rf handoffs/bin/lib && mv handoffs/bin/lib.new handoffs/bin/lib`),
+   then copy `handoffs/bin/jarvis`. Nothing else in `handoffs/bin/` changed.
+   Leave `handoffs/bin/hosts/` alone.
+2. Add `handoffs/jarvis.local.conf` to `.gitignore`.
+3. Add the template's **Team mode** bullet to `handoffs/JARVIS.md` and its
+   local-conf comment to `handoffs/jarvis.conf`. Keep the project's own
+   rules.
+4. A repo whose team mode was patched in by hand keeps its conf as it is:
+   `handoffs/jarvis.local.conf` with `JARVIS_ROLE` and `JARVIS_OPEN`, and
+   `handoffs/.jarvis/local.conf` with `JARVIS_OWNER`, are both read (the
+   second after the first). Rename no notes file. Copying `bin/jarvis` and
+   `lib/` replaces the hand patch. Then run `handoffs/bin/jarvis status`.
+   Its first line must be `role: … · branch: … · notes: <that person's file>`.
+5. Tell the user: a merge that will push now catches up with the branch's
+   upstream first (fast-forward only, never a stash). If a teammate's
+   commit overlaps uncommitted work, the merge stops with "origin has
+   commits this checkout can't fast-forward to" and nothing moves.
 
 ## Notes
 

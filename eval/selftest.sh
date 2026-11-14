@@ -1099,6 +1099,90 @@ $trust"
     $J leftovers handoffs/briefs/d14.md --stop | grep -q 'stopped 2' && sleep 1 && ! alive "$pg14"; check "…which still stops the finished worker's" $?
     kill "$pd1" "$pnw" "$pjv" "$pd8" "$pd9" "$pd10" "$pd11" "$pd12" "$pd13" "$pd14" "$pd15" 2>/dev/null
     kill -- "-$pg13" "-$pg15" 2>/dev/null
+    # Team mode: a throwaway repo of its own with a bare origin. alice is this checkout's
+    # person (handoffs/jarvis.local.conf, untracked); bob is a teammate who pushes first.
+    (
+      export FAKE_LOG="$tmp/fake-team.log" JARVIS_HOME="$tmp/jh-team"; mkdir -p "$JARVIS_HOME"
+      unset JARVIS_ROLE JARVIS_BRIEF JARVIS_OWNER JARVIS_OPEN
+      tnow=$(date +%s); echo "{\"five_hour\":{\"used_percentage\":10,\"resets_at\":$((tnow + 2 * 3600))},\"ts\":$tnow}" > "$JARVIS_HOME/usage.json"
+      git init -q --bare "$tmp/team-origin.git" && git -C "$tmp/team-origin.git" symbolic-ref HEAD refs/heads/main
+      mkdir -p "$tmp/team" && cd "$tmp/team" || exit 1
+      git init -q && git symbolic-ref HEAD refs/heads/main && git remote add origin "$tmp/team-origin.git"
+      cp -R "$tpl/handoffs" . && sed -e 's/{{MAX_CLAUDE}}/3/' -e 's/{{AMBER}}/50/' -e 's/{{RED}}/75/' "$tpl/handoffs/jarvis.conf" > handoffs/jarvis.conf
+      echo 'JARVIS_BATCH_SEC=0' >> handoffs/jarvis.conf
+      printf 'handoffs/.jarvis/\nhandoffs/jarvis.local.conf\n' > .gitignore
+      echo a > app.txt && git add -A && git commit -qm init && git push -q -u origin main 2>/dev/null
+      git clone -q "$tmp/team-origin.git" "$tmp/team-bob" 2>/dev/null
+      J=handoffs/bin/jarvis
+      tho() { printf '# %s\nstatus: done\nagent: codex gpt-5.6-sol\n## Files\n- %s — modified\n' "$1" "$2" > "handoffs/$1.md"; }
+      bob() { (cd "$tmp/team-bob" && git pull -q 2>/dev/null; mkdir -p "$(dirname "$1")" && echo "$2" > "$1" && git add "$1" && git commit -qm "bob: $1" && git push -q 2>/dev/null); }
+
+      ! $J status 2>/dev/null | grep -q '^role:'; check "team: without a local conf, status prints no role line" $?
+      echo 'JARVIS_OWNER=alice' > handoffs/jarvis.local.conf
+      out=$($J start 2>&1)
+      grep -q '^Jarvis session: jarvis-t' handoffs/OPEN.alice.md && ! grep -q '^Jarvis session: jarvis-t' handoffs/OPEN.md \
+        && printf '%s\n' "$out" | grep -qx 'role: lead · branch: main · notes: handoffs/OPEN.alice.md' \
+        && ! git status --porcelain | grep -q 'jarvis.local.conf'; check "team: JARVIS_OWNER=alice: start makes and claims handoffs/OPEN.alice.md and prints the role line" $?
+      printf '# t1\nworker: opencode\nmodel: \neffort: \nstarted: <x> · terminal: <x>\n\n## Goal\nx\n' > handoffs/briefs/t1.md
+      $J spawn handoffs/briefs/t1.md >/dev/null 2>&1 && grep -q '· term term-1 · handoffs/briefs/t1.md' handoffs/OPEN.alice.md && ! grep -q 't1.md' handoffs/OPEN.md
+      check "team: spawn writes its Running workers line into OPEN.alice.md" $?
+      out=$($J status 2>&1)
+      printf '%s\n' "$out" | grep -q '^  term-1 .*t1' && printf '%s\n' "$out" | grep -q '^OPEN.alice.md: 0 question(s) for the user'
+      check "team: status reads its workers and counts from OPEN.alice.md" $?
+      cp handoffs/OPEN.md handoffs/OPEN-bob.md && echo '- note' >> handoffs/OPEN.alice.md
+      : > "$FAKE_LOG"; $J watch --once >/dev/null; tho ht app.txt; $J watch --once >/dev/null
+      ! grep 'terminals send' "$FAKE_LOG" | grep -q 'OPEN' && grep 'terminals send' "$FAKE_LOG" | grep -q 'handoff handoffs/ht.md'
+      check "team: the watcher takes OPEN.alice.md and OPEN-bob.md for no handoff (and still sees a real one)" $?
+      ! $J status 2>&1 | grep -q 'handoff not tied.*OPEN'; check "team: …nor does status" $?
+      rm handoffs/ht.md
+      printf 'JARVIS_OWNER=alice\nJARVIS_OPEN=handoffs/OPEN-bob.md\n' > handoffs/jarvis.local.conf
+      $J status 2>&1 | grep -qx 'role: lead · branch: main · notes: handoffs/OPEN-bob.md'; check "team: JARVIS_OPEN overrides JARVIS_OWNER" $?
+      rm handoffs/jarvis.local.conf; echo 'JARVIS_OWNER=alice' > handoffs/.jarvis/local.conf
+      $J status 2>&1 | grep -qx 'role: lead · branch: main · notes: handoffs/OPEN.alice.md'; check "team: the legacy handoffs/.jarvis/local.conf still works" $?
+      rm handoffs/.jarvis/local.conf; echo 'JARVIS_OWNER=alice' > handoffs/jarvis.local.conf
+
+      # catch-up: a merge that will push fast-forwards to what bob pushed, whatever the role
+      bob bob.txt hi; echo ff > ff.txt; tho hff ff.txt
+      out=$($J merge handoffs/hff.md 2>&1); rc=$?
+      [ $rc = 0 ] && [ "$(cat bob.txt 2>/dev/null)" = hi ] && [ "$(git rev-parse HEAD^)" = "$(git -C "$tmp/team-bob" rev-parse HEAD)" ] \
+        && [ "$(git rev-parse HEAD)" = "$(git -C "$tmp/team-origin.git" rev-parse main)" ] && printf '%s' "$out" | grep -q 'fast-forwarded 1 commit(s) from origin/main'
+      check "team: merge fetches and fast-forwards to the teammate's commit, then commits on top and pushes" $?
+      git show --name-only --format= HEAD | grep -qx handoffs/OPEN.alice.md && ! git show --name-only --format= HEAD | grep -qx handoffs/OPEN.md
+      check "team: the merge commits OPEN.alice.md, not OPEN.md" $?
+      # jarvis log: the owner's own month file, so a teammate's pushed log lines never block the catch-up
+      m=$(date +%Y-%m); $J log 'alice note' >/dev/null; bob "handoffs/log/$m.bob.md" '- bob note'
+      echo lg > lg.txt; tho hlg lg.txt
+      out=$($J merge handoffs/hlg.md 2>&1); rc=$?
+      [ $rc = 0 ] && grep -q 'alice note' "handoffs/log/$m.alice.md" && [ ! -e "handoffs/log/$m.md" ] && [ -f "handoffs/log/$m.bob.md" ] \
+        && git show --name-only --format= HEAD | grep -qx "handoffs/log/$m.alice.md"
+      check "team: jarvis log writes log/YYYY-MM.alice.md and merge commits it, after catching up with bob's log" $?
+      bob app.txt bob-edit; echo mine > app.txt; tho hno app.txt; head=$(git rev-parse HEAD)
+      out=$($J merge handoffs/hno.md 2>&1); rc=$?
+      [ $rc = 1 ] && printf '%s' "$out" | grep -q "origin has commits this checkout can't fast-forward to (1 on origin/main)" \
+        && [ -f handoffs/hno.md ] && [ ! -e handoffs/merged/hno.md ] && [ "$(git rev-parse HEAD)" = "$head" ] && [ "$(cat app.txt)" = mine ] && ! git stash list | grep -q .
+      check "team: a catch-up that can't fast-forward dies before moving the handoff, stashing nothing" $?
+      git checkout -q -- app.txt && git merge -q --ff-only '@{u}' && rm handoffs/hno.md
+
+      printf 'JARVIS_OWNER=alice\nJARVIS_ROLE=contributor\n' > handoffs/jarvis.local.conf
+      echo c > c.txt; tho hc c.txt; head=$(git rev-parse HEAD)
+      out=$($J merge handoffs/hc.md 2>&1); rc=$?
+      [ $rc = 1 ] && printf '%s' "$out" | grep -qF 'contributor Jarvis: never commit on main. Start a branch first: git switch -c alice/<topic> origin/main' \
+        && [ -f handoffs/hc.md ] && [ "$(git rev-parse HEAD)" = "$head" ]; check "team: a contributor's merge on main dies, nothing moved" $?
+      $J merge handoffs/hc.md --check >/dev/null 2>&1; check "team: …while its --check still runs" $?
+      git switch -q --detach
+      out=$($J merge handoffs/hc.md 2>&1); rc=$?
+      [ $rc = 1 ] && printf '%s' "$out" | grep -qF 'contributor Jarvis: HEAD is detached. Start a branch first: git switch -c alice/<topic> origin/main' \
+        && [ -f handoffs/hc.md ] && [ "$(git rev-parse HEAD)" = "$head" ] && [ "$(git -C "$tmp/team-origin.git" rev-parse main)" = "$head" ]
+      check "team: a contributor's merge on a detached HEAD dies, nothing moved or pushed" $?
+      git switch -q -c alice/c
+      out=$($J merge handoffs/hc.md 2>&1); rc=$?
+      [ $rc = 0 ] && [ -f handoffs/merged/hc.md ] && [ "$(git rev-parse HEAD)" = "$(git -C "$tmp/team-origin.git" rev-parse alice/c 2>/dev/null)" ] \
+        && [ "$(git rev-parse --abbrev-ref '@{u}')" = origin/alice/c ] && [ "$(git -C "$tmp/team-origin.git" rev-parse main)" = "$head" ] \
+        && printf '%s' "$out" | grep -q 'pushed alice/c'; check "team: on a branch it commits and pushes -u origin HEAD; main is left alone" $?
+      $J status 2>&1 | grep -qx 'role: contributor · branch: alice/c · notes: handoffs/OPEN.alice.md'; check "team: status prints the contributor's role and branch" $?
+      JARVIS_ROLE=worker JARVIS_BRIEF=handoffs/briefs/t1.md JARVIS_RUN=%7 $J hook event stop </dev/null
+      grep -q '"kind":"stop"' handoffs/.jarvis/events/t1.jsonl 2>/dev/null; check "team: a worker's JARVIS_ROLE=worker survives the conf's JARVIS_ROLE (its hook event lands)" $?
+    )
   ) | tee "$tmp/jarvis.out"
   n=$(grep -c '^  FAIL' "$tmp/jarvis.out"); fails=$((fails + n))
 else

@@ -304,7 +304,7 @@ handoff_since() { # $1 = brief, $2 = epoch: a handoff for the brief in handoffs/
   [ -n "$1" ] || return 1
   for ho in "$H"/*.md; do
     [ -f "$ho" ] || continue
-    case "${ho##*/}" in OPEN.md|TEMPLATE.md|JARVIS.md|LESSONS.md) continue ;; esac
+    case "${ho##*/}" in OPEN.md|OPEN.*.md|OPEN-*.md|TEMPLATE.md|JARVIS.md|LESSONS.md) continue ;; esac
     # the brief's path on its brief: line as merge finds it, with ./, quotes or a note
     # around it; it must end there (x.md.old isn't x.md)
     # an absolute path counts when it is this checkout's (as git or pwd -P names it) plus the brief
@@ -347,7 +347,7 @@ watch_tick() {
   touch "$seen"
   for ho in "$H"/*.md; do
     [ -f "$ho" ] || continue
-    case "$(basename "$ho")" in OPEN.md|TEMPLATE.md|JARVIS.md|LESSONS.md) continue ;; esac
+    case "$(basename "$ho")" in OPEN.md|OPEN.*.md|OPEN-*.md|TEMPLATE.md|JARVIS.md|LESSONS.md) continue ;; esac
     key="$ho $(mtime "$ho") $(field status "$ho")"
     grep -qxF "$key" "$seen" && continue
     echo "$key" >> "$seen"
@@ -467,7 +467,7 @@ EOF
     if type "${HOST}_clear" >/dev/null 2>&1; then host clear "$term" && sleep 5
     else send_jarvis "/clear"; sleep 3
     fi
-    send_jarvis "[jarvis watch] Fresh session: Jarvis was idle ${idle} min, so its cache had expired. You are Jarvis — use the jarvis:run skill, read handoffs/JARVIS.md and handoffs/OPEN.md, run handoffs/bin/jarvis status, then handle:$events"
+    send_jarvis "[jarvis watch] Fresh session: Jarvis was idle ${idle} min, so its cache had expired. You are Jarvis — use the jarvis:run skill, read handoffs/JARVIS.md and $OPEN, run handoffs/bin/jarvis status, then handle:$events"
     watch_log cleared "$kinds"
     echo "$(date +%H:%M) cleared Jarvis (idle ${idle} min) and woke it:$events"
   else
