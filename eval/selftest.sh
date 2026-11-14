@@ -154,6 +154,17 @@ EOT
     [ $? = 1 ] && printf '%s' "$out" | grep -q "screen hasn't changed in 1 s: the text didn't arrive"; check "send: accepted but the screen never changed exits 1" $?
     FAKE_SCREEN_FILE=$sf $J send term-3 --keys esc >/dev/null && grep -q 'terminal term-3 --keys esc --json$' "$FAKE_LOG"; check "send --keys still goes through" $?
     FAKE_SCREEN_FILE=$sf $J send not-ours 'hi' 2>/dev/null | grep -q '^sent to not-ours · not a worker jarvis spawned$'; check "send: an id jarvis didn't spawn is named as such" $?
+    # a short id, as status prints it, reaches the run it starts
+    for r in term-9f00ba7 term-8aa term-8bb; do printf 'run: %s\nbrief: handoffs/briefs/b4.md\nagent: opencode\nhost: superset\nstate: running\n' "$r" > "handoffs/.jarvis/runs/$r"; done
+    : > "$FAKE_LOG"; out=$(FAKE_SCREEN_FILE=$sf $J send term-9 'short' 2>&1)
+    [ $? = 0 ] && grep -q 'terminals send --workspace ws --terminal term-9f00ba7 ' "$FAKE_LOG" && printf '%s' "$out" | grep -q '^sent to term-9f00ba7 · opencode worker'; check "send: a prefix of one run's id goes to its full id" $?
+    : > "$FAKE_LOG"; out=$(FAKE_SCREEN_FILE=$sf $J send term-8 'which' 2>&1 >/dev/null)
+    [ $? = 1 ] && printf '%s' "$out" | grep -q 'term-8 starts 2 runs: term-8aa term-8bb' && ! grep -q 'terminals send' "$FAKE_LOG"; check "send: a prefix of several runs dies naming them and sends nothing" $?
+    : > "$FAKE_LOG"; FAKE_SCREEN_FILE=$sf $J send term-7 'hi' >/dev/null 2>&1 && grep -q 'terminals send --workspace ws --terminal term-7 ' "$FAKE_LOG"; check "send: an id no run starts goes as given" $?
+    : > "$FAKE_LOG"; $J read term-9f >/dev/null && grep -q 'terminals read --workspace ws --terminal term-9f00ba7 ' "$FAKE_LOG"; check "read: a prefix reads the full id" $?
+    $J budget term-9f min=5 >/dev/null 2>&1 && grep -qx 'limits: min=5' handoffs/.jarvis/runs/term-9f00ba7; check "budget: a prefix sets the full id's limits" $?
+    $J close term-9f0 >/dev/null 2>&1 && grep -q 'terminals close --workspace ws --terminal term-9f00ba7$' "$FAKE_LOG" && grep -qx 'state: closed' handoffs/.jarvis/runs/term-9f00ba7 && [ ! -e handoffs/.jarvis/runs/term-9f0 ]; check "close: a prefix closes the full id's run" $?
+    rm -f handoffs/.jarvis/runs/term-9f00ba7 handoffs/.jarvis/runs/term-8aa handoffs/.jarvis/runs/term-8bb
 
     now=$(date +%s)
     echo "{\"model\":{},\"rate_limits\":{\"five_hour\":{\"used_percentage\":40,\"resets_at\":$((now + 4 * 3600))}}}" \

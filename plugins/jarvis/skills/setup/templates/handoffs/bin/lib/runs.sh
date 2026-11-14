@@ -65,6 +65,19 @@ run_set() { # $1 = run, then <key> <value> pairs
   mv "$tmp" "$f"
 }
 
+run_resolve() { # $1 = a terminal id, maybe cut short as status prints it: the run whose id it is or starts, else $1 unchanged (the host may know it); dies naming the runs when it starts several
+  local f m="" n=0
+  run_ok "$1" && [ ! -f "$RUNS/$1" ] || { printf '%s\n' "$1"; return 0; }
+  for f in "$RUNS/$1"*; do
+    [ -f "$f" ] || continue
+    case ${f##*/} in .*) continue ;; esac   # run_set's temp files
+    m="$m ${f##*/}"; n=$((n + 1))
+  done
+  [ "$n" -le 1 ] || die "$1 starts $n runs:$m; give more of the id"
+  m=${m# }
+  printf '%s\n' "${m:-$1}"
+}
+
 run_get() { # $1 = run, $2 = key
   run_ok "$1" && [ -f "$RUNS/$1" ] || return 0
   awk -v k="$2" 'index($0, k ": ") == 1 {print substr($0, length(k) + 3); exit}' "$RUNS/$1"

@@ -250,6 +250,7 @@ budget_gate() { # $1 = brief, $2 = --after's handoff or empty, $3 = force (0|1)
 cmd_budget() { # jarvis budget <run> [min=N] [usd=N] [ctx=N[k]] [tests=N]
   local r=${1:-} kv old="" set="" limits b
   [ -n "$r" ] || die "usage: jarvis budget <terminal> [min=N] [usd=N] [ctx=N[k]] [tests=N]"
+  r=$(run_resolve "$r") || exit 1
   run_ok "$r" && [ -f "$RUNS/$r" ] || die "no run $r in $RUNS"
   shift
   [ $# -gt 0 ] || { budget_line "$r"; return 0; }

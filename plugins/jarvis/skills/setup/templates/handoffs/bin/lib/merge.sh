@@ -176,12 +176,15 @@ cmd_merge() {
 
 cmd_read() {
   [ -n "${1:-}" ] || die "usage: jarvis read <terminal> [<lines>]"
-  host read "$1" "${2:-80}"
+  local t
+  t=$(run_resolve "$1") || exit 1
+  host read "$t" "${2:-80}"
 }
 
 cmd_send() {
   [ $# -ge 2 ] || die "usage: jarvis send <terminal> <text> | jarvis send <terminal> --keys <k,k>"
   local t=$1 sec=${JARVIS_SEND_CHECK_SEC:-3} before after="" n=0 who st
+  t=$(run_resolve "$t") || exit 1
   if [ "$2" = --keys ]; then host send "$t" --keys "${3:-}"; return; fi
   before=$(host read "$t" 40 2>/dev/null)
   host send "$t" "$2" || die "nothing was sent to $t"
@@ -205,6 +208,7 @@ cmd_send() {
 cmd_close() { # a worker given up on; a merged one is closed by merge
   local run=${1:-} brief="" b out
   [ -n "$run" ] || die "usage: jarvis close <terminal>"
+  run=$(run_resolve "$run") || exit 1
   need_host
   [ "$run" = "$(jarvis_terminal)" ] && die "$run is Jarvis's own terminal"
   if [ ! -f "$RUNS/$run" ]; then
