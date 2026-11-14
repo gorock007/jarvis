@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.1.0 — 2026-11-14
+
+- Team mode (`docs/teams.md`): several people, one Jarvis each, in separate clones of one repo. An untracked `handoffs/jarvis.local.conf` sets `JARVIS_OWNER` (notes in `handoffs/OPEN.<owner>.md`, log in `handoffs/log/YYYY-MM.<owner>.md`), `JARVIS_OPEN` (any notes path) and `JARVIS_ROLE` (`lead` or `contributor`). A contributor's merge refuses the default branch and a detached HEAD, and pushes with `-u origin HEAD`. The early hand-patched `handoffs/.jarvis/local.conf` is still read.
+- Every merge that pushes fetches first and fast-forwards to its upstream, stopping before anything moves when it can't; it never stashes.
+- Status, the watcher, the caps and the idle guard read and name the actual notes file; the caps find a repo's Jarvis in any `handoffs/OPEN*.md`.
+
 ## 1.0.1 — 2026-11-14
 
 - `jarvis merge` leaves out paths that are git-ignored and untracked (a repo that keeps `handoffs/` local), names them, and stops before moving anything when nothing is left to commit; `--check` no longer flags them.
