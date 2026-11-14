@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.0.1 — 2026-11-14
+
+- `jarvis merge` leaves out paths that are git-ignored and untracked (a repo that keeps `handoffs/` local), names them, and stops before moving anything when nothing is left to commit; `--check` no longer flags them.
+- `jarvis send` on Superset treats an empty answer as a failure and retries once after 2 s (`JARVIS_SEND_RETRY_SEC`).
+- `send`, `read`, `close` and `budget` take the 8-character terminal id that `status` prints and expand it to the full id; Superset refused short ids as "not active".
+
 ## 1.0.0 — 2026-11-09
 
 - Split `bin/jarvis` (3,075 lines) into a 211-line entry script and 21 modules under `bin/lib/`; CI runs every offline test and strict shellcheck on Ubuntu and macOS.
