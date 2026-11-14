@@ -31,7 +31,7 @@ verify_exec() { # $1 = handoff, $2 = 1 for --reuse: its brief's verify blocks on
 
 cmd_merge() {
   local ho="" check=0 msg="" outcome="" reason="" push="$JARVIS_PUSH" keep=0 force=0 verify=0 reuse=0 copt=""
-  local status brief agent files f bad=0 other title dest trailer sha runs r frag note old_tracked=0 closed line rec
+  local status brief agent files f bad=0 skipped other title dest trailer sha runs r frag note old_tracked=0 closed line rec
   while [ $# -gt 0 ]; do
     case "$1" in
       --check) check=1; shift ;;
@@ -68,7 +68,10 @@ cmd_merge() {
   echo "$ho · status: $status · brief: ${brief:-none}"
   for f in $files; do
     [ $verify = 1 ] && break # the verifier's strict reading of ## Files gives the verdict
-    if changed_paths | grep -qxF "$f"; then :; else
+    if changed_paths | grep -qxF "$f"; then :
+    elif [ -e "$f" ] && git check-ignore -q -- "$f" 2>/dev/null; then
+      echo "  · git-ignored, won't be committed: $f"   # merge skips it, as git add would refuse it
+    else
       echo "  ✗ listed but not changed: $f"; bad=1
     fi
   done
@@ -89,11 +92,7 @@ cmd_merge() {
 
   mkdir -p "$H/merged"
   dest="$H/merged/$(basename "$ho")"
-  runs=""; [ -n "$brief" ] && runs=$(brief_runs "$brief")
-  [ -n "$brief" ] && open_drop "$brief"
-  open_drop "$(basename "$ho")"
   git ls-files --error-unmatch -- "$ho" >/dev/null 2>&1 && old_tracked=1
-  mv "$ho" "$dest"
   # a handoff that lists itself would be staged at the path it just left
   # shellcheck disable=SC2046 # $files is a whitespace-separated list
   set -- $(printf '%s\n' $files | grep -vxF "$ho") "$dest"
@@ -101,6 +100,19 @@ cmd_merge() {
   [ -n "$brief" ] && [ -f "$brief" ] && set -- "$@" "$brief"
   [ -f "$OPEN" ] && set -- "$@" "$OPEN"
   [ -f "$H/log/$(date +%Y-%m).md" ] && set -- "$@" "$H/log/$(date +%Y-%m).md"   # jarvis log's month file
+  # git add refuses an ignored, untracked path (a repo keeping handoffs/ local):
+  # leave those out, before anything moves; check-ignore skips tracked ones
+  skipped=""
+  for f in "$@"; do
+    shift
+    if git check-ignore -q -- "$f" 2>/dev/null; then skipped="$skipped $f"; else set -- "$@" "$f"; fi
+  done
+  [ $# -gt 0 ] || die "nothing to commit: every path is git-ignored and untracked:$skipped (nothing merged)"
+  runs=""; [ -n "$brief" ] && runs=$(brief_runs "$brief")
+  [ -n "$brief" ] && open_drop "$brief"
+  open_drop "$(basename "$ho")"
+  mv "$ho" "$dest"
+  [ -z "$skipped" ] || echo "merge: not committed (git-ignored):$skipped"
   git add -A -- "$@" || die "git add failed"
 
   title=$(sed -n '1s/^#[[:space:]]*//p' "$dest")

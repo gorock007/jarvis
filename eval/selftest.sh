@@ -815,6 +815,24 @@ $trust"
     $J merge handoffs/h7.md --no-push >/dev/null 2>&1; check "merge takes a handoff that lists itself" $?
     git show --name-only --format= HEAD | grep -qx 'handoffs/merged/h7.md' && [ ! -e handoffs/h7.md ]; check "…and commits it at its merged path only" $?
 
+    # a repo that keeps handoffs/ local: git add would refuse those paths
+    (
+      mkdir -p "$tmp/ignored" && cd "$tmp/ignored" || exit 1
+      git init -q; cp -R "$tpl/handoffs" .; echo t > tracked.txt; git add tracked.txt; git commit -qm init
+      echo 'handoffs/' >> .git/info/exclude; $J start >/dev/null
+      echo t2 > tracked.txt
+      printf '# Ignored\nstatus: done\nagent: codex x\n## Files\n- tracked.txt — modified\n- handoffs/hi.md — this handoff\n' > handoffs/hi.md
+      $J merge handoffs/hi.md --check >/dev/null 2>&1; check "merge --check: a listed git-ignored file isn't a mismatch" $?
+      out=$($J merge handoffs/hi.md --no-push 2>&1); rc=$?
+      [ $rc = 0 ] && [ "$(git show --name-only --format= HEAD)" = tracked.txt ] && [ -f handoffs/merged/hi.md ] \
+        && printf '%s' "$out" | grep -q '^merge: not committed (git-ignored): .*handoffs/merged/hi.md'
+      check "merge skips git-ignored untracked paths, commits the rest and names what it skipped" $?
+      echo x > handoffs/note.txt; head=$(git rev-parse HEAD)
+      printf '# Only ignored\nstatus: done\nagent: codex x\n## Files\n- handoffs/note.txt — created\n' > handoffs/hj.md
+      $J merge handoffs/hj.md --no-push >/dev/null 2>&1; [ $? != 0 ] && [ "$(git rev-parse HEAD)" = "$head" ] && [ -f handoffs/hj.md ]
+      check "…and dies without committing (or moving the handoff) when every path is ignored" $?
+    )
+
     mk b7 opencode "" ""; $J spawn handoffs/briefs/b7.md >/dev/null 2>&1
     b7t=$(sed -n 's/.*terminal: //p' handoffs/briefs/b7.md)
     echo c > corr.txt
