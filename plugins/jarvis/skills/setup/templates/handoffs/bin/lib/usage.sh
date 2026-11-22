@@ -3,7 +3,7 @@
 # ---------------------------------------------------------------- usage
 
 cmd_usage() {
-  local audit since_arg until_arg json merged ignored over r wakes reading
+  local audit since_arg until_arg json merged ignored over r wakes reading wruns whos
   have python3 || die "python3 is needed for jarvis usage"
   have jq || die "jq is needed for jarvis usage"
   audit="$(cd "$(dirname "$0")" && pwd)/cc_usage_audit.py"
@@ -37,6 +37,18 @@ print(count)
     [ -f "$r" ] && r=${r##*/} && [ -n "$(run_get "$r" budget)$(run_get "$r" budget_was)" ] || continue
     printf '{"t":%s,"p":%s}\n' "$(run_get "$r" spawned | grep -Ex '[0-9]+' || echo 0)" "$([ -n "$(run_get "$r" paused)" ] && echo true || echo false)"
   done | jq -s -c . 2>/dev/null)
+  # every run record, and each archived handoff with when it was merged, for Workers by agent/model
+  wruns=$(for r in "$RUNS"/*; do [ -f "$r" ] && printf '%s\n' "$r"; done | while IFS= read -r r; do
+    awk -v id="${r##*/}" '
+      { i = index($0, ": ") } i { v[substr($0, 1, i - 1)] = substr($0, i + 2) }
+      END { printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", id, v["agent"], v["model"], v["brief"], v["spawned"], v["ended"],
+              v["merge_outcome"], v["merge_reason"], (v["budget"] v["budget_was"] != "" ? 1 : 0) }' "$r"
+  done | jq -R -s -c '[split("\n")[] | select(length > 0) | split("\t")
+    | {run: .[0], agent: (if .[1] == "" then "?" else .[1] end), model: (if .[2] == "" then "?" else .[2] end), brief: .[3],
+       spawned: (.[4] | tonumber? // null), ended: (.[5] | tonumber? // null), outcome: .[6], reason: .[7], budget: (.[8] == "1")}]')
+  whos=$(for f in "$H"/merged/*.md; do
+    [ -f "$f" ] && printf '%s\t%s\t%s\n' "$(field brief "$f" | awk '{print $1}')" "$(field status "$f" | awk '{print $1}')" "$(merged_at "$f")"
+  done | jq -R -s -c '[split("\n")[] | select(length > 0) | split("\t") | {brief: .[0], status: .[1], t: (.[2] | tonumber? // null)}]')
   # watcher wake-ups in the report's window, from watch.log (UTC times compare as text)
   if [ -f "$STATE/watch.log" ]; then
     wakes=$(awk -F'\t' -v t0="$(printf '%s' "$json" | jq -r '.period[0][0:19]')" \
@@ -53,11 +65,16 @@ print(count)
   else
     wakes="wake-ups (this repo): no watcher log yet"
   fi
-  printf '%s' "$json" | jq -r --argjson merged "$merged" --argjson ignored "$ignored" --argjson over "${over:-[]}" --arg wakes "$wakes" '
+  printf '%s' "$json" | jq -r --argjson merged "$merged" --argjson ignored "$ignored" --argjson over "${over:-[]}" --arg wakes "$wakes" \
+    --argjson wruns "${wruns:-[]}" --argjson whos "${whos:-[]}" '
     def usd: "$" + ((. * 100 | round) / 100 | tostring);
     def age:
       if . < 3600 then ((. / 60 | floor | tostring) + "m")
       else ((. / 3600 | floor | tostring) + "h" + (((. % 3600) / 60 | floor) | tostring) + "m") end;
+    def epoch: sub("\\.[0-9]+"; "") | sub("\\+00:00$"; "Z") | fromdateiso8601? // 0;
+    # the run a handoff or transcript belongs to: the latest run of its brief spawned by then
+    def owner($b; $t): [$wruns[] | select(.brief == $b and .spawned != null and .spawned <= $t)] | max_by(.spawned) | .run?;
+    def count(f): [.[] | select(f)] | length;
     def role(r): [.by_role | to_entries[] | select(.key == r or .key == (r + " > subagents")) | .value.usd] | add // 0;
     (role("orchestrator")) as $coord | (role("worker")) as $build
     | (if has("machine_peak_concurrent_sessions_10min") then "all projects" else "this repo" end) as $scope
@@ -93,5 +110,35 @@ print(count)
       "",
       "  Jarvis by model (for comparing coordinator configs):",
       ([.by_role_model[]? | select(.role == "orchestrator")] | sort_by(-.usd)[]
-        | "    \(.model): \(.turns) turns · \(.usd | usd) · $\((.usd / .turns * 1000 | round) / 1000)/turn · avg ctx \((.ctx / .turns / 1000) | round)k")'
+        | "    \(.model): \(.turns) turns · \(.usd | usd) · $\((.usd / .turns * 1000 | round) / 1000)/turn · avg ctx \((.ctx / .turns / 1000) | round)k"),
+      "",
+      "  Workers by agent/model (this repo, runs spawned in the window):",
+      ((.period[0] | epoch) as $t0 | (.period[1] | epoch) as $t1
+        | [$whos[] | . + {run: (if .t then owner(.brief; .t) else null end)}] as $hos
+        | [.workers[]? | . + {run: owner(.brief_path; (.start | epoch) + 60)}] as $wcs
+        | [$wruns[] | select(.spawned != null and .spawned >= $t0 and .spawned <= $t1)]
+        | if length == 0 then "    none" else
+          group_by([.agent, .model]) | map(
+            (map(.run)) as $ids
+            | [$hos[] | select(.run as $r | $ids | index([$r]))] as $h
+            | ($h | map(.run) | unique) as $done
+            | [.[] | select(.outcome != "" or (.run as $r | $done | index([$r])))] as $m
+            | [$wcs[] | select(.run as $r | $ids | index([$r]))] as $c
+            | ([.[] | select(.spawned != null and .ended != null) | .ended - .spawned] | sort) as $w
+            | (map(.brief) | unique | length) as $nb
+            | {agent: .[0].agent, model: .[0].model, runs: length, briefs: $nb, merged: ($h | map(.brief) | unique | length),
+               respawns: (if $nb > 0 then ((length - $nb) / $nb * 100 | round) / 100 else 0 end),
+               wall: (if ($w | length) == 0 then null else ($w | length) as $n
+                      | if $n % 2 == 1 then $w[($n - 1) / 2] else ($w[$n / 2 - 1] + $w[$n / 2]) / 2 end end),
+               budget: count(.budget),
+               clean: ($m | count(.outcome == "clean")), corrected: ($m | count(.outcome == "corrected")),
+               reasons: ([$m[] | select(.outcome == "corrected") | if .reason == "" then "?" else .reason end] | group_by(.) | map("\(.[0]) \(length)") | join(", ")),
+               escalated: ($m | count(.outcome == "escalated")), respawned: ($m | count(.outcome == "respawned")),
+               unrecorded: ($m | count(.outcome == "")),
+               done: ($h | count(.status == "done")), partial: ($h | count(.status == "partial")), blocked: ($h | count(.status == "blocked")),
+               usd: ($c | map(.usd) | add // 0), priced: ($c | map(.run) | unique | length)})
+          | sort_by(-.runs, .agent, .model)[]
+          | "    \(.agent) · \(.model): \(.runs) run\(if .runs == 1 then "" else "s" end) · \(.briefs) brief\(if .briefs == 1 then "" else "s" end), \(.merged) merged · respawns per brief \(.respawns) · median wall \(if .wall == null then "n/a" else (.wall | age) end) · hit budget \(.budget) · \(if .agent != "claude" then "n/a" elif .priced == 0 then "n/a (no transcripts)" elif .priced < .runs then "\(.usd | usd) (\(.priced)/\(.runs) runs priced)" else (.usd | usd) end)",
+            "      merges: clean \(.clean) · corrected \(.corrected)\(if .reasons != "" then " (\(.reasons))" else "" end) · escalated \(.escalated) · respawned \(.respawned) · unrecorded \(.unrecorded) · handoffs: done \(.done), partial \(.partial), blocked \(.blocked)"
+          end)'
 }

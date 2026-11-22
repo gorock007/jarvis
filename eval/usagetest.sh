@@ -33,6 +33,16 @@ repo=$(cd "$repo" && pwd -P)
   printf '# delta awaiting merge\nstatus: done\nbrief: handoffs/briefs/delta.md\n' > handoffs/delta-handoff.md
   printf 'brief: handoffs/briefs/gamma.md\nagent: claude\nmodel: claude-sonnet-4-6\nspawned: 1\nstate: lost\n' > handoffs/.jarvis/runs/gamma-run
   now=$(date +%s)
+  # Workers by agent/model: two claude runs of alpha (window, budget, outcome), a codex run with no
+  # handoff, an agy run, and gamma above, spawned long before the window
+  printf 'brief: handoffs/briefs/alpha.md\nagent: claude\nmodel: claude-sonnet-4-6\nspawned: %s\nended: %s\nstate: closed\nbudget: tests 7/6 1\n' \
+    "$((now - 51 * 60))" "$((now - 41 * 60))" > handoffs/.jarvis/runs/alpha-run1
+  printf 'brief: handoffs/briefs/alpha.md\nagent: claude\nmodel: claude-sonnet-4-6\nspawned: %s\nended: %s\nstate: merged\nmerge_outcome: corrected\nmerge_reason: checks\n' \
+    "$((now - 36 * 60))" "$((now - 16 * 60))" > handoffs/.jarvis/runs/alpha-run2
+  printf 'brief: handoffs/briefs/alpha.md\nagent: codex\nmodel: gpt-5.6-terra\nspawned: %s\nended: %s\nstate: closed\n' \
+    "$((now - 60 * 60))" "$((now - 55 * 60))" > handoffs/.jarvis/runs/alpha-codex
+  printf 'brief: handoffs/briefs/delta.md\nagent: agy\nmodel: gemini-4-neon-high\nspawned: %s\nstate: running\n' \
+    "$((now - 26 * 60))" > handoffs/.jarvis/runs/delta-run
   printf '{"five_hour":{"used_percentage":42},"seven_day":{"used_percentage":61},"ts":%s}\n' "$((now - 300))" > handoffs/.jarvis/usage.json
   git add -A && git commit -qm fixture
 )
@@ -155,6 +165,13 @@ printf '%s' "$out" | grep -q '^API-equivalent estimate at list prices (not your 
   && printf '%s' "$out" | grep -q 'Most expensive briefs:' \
   && printf '%s' "$out" | grep -q 'failed test runs (workers with 3+): alpha 3'; check "jarvis usage is the labelled one-screen report" $?
 printf '%s' "$out" | grep -q '^    wake-ups (this repo): no watcher log yet$'; check "jarvis usage says when there is no watcher log" $?
+printf '%s\n' "$out" | grep -q '^    claude · claude-sonnet-4-6: 2 runs · 1 brief, 1 merged · respawns per brief 1 · median wall 15m · hit budget 1 · \$[0-9.]*$' \
+  && printf '%s\n' "$out" | grep -A1 '^    claude · claude-sonnet-4-6:' | grep -q '^      merges: clean 0 · corrected 1 (checks 1) · escalated 0 · respawned 0 · unrecorded 0 · handoffs: done 1, partial 0, blocked 0$'
+check "workers by agent/model: window, respawns, median wall, budget, outcome reason, handoff status and priced cost" $?
+printf '%s\n' "$out" | grep -q '^    codex · gpt-5.6-terra: 1 run · 1 brief, 0 merged · respawns per brief 0 · median wall 5m · hit budget 0 · n/a$' \
+  && printf '%s\n' "$out" | grep -q '^    agy · gemini-4-neon-high: 1 run · 1 brief, 0 merged · respawns per brief 0 · median wall n/a · hit budget 0 · n/a$' \
+  && printf '%s\n' "$out" | awk '/Workers by agent\/model/ {f = 1} f && /^    [a-z]/ {n++} END {exit n != 3}'
+check "workers by agent/model keys on the plain agent string and prints n/a where it can't price" $?
 
 # two wakes in the window (one with two reasons), one older than the window
 in1=$(date -u +%Y-%m-%dT%H:%M:%SZ)
@@ -263,6 +280,15 @@ for state in empty missing; do
     && printf '%s' "$band_out" | grep -q 'the last reading is 313h09m old'
   check "usage and band fall back to the repo reading when the machine file is $state" $?
 done
+
+# A merged handoff whose run has no merge_outcome is unrecorded, never guessed.
+printf 'brief: handoffs/briefs/eta.md\nagent: codex\nmodel: gpt-5.6-terra\nspawned: %s\nended: %s\nstate: closed\n' \
+  "$(($(date +%s) - 20 * 60))" "$(($(date +%s) - 10 * 60))" > "$repo/handoffs/.jarvis/runs/eta-run"
+printf '# eta\nstatus: partial\nbrief: handoffs/briefs/eta.md\n' > "$repo/handoffs/merged/eta-handoff.md"
+out=$(cd "$repo" && HOME="$home" "$BASH" handoffs/bin/jarvis usage --days 2)
+printf '%s\n' "$out" | grep -q '^    codex · gpt-5.6-terra: 2 runs · 2 briefs, 1 merged · respawns per brief 0 · median wall 7m · hit budget 0 · n/a$' \
+  && printf '%s\n' "$out" | grep -A1 '^    codex · gpt-5.6-terra:' | grep -q '^      merges: clean 0 · corrected 0 · escalated 0 · respawned 0 · unrecorded 1 · handoffs: done 0, partial 1, blocked 0$'
+check "workers by agent/model counts a merge without --outcome as unrecorded" $?
 
 echo
 if [ "$fails" = 0 ]; then echo "usagetest: all passed"; else echo "usagetest: $fails failed"; exit 1; fi
