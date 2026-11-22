@@ -1,6 +1,6 @@
 ---
 name: setup
-description: Install or upgrade the Jarvis workflow in the current repo — a main agent ("Jarvis") the user talks to, which delegates building to worker agents (Claude Code, Codex, OpenCode or any agent CLI) on separate terminals — in Superset, Ultron or tmux — with usage-aware model routing (Claude Code opus/sonnet/haiku, Codex astra/sol/terra/luna, OpenCode free models; Fable only when the user authorizes one brief), machine-wide caps on concurrent Claude sessions, worker budgets, a shared-checkout worker contract, a handoff/OPEN.md system, and handoffs/bin/jarvis (spawn, status, merge, a model-free watcher, an idle-reload guard, usage reporting). Writes CLAUDE.md, AGENTS.md, handoffs/ and .claude/. Asks three questions (`advanced` asks all). Use whenever the user says "set up Jarvis", "add the Jarvis workflow", "update Jarvis in this repo", "make this repo use workers", "orchestrate with Superset terminals", "run workers in tmux", or wants one coordinating agent plus parallel workers. Needs a host for the workers: Superset, Ultron, or tmux anywhere else.
+description: Install or upgrade the Jarvis workflow in the current repo — a main agent ("Jarvis") the user talks to, which delegates building to worker agents (Claude Code, Codex, OpenCode, agy or any agent CLI) on separate terminals — in Superset, Ultron or tmux — with usage-aware model routing (Claude Code opus/sonnet/haiku, Codex astra/sol/terra/luna, OpenCode free models; Fable only when the user authorizes one brief), machine-wide caps on concurrent Claude sessions, worker budgets, a shared-checkout worker contract, a handoff/OPEN.md system, and handoffs/bin/jarvis (spawn, status, merge, a model-free watcher, an idle-reload guard, usage reporting). Writes CLAUDE.md, AGENTS.md, handoffs/ and .claude/. Asks three questions (`advanced` asks all). Use whenever the user says "set up Jarvis", "add the Jarvis workflow", "update Jarvis in this repo", "make this repo use workers", "orchestrate with Superset terminals", "run workers in tmux", or wants one coordinating agent plus parallel workers. Needs a host for the workers: Superset, Ultron, or tmux anywhere else.
 ---
 
 # jarvis:setup — install the Jarvis workflow into a repo
@@ -13,7 +13,7 @@ file:
   says who is who, points Jarvis at its files, and lists the checks. Keep it
   short. Measured worker sessions started at ~55k tokens, and the old,
   longer `CLAUDE.md` was 3k of that.
-- `AGENTS.md`: the worker contract, read natively by Codex and OpenCode and
+- `AGENTS.md`: the worker contract, read natively by Codex, OpenCode and agy and
   by Claude Code workers. It covers git rules, shared files, ask-once, one
   brief then hand off, and the handoff format.
 - `handoffs/JARVIS.md`: this project's rules for Jarvis. Only Jarvis reads
@@ -101,7 +101,7 @@ placeholders mean.
   `perl` is needed for `jarvis lock`: without it a wrapped heavy script
   refuses to run (exit 2), except on CI. Say what's missing.
 - Which agents exist: on Superset, `superset agents list --local`; on
-  Ultron, `ultron agent list`; on tmux, `command -v claude codex opencode`. The routing table sends media
+  Ultron, `ultron agent list`; on tmux, `command -v claude codex opencode agy`. The routing table sends media
   and computer-use work to Codex, and small fenced work to OpenCode's free
   models. If either is missing, keep the table, but say those rows won't
   work until it is installed, and that `sonnet`/`haiku` cover the OpenCode
@@ -132,7 +132,7 @@ the three questions, plus each default below as a question.
 2. **Claude sessions cap**: how many may run in this checkout at
    once, **Jarvis included**. Default 3 (Jarvis plus two workers). Spawn also
    enforces 4 machine-wide (every repo, the user's own sessions too) and 2 on
-   Opus; Codex and OpenCode don't count. Those two stay defaults in
+   Opus; Codex, OpenCode and agy don't count. Those two stay defaults in
    `jarvis.conf`.
 3. **Statusline tap**: the repo's statusline becomes `jarvis statusline`. It
    saves Claude Code's 5-hour reading, machine-wide, so the band (how much of
@@ -300,8 +300,8 @@ claude --model claude-opus-5-5 --effort high 'You are Jarvis. Use the jarvis:run
 ```
 
   Workers then open as windows in that tmux session (`prefix + w` lists
-  them). Spawn's launch script gives Codex and OpenCode workers turn events
-  there (a `codex()` wrapper, an OpenCode plugin), without touching their
+  them). Spawn's launch script gives Codex, OpenCode and agy workers turn events
+  there (a `codex()` wrapper, an OpenCode plugin, an `agy()` wrapper), without touching their
   config. On Ultron, from the repo root (Ultron's own Jarvis kit is a
   separate plugin; this starts the jarvis one):
 

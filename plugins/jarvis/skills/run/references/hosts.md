@@ -2,7 +2,7 @@
 
 Jarvis needs two things from wherever it runs: terminals it can start an
 agent in, and a way to read and type into them. That's the **host**. What
-runs inside each terminal is the **agent**: Claude Code, Codex, OpenCode, or
+runs inside each terminal is the **agent**: Claude Code, Codex, OpenCode, agy, or
 any other agent CLI. The two are independent, so any agent runs on any host.
 
 You never call a host directly. These commands work the same on every host:
@@ -84,6 +84,7 @@ flags Superset's presets launch with:
 JARVIS_AGENT_claude='claude --dangerously-skip-permissions ${JARVIS_MODEL:+--model "$JARVIS_MODEL"} ${JARVIS_EFFORT:+--effort "$JARVIS_EFFORT"} "$JARVIS_PROMPT"'
 JARVIS_AGENT_codex='codex --dangerously-bypass-approvals-and-sandbox --dangerously-bypass-hook-trust ${JARVIS_MODEL:+-m "$JARVIS_MODEL"} ${JARVIS_EFFORT:+-c model_reasoning_effort="$JARVIS_EFFORT"} -- "$JARVIS_PROMPT"'
 JARVIS_AGENT_opencode='opencode ${JARVIS_MODEL:+-m "$JARVIS_MODEL"} --prompt "$JARVIS_PROMPT"'
+JARVIS_AGENT_agy='agy --dangerously-skip-permissions ${JARVIS_MODEL:+--model "$JARVIS_MODEL"} ${JARVIS_EFFORT:+--effort "$JARVIS_EFFORT"} -i "$JARVIS_PROMPT"'
 ```
 
 These skip permission prompts (Claude) and the approval sandbox (Codex), as
@@ -104,13 +105,55 @@ The launch script for each worker is written to
 
 It also gives the worker its turn events (`references/lifecycle.md`, "Worker
 events"): `JARVIS_ROLE=worker`, `JARVIS_BRIEF` and `JARVIS_RUN` (the pane id)
-for Claude, Codex and OpenCode, a `codex()` function that adds per-run hooks,
-and for OpenCode a plugin (`OPENCODE_CONFIG_CONTENT`, unless you set it) and
-an `ended` event after it exits. The Codex hooks need
+for Claude, Codex, OpenCode and agy, a `codex()` function that adds per-run hooks,
+an `agy()` function (below), and for OpenCode a plugin (`OPENCODE_CONFIG_CONTENT`, unless you set it) and
+an `ended` event after it exits (agy too). The Codex hooks need
 `--dangerously-bypass-hook-trust` in the Codex line, as the built-in one has,
 and `codex` called by name, not through `exec` or an absolute path. Superset
 and Ultron launch Codex and OpenCode themselves, so those workers write no
-events there.
+events there. The same goes for agy on Superset.
+
+### agy (Antigravity CLI)
+
+The `-i` in the line keeps the session open: agy's own `--prompt` is print
+mode, one turn and exit. agy reads both `AGENTS.md` and `GEMINI.md` itself.
+On tmux the launch script defines an `agy()` function that adds two things
+for that run only, and writes nothing to the user's agy config:
+
+- **Hooks.** `--add-dir handoffs/.jarvis/launch/agy`, a folder holding
+  `.agents/hooks.json`. agy loads those hooks beside the user's own global
+  ones, and both fire. (`--settings` refuses a `hooks` key.) The events:
+  the first `PreInvocation` of a turn (`invocationNum` 0) → `working`,
+  since `PreInvocation` fires before every model call; `Stop` → `stop`,
+  with no detail; `ended` is written by the launch script after agy exits.
+  agy has no permission or session-end event.
+- **Folder trust.** `--settings '{"trustedWorkspaces":[…]}'` names the
+  checkout, so agy doesn't stop at "Do you trust the contents of this
+  project?" (it asks even with `--dangerously-skip-permissions`). It lasts
+  for the session; the user's settings file isn't changed.
+
+**Superset needs an agent config.** Superset's own `agy` preset runs
+`--mode accept-edits`, which auto-denies shell commands in unattended
+mode. So spawn refuses `worker: agy` on Superset until you add an agent
+config that runs agy with `--dangerously-skip-permissions` (or add the flag
+to the preset) and set `JARVIS_AGY_SUPERSET_AGENT=<its id, or agy>` in
+`jarvis.conf`. tmux needs none of this.
+
+**Effort.** agy refuses `--effort` beside a model id that already names one.
+A model id ending in `-low`, `-medium`, `-high`, `-xhigh` or `-max`
+(`gemini-4-neon-high`) carries the effort, and spawn drops the brief's
+`effort:`. With a bare id (`gemini-4-neon`) the brief's effort is passed as
+`--effort`.
+
+**Quota.** `agy -p /quota` prints the remaining Gemini quota (5-hour and
+weekly, with reset times) without a model call. Jarvis doesn't read it; it
+is for checking by hand.
+
+**Capacity errors.** agy can get `RESOURCE_EXHAUSTED` (code 429) from
+Google's servers even while `/quota` shows quota left. The worker then sits
+idle at its prompt, and `jarvis status` reads that screen as crashed. Treat
+it as a capacity problem, not a crash: retry later, or route the brief to
+another agent.
 
 ## Adding a host
 

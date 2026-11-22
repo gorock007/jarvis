@@ -227,6 +227,39 @@ babysitting costs more of your context than the Claude tokens you saved.
 Track this: if a kind of task keeps bouncing back from OpenCode, it belongs a
 tier up, and say so in `OPEN.md` so future sessions don't retry it.
 
+## 3c. agy — Gemini 4 Neon
+
+agy is Google's Antigravity CLI. A Neon worker runs on **Google quota**, so
+it costs nothing against Claude or Codex. That holds for every model agy
+runs, even a `claude-*` one: agy never counts toward the Claude caps.
+
+| Send it | Why |
+| --- | --- |
+| **Writing for people**: READMEs, release notes, copy, docs, posts. `gemini-4-neon-high`. | User ruling, 2026-11-22. |
+| **Overflow** in amber and red, next to Codex, when the Claude fleet is tight. | It spends no Claude quota. |
+| Long-context reading and synthesis: a **candidate**, not a rule. | Waiting on the model eval in `eval/models/`. |
+
+| Don't send it | Why |
+| --- | --- |
+| Text meant for agents: `SKILL.md`, `AGENTS.md`, brief templates | Stays on Claude until Neon is tested on it. |
+| Security work | Stays on Codex `gpt-5.6-sol`. |
+| Sole merge review | Not for Neon. |
+
+### Spawning
+
+Header `worker: agy`, and the prompt gets the same fence as OpenCode ("touch
+only the files it lists, never run git commands that change state").
+
+- **The model id carries the effort.** `gemini-4-neon-high` names `high`, so
+  spawn drops the brief's `effort:` (agy refuses both). With a bare
+  `gemini-4-neon`, the brief's effort is passed. The suffixes are `-low`,
+  `-medium`, `-high`, `-xhigh` and `-max`.
+- **Superset needs setup first** (`references/hosts.md`); tmux doesn't.
+- `agy -p /quota` shows what is left of the Gemini quota.
+- **A 429 isn't a crash.** Google can answer `RESOURCE_EXHAUSTED` (429) with
+  quota left; the worker idles at its prompt and `jarvis status` shows it as
+  crashed. Retry later or route the brief elsewhere.
+
 ## 4. The usage ladder
 
 Claude Code usage is shared across Jarvis and every Claude session on the
@@ -237,8 +270,8 @@ thresholds are in `handoffs/jarvis.conf`.
 | Band | Routing and caps |
 | --- | --- |
 | **Green: under `JARVIS_AMBER`% (50 by default), and not on pace to use the window** | The table above, unchanged. Light and trivial work still prefers OpenCode, because free work is free in every band. Caps by default (jarvis.conf): 4 machine-wide (Jarvis sessions not counted), 3 here, 2 Opus workers (section 5). |
-| **Amber: `JARVIS_AMBER`% and over, burning fast, a reading that is missing or stale, or 7-day at 80%+** | Caps drop to the amber values, by default (jarvis.conf) **3 machine-wide and 2 Opus workers** (Jarvis sessions not counted in either). Fable stays unavailable unless authorized, as in every band. Light and trivial tiers are unchanged. Jarvis keeps its model. |
-| **Red: `JARVIS_RED`% (75 by default) and over, about to run out, a usage-limit message in a worker, a failed Claude spawn, or 7-day at 95%+** | Caps drop to the red values, by default (jarvis.conf) **2 machine-wide and no new Opus**. New top-tier and workhorse briefs go to **Codex** (`gpt-6-astra` / `gpt-5.6-sol`). Claude Code is kept for Jarvis and for workers already in flight. Fable is refused even when authorized. Anything OpenCode can safely take, it takes. Tell the user plainly that you've moved the fleet and why. |
+| **Amber: `JARVIS_AMBER`% and over, burning fast, a reading that is missing or stale, or 7-day at 80%+** | Caps drop to the amber values, by default (jarvis.conf) **3 machine-wide and 2 Opus workers** (Jarvis sessions not counted in either). Fable stays unavailable unless authorized, as in every band. Light and trivial tiers are unchanged. agy `gemini-4-neon-high` is an overflow option beside Codex. Jarvis keeps its model. |
+| **Red: `JARVIS_RED`% (75 by default) and over, about to run out, a usage-limit message in a worker, a failed Claude spawn, or 7-day at 95%+** | Caps drop to the red values, by default (jarvis.conf) **2 machine-wide and no new Opus**. New top-tier and workhorse briefs go to **Codex** (`gpt-6-astra` / `gpt-5.6-sol`). Claude Code is kept for Jarvis and for workers already in flight. Fable is refused even when authorized. Anything OpenCode can safely take, it takes. agy `gemini-4-neon-high` is an overflow option beside Codex. Tell the user plainly that you've moved the fleet and why. |
 
 The band fails closed. **No reading, an unreadable one, or one older than
 `JARVIS_STALE_MIN` (30) minutes whose window hasn't reset reads as amber**,
@@ -332,7 +365,7 @@ repo's, never counts toward the machine-wide or Opus cap. A session idle for hou
 holds its slot for up to `JARVIS_PENDING_SEC` (180) while its session
 starts, and the count and claim happen under a machine-wide lease, so two
 repos spawning at once can't both take the last slot. A band never raises a
-cap the conf set lower. Codex and OpenCode workers don't count.
+cap the conf set lower. Codex, OpenCode and agy workers don't count.
 
 `handoffs/bin/jarvis sessions` lists the sessions that count (pid, why,
 model, project), the Jarvis and worker count from `OPEN.md`, and any idle
@@ -344,8 +377,8 @@ The cap is about the 5-hour window, not about any one task. Eleven sessions
 at once is how a window ran out in two and a half hours. At a cap, the
 refusal names the cap, its count and limit, and each session that holds a
 slot. The next brief either waits under **To-do**, or goes to the agent
-whose test it passes: OpenCode for fenced light or mechanical work, Codex
-for the rest (security first), or `model: sonnet` when it is the Opus cap.
+whose test it passes: OpenCode for fenced light or mechanical work, agy for
+writing, Codex for the rest (security first), or `model: sonnet` when it is the Opus cap.
 Don't kill running workers, and don't `--force` past a cap to go faster.
 `--force` does pass all three caps, never Fable, and writes a `cap-force`
 line to `handoffs/.jarvis/audit.log`: use it only when the user told you to
