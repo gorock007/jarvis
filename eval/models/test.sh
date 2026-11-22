@@ -70,8 +70,12 @@ prompt= prev= last=
 for a in "$@"; do [ "$prev" = -p ] && prompt=$a; prev=$a; done
 last=$prev
 log_call agy "$prompt" "$@"
-[ -n "$prompt" ] && [ "$last" = "$prompt" ] && echo yes > "$FAKE_LOG/agy.$(ls "$FAKE_LOG" | grep -c '^agy\..*\.args$').plast"
+n=$(ls "$FAKE_LOG" | grep -c '^agy\..*\.args$')
+ls -A > "$FAKE_LOG/agy.$n.ls"
+[ -n "$prompt" ] && [ "$last" = "$prompt" ] && echo yes > "$FAKE_LOG/agy.$n.plast"
 [ -n "$prompt" ] || { echo "agy: -p has no prompt" >&2; exit 3; }
+# a pointer to prompt.md: read it, as the real agy does with its file tool
+case "$prompt" in *prompt.md*) [ -f prompt.md ] && { cp prompt.md "$FAKE_LOG/agy.$n.file"; prompt=$(cat prompt.md); } ;; esac
 answer weak "$prompt"
 EOF
 cat > "$tmp/bin/codex" <<'EOF'
@@ -176,6 +180,53 @@ o=$(cd "$tmp" && "$sh" "$here/run.sh" "$ex" --models claude:claude-opus-5-5,agy:
 o=$(FAKE_WRITE=1 "$sh" "$here/run.sh" "$ex" --models claude:claude-opus-5-5 --only w1-release-note --out "$tmp/dirty" 2>&1)
 has "$o" "wrote files into its empty work dir" && jq -se '.[0].cwd_written' "$tmp/dirty/calls.jsonl" >/dev/null \
   && ok "a model that writes files is flagged" || bad "cwd_written" "$o"
+
+# agy prompts over EVAL_AGY_INLINE_MAX go as prompt.md in the work dir
+jq -se 'all(.delivery == "inline")' "$out/calls.jsonl" >/dev/null \
+  && ok "prompts under the agy threshold (default 150000 bytes) go inline; every call records delivery" || bad "default delivery"
+reset_log
+o=$(EVAL_AGY_INLINE_MAX=1000 "$sh" "$here/run.sh" "$ex" --models agy:gemini-4-neon-high,claude:claude-opus-5-5 --dry-run 2>&1)
+has "$o" "4 get the prompt as a file, being over 1000 bytes" && ok "dry run counts the agy calls that will get a file" || bad "dry-run file count" "$o"
+o=$(EVAL_AGY_INLINE_MAX=1000 "$sh" "$here/run.sh" "$ex" --models agy:gemini-4-neon-high,claude:claude-opus-5-5 --out "$tmp/file" 2>&1); rc=$?
+L="$tmp/file/calls.jsonl"
+if [ "$rc" = 0 ] && jq -se '
+     (map(select(.cli == "agy" and (.task | test("^[lr]")))) | length == 4 and all(.delivery == "file"))
+     and (map(select(.cli == "agy" and (.task | test("^w")))) | length == 2 and all(.delivery == "inline"))
+     and (map(select(.cli == "claude")) | all(.delivery == "inline"))
+     and all(.cwd_written == false) and all(.ok)' "$L" >/dev/null \
+   && ! has "$o" "wrote files"; then
+  ok "agy: a prompt over the threshold goes as a file, under it inline; claude stays inline; prompt.md is not flagged"
+else bad "file delivery ($rc)" "$o"$'\n'"$(cat "$L" 2>/dev/null)"; fi
+fileok=1 inlineok=1
+for f in "$FAKE_LOG"/agy.*.args; do
+  n=${f%.args}; n=${n##*.}
+  pr=$(cat "$FAKE_LOG/agy.$n.prompt")
+  if [ -f "$FAKE_LOG/agy.$n.file" ]; then
+    task=
+    for t in "$tmp/file/prompts"/*.txt; do cmp -s "$t" "$FAKE_LOG/agy.$n.file" && task=$t; done
+    { [ -n "$task" ] && [ "$(cat "$FAKE_LOG/agy.$n.ls")" = prompt.md ] && [ -f "$FAKE_LOG/agy.$n.plast" ] \
+      && has "$pr" "Read all of prompt.md" && ! has "$pr" "=== FILE" && [ "${#pr}" -lt 1000 ]; } || fileok=0
+  else
+    { [ -z "$(cat "$FAKE_LOG/agy.$n.ls")" ] && has "$pr" "You are being evaluated"; } || inlineok=0
+  fi
+done
+[ "$fileok" = 1 ] && [ "$(ls "$FAKE_LOG" | grep -c '^agy\..*\.file$')" = 4 ] \
+  && ok "agy file delivery: -p is a short pointer, the work dir holds only prompt.md, byte for byte the saved prompt" \
+  || bad "file delivery argv/cwd" "$(cat "$FAKE_LOG"/agy.1.args)"
+[ "$inlineok" = 1 ] && ok "agy inline delivery: whole prompt after -p, empty work dir" || bad "inline delivery argv/cwd"
+s=$("$sh" "$here/score.sh" "$tmp/file" 2>&1)
+has "$s" "longctx 60% (3/5)" && ok "an agy model that got its prompt as a file is scored on it" || bad "score after file delivery" "$s"
+o=$(FAKE_WRITE=1 EVAL_AGY_INLINE_MAX=1000 "$sh" "$here/run.sh" "$ex" --models agy:gemini-4-neon-high --only l2-changelog --out "$tmp/filedirty" 2>&1)
+has "$o" "wrote files into its empty work dir" && jq -se '.[0].delivery == "file" and .[0].cwd_written == true' "$tmp/filedirty/calls.jsonl" >/dev/null \
+  && ok "with file delivery, anything besides prompt.md is still flagged" || bad "file delivery dirty" "$o"
+o=$(EVAL_AGY_INLINE_MAX=lots "$sh" "$here/run.sh" "$ex" --dry-run 2>&1); rc=$?
+[ "$rc" = 2 ] && has "$o" "EVAL_AGY_INLINE_MAX wants a whole number" && ok "rejects a non-numeric EVAL_AGY_INLINE_MAX" || bad "bad threshold" "$o"
+
+# the token estimate: 2 bytes a token, below every measured Claude ratio (2.08 the lowest)
+o=$("$sh" -c '. "$1/lib.sh"; est_tokens 575000; echo; est_tokens 3; echo; est_tokens 0' _ "$here" 2>&1)
+[ "$o" = $'287500\n2\n0' ] && ok "est_tokens: bytes ÷ 2, rounded up, so dense input is not undershot" || bad "est_tokens" "$o"
+o=$("$sh" "$here/run.sh" "$ex" --dry-run 2>&1)
+has "$o" "l1-handbook  longctx  ≈1032 tokens in (2063 bytes" && ok "dry run shows the ÷ 2 estimate" || bad "dry-run estimate" "$o"
 
 reset_log
 o=$("$sh" "$here/run.sh" "$ex" --models claude:claude-opus-5-5,claude:claude-opus-5-5@high,claude:claude-opus-5-5@medium \

@@ -77,8 +77,10 @@ fixed format line:
   in your prompt.
 
 `run.sh` saves each prompt as `prompts/<task>.txt` in the output folder.
-`--dry-run` prints every prompt's size in tokens, estimated as bytes ÷ 3.5.
-That errs high on purpose.
+`--dry-run` prints every prompt's size in tokens, estimated as bytes ÷ 2.
+Claude calls measured 2.1 to 2.8 bytes a token (prose near the top,
+line-numbered code and large code corpora near the bottom), so the estimate
+errs high on purpose.
 
 ### Writing tasks
 
@@ -130,8 +132,15 @@ the prompt:
 - agy: `--sandbox`; codex: a read-only sandbox.
 
 If a model writes into its directory anyway, the call is flagged
-(`cwd_written` in `calls.jsonl`). agy takes the prompt as an argument, so a
-prompt over about 900 KB fails for agy alone.
+(`cwd_written` in `calls.jsonl`).
+
+agy cuts any single message at about 190 KB, so a prompt over 150000 bytes
+(`EVAL_AGY_INLINE_MAX` to change it) is not sent inline: `run.sh` writes it
+into the call's work dir as `prompt.md` and tells agy to read it in full with
+its file tool and follow the instructions at its end, the way an agy worker
+reads a repo. `delivery` in `calls.jsonl` says `inline` or `file` (claude and
+codex are always `inline`); the harness's own `prompt.md` does not count as the
+model writing files.
 
 ## Cost and limits
 

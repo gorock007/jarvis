@@ -50,9 +50,12 @@ expect_out_tokens() {
   case "$1" in writing) echo 4000 ;; review) echo 4000 ;; *) echo 2000 ;; esac
 }
 
-# Tokens estimated from bytes. 3.5 bytes a token is on the high side for English
-# and code, so the cost estimate errs upward.
-est_tokens() { awk -v b="$1" 'BEGIN { printf "%d", (b + 3.4) / 3.5 }'; }
+# Tokens estimated from bytes, at 2 bytes a token. Measured on Claude calls
+# (input tokens less the 800 of CLI overhead the cost estimate adds): about 2.6
+# bytes a token for prose, 2.1 to 2.8 for line-numbered code under review and
+# 2.09 for a large mixed markdown and code corpus. 2 is below all of them, so
+# the estimate errs upward; 3.5 had undershot dense input by a third.
+est_tokens() { awk -v b="$1" 'BEGIN { printf "%d", (b + 1) / 2 }'; }
 
 # est_usd <model> <in tokens> <out tokens>
 est_usd() {

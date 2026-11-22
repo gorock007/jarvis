@@ -53,6 +53,10 @@ case "$out" in /*) ;; *) out="$PWD/$out" ;; esac   # calls run from another dir
 
 # The model sees this as its system prompt (claude) and as the prompt's first line (all).
 PREAMBLE="You are being evaluated on a single task. Answer from this prompt alone: you have no tools, and no files beyond what is quoted here."
+# An agy prompt over this many bytes is passed as a file (see the agy call below).
+agy_inline_max=${EVAL_AGY_INLINE_MAX:-150000}
+case "$agy_inline_max" in ''|*[!0-9]*) die "EVAL_AGY_INLINE_MAX wants a whole number of bytes" ;; esac
+AGY_FILE_PROMPT="Your whole task is in the file prompt.md in the current directory; it is too long to send as a message. Read all of prompt.md with your file-view tool, every part of it if the tool returns it in pieces, then do what the instructions at its end ask. Answer from prompt.md alone and change no files."
 
 IFS=, read -r -a model_list <<< "$models"
 [ ${#model_list[@]} -gt 0 ] || die "--models is empty"
@@ -258,7 +262,7 @@ for j in "$work"/t/*.json; do
   done
 done
 ncalls=$(wc -l < "$work/plan" | tr -d ' ')
-n_claude=0 n_agy=0 n_codex=0 est_total=0 over_cap=
+n_claude=0 n_agy=0 n_agy_file=0 n_codex=0 est_total=0 over_cap=
 while IFS="$(printf '\t')" read -r name m; do
   parse_model "$m"
   case "$m_cli" in
@@ -268,12 +272,16 @@ while IFS="$(printf '\t')" read -r name m; do
       est_total=$(awk -v a="$est_total" -v b="$e" 'BEGIN { printf "%.4f", a + b }')
       gt "$e" "$max_usd" && over_cap="$over_cap  $name × $m: estimated \$$e passes the \$$max_usd per-call cap"$'\n'
       ;;
-    agy) n_agy=$((n_agy + 1)) ;;
+    agy)
+      n_agy=$((n_agy + 1))
+      [ "$(jq -r .prompt_bytes "$work/t/$name.json")" -gt "$agy_inline_max" ] && n_agy_file=$((n_agy_file + 1)) ;;
     codex) n_codex=$((n_codex + 1)) ;;
   esac
 done < "$work/plan"
 echo "$ncalls calls to make: claude $n_claude (estimated \$$est_total, cap \$$max_usd a call, prompt cache off)"
-echo "  agy $n_agy calls (each one request from the Google AI Pro daily pool) · codex $n_codex calls (ChatGPT plan)"
+agy_file_note=
+[ "$n_agy_file" = 0 ] || agy_file_note="; $n_agy_file get the prompt as a file, being over $agy_inline_max bytes"
+echo "  agy $n_agy calls (each one request from the Google AI Pro daily pool$agy_file_note) · codex $n_codex calls (ChatGPT plan)"
 for m in "${model_list[@]}"; do
   parse_model "$m"
   [ "$m_cli" = claude ] || continue
@@ -327,7 +335,7 @@ while IFS="$(printf '\t')" read -r name m <&3; do
   raw="$out/raw/$name/$m_slug.out" err="$out/raw/$name/$m_slug.err" ans="$work/answer"
   rm -f "$ans"
   cwd=$(mktemp -d "$work/cwd.XXXXXX")
-  e=null
+  e=null delivery=inline
   if [ "$m_cli" = claude ]; then
     e=$(est_usd "$m_model" "$((tok + 800))" "$(jq -r .output_tokens_est "$t")")
     if gt "$e" "$max_usd"; then
@@ -350,12 +358,23 @@ while IFS="$(printf '\t')" read -r name m <&3; do
         jq -r .result "$raw" > "$ans"
       fi ;;
     agy)
-      if [ "$(wc -c < "$p")" -gt 900000 ]; then
-        echo "prompt is over 900000 bytes, too long to pass to agy as an argument" > "$err"; rc=7
+      # agy cuts any one message at about 190 KB, so a long prompt goes into the
+      # work dir as prompt.md and the model reads it with its file tool, as an
+      # agy worker reads a repo.
+      pbytes=$(wc -c < "$p" | tr -d ' ')
+      if [ "$pbytes" -gt "$agy_inline_max" ]; then
+        delivery="file"
+        cp "$p" "$cwd/prompt.md"
+        msg="$AGY_FILE_PROMPT"
+      else
+        msg=$(cat "$p")
+      fi
+      if [ "$delivery" = inline ] && [ "$pbytes" -gt 900000 ]; then
+        echo "prompt is over 900000 bytes, too long to pass to agy as an argument; lower EVAL_AGY_INLINE_MAX" > "$err"; rc=7
       else
         ( cd "$cwd" && perl -e 'alarm shift; exec @ARGV' "$((timeout + 30))" \
             agy --print-timeout "${timeout}s" --model "$m_model" --sandbox --disable-slash-commands \
-            -p "$(cat "$p")" < /dev/null > "$raw" 2> "$err" )
+            -p "$msg" < /dev/null > "$raw" 2> "$err" )
         rc=$?
         [ "$rc" = 0 ] && grep -q '[^[:space:]]' "$raw" && cp "$raw" "$ans"
       fi ;;
@@ -371,6 +390,7 @@ while IFS="$(printf '\t')" read -r name m <&3; do
   esac
   secs=$(( $(date +%s) - started ))
   dirty=false
+  [ "$delivery" = inline ] || rm -f "$cwd/prompt.md"   # ours; anything else is the model's
   [ -z "$(ls -A "$cwd" 2>/dev/null)" ] || dirty=true
   rm -rf "$cwd"
   ok=false
@@ -383,11 +403,11 @@ while IFS="$(printf '\t')" read -r name m <&3; do
     [ -n "$usage" ] || usage='{}'
   fi
   jq -nc --arg task "$name" --arg kind "$kind" --arg model "$m" --arg cli "$m_cli" --argjson ok "$ok" --arg effort "$m_effort" \
-     --argjson rc "$rc" --argjson secs "$secs" --argjson tok "$tok" --argjson est "$e" --argjson dirty "$dirty" \
+     --argjson rc "$rc" --argjson secs "$secs" --argjson tok "$tok" --argjson est "$e" --argjson dirty "$dirty" --arg delivery "$delivery" \
      --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --argjson usage "$usage" '
     {at: $at, task: $task, kind: $kind, model: $model, cli: $cli, effort: (if $effort == "" then null else $effort end),
      ok: $ok, rc: $rc, seconds: $secs,
-     prompt_tokens_est: $tok, est_usd: $est, cwd_written: $dirty} + $usage' >> "$ledger"
+     prompt_tokens_est: $tok, est_usd: $est, delivery: $delivery, cwd_written: $dirty} + $usage' >> "$ledger"
   if [ "$ok" = true ]; then
     mv "$ans" "$out/answers/$name/$m_slug.txt"
     extra_note=
