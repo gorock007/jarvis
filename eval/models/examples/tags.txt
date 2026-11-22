@@ -1,0 +1,7 @@
+# Tags a judge may put on a draft in blind lineup mode, one per line.
+too long
+names the creator
+not personal
+sounds like AI/hype
+weak hook
+overclaims

@@ -1,0 +1,1 @@
+Error: E_CFG_7: cfg load fail (null) at /etc/quill/config.toml:12 -> unexpected token '=' expected ':' (strict mode)
