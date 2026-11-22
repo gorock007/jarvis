@@ -282,10 +282,10 @@ pending_put() { # $1 = opened, $2 = kinds, $3 = events, $4 = nojarvis; written t
 # jarvis close) don't count; a line with no run counts for none: "<t> <kind> <turn> <line>", where turn
 # is when its current turn began (its last working event, else the spawn) and line the
 # event's line number (with t, the dedup key). Empty: no events file, or an agent that
-# writes none (Claude does; Codex and OpenCode on tmux).
+# writes none (Claude does; Codex, OpenCode and agy on tmux).
 watch_event() { # $1 = run
   local brief f
-  case "$(run_get "$1" agent)" in claude|codex|opencode) ;; *) return 0 ;; esac
+  case "$(run_get "$1" agent)" in claude|codex|opencode|agy) ;; *) return 0 ;; esac
   brief=$(run_get "$1" brief)
   f="$STATE/events/$(basename "${brief:-@}" .md).jsonl"
   [ -n "$brief" ] && [ -f "$f" ] || return 0

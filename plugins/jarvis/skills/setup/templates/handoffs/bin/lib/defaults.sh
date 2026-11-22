@@ -1,7 +1,7 @@
 # shellcheck shell=bash
 # Sourced by bin/jarvis; not run on its own.
 # shellcheck disable=SC2034 # every setting here is read by bin/jarvis or another lib/*.sh
-JARVIS_MAX_CLAUDE=3      # Claude sessions at once in this checkout, Jarvis included; Codex/OpenCode don't count
+JARVIS_MAX_CLAUDE=3      # Claude sessions at once in this checkout, Jarvis included; Codex/OpenCode/agy don't count
 JARVIS_MAX_CLAUDE_GLOBAL=4  # active Claude sessions on the whole machine, any repo, the user's own included; Jarvis sessions don't count
 JARVIS_MAX_OPUS=2        # of those, Opus workers (or Fable, or a model that can't be told); Jarvis doesn't count
 JARVIS_AMBER_GLOBAL=3    # the machine-wide cap in the amber band (Jarvis sessions don't count)
@@ -38,6 +38,7 @@ JARVIS_STOP_GRACE=10     # seconds merge/close wait for a closed worker's termin
 JARVIS_HOST=""           # superset | ultron | tmux | <name> with handoffs/bin/hosts/<name>.sh; empty = detect
 JARVIS_FABLE_TTL_MIN=120 # minutes a `jarvis fable allow` stays usable
 JARVIS_FABLE_SUPERSET_AGENT=""  # a Superset agent config id that lifts the backstop; empty = no Fable on Superset
+JARVIS_AGY_SUPERSET_AGENT=""    # a Superset agent config id (or preset) that runs agy with --dangerously-skip-permissions; empty = no agy on Superset
 # How a terminal host that isn't an agent launcher itself (tmux) starts each worker:
 # a sh command line reading $JARVIS_MODEL, $JARVIS_EFFORT and $JARVIS_PROMPT from its
 # environment. The flags are the ones Superset's agent presets launch with, so a
@@ -48,3 +49,6 @@ JARVIS_AGENT_claude='claude --dangerously-skip-permissions ${JARVIS_MODEL:+--mod
 JARVIS_AGENT_codex='codex --dangerously-bypass-approvals-and-sandbox --dangerously-bypass-hook-trust ${JARVIS_MODEL:+-m "$JARVIS_MODEL"} ${JARVIS_EFFORT:+-c model_reasoning_effort="$JARVIS_EFFORT"} -- "$JARVIS_PROMPT"'
 # shellcheck disable=SC2016,SC2034
 JARVIS_AGENT_opencode='opencode ${JARVIS_MODEL:+-m "$JARVIS_MODEL"} --prompt "$JARVIS_PROMPT"'
+# Antigravity CLI: -i keeps the session open (its --prompt is print mode, one turn, then exit)
+# shellcheck disable=SC2016,SC2034
+JARVIS_AGENT_agy='agy --dangerously-skip-permissions ${JARVIS_MODEL:+--model "$JARVIS_MODEL"} ${JARVIS_EFFORT:+--effort "$JARVIS_EFFORT"} -i "$JARVIS_PROMPT"'

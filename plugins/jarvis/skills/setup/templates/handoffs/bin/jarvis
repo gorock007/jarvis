@@ -70,7 +70,7 @@
 #                                      audited; --quiet: one line or nothing
 #
 # Workers run on a host: Superset, Ultron, tmux, or one added in handoffs/bin/hosts/ (see
-# lib/hosts.sh). The agent in each terminal is any CLI: claude, codex, opencode, or one
+# lib/hosts.sh). The agent in each terminal is any CLI: claude, codex, opencode, agy, or one
 # added as JARVIS_AGENT_<name> in jarvis.conf.
 # Settings live in handoffs/jarvis.conf. Works on the stock macOS bash (3.2).
 # jq is needed for spawn, the hooks and the band. Without it spawn refuses and the band
@@ -93,7 +93,7 @@ if [ "${1:-} ${2:-}" = "hook pretool" ]; then
   esac
 fi
 
-# the turn hooks of Claude Code, Codex and OpenCode workers: lib/event-hook.sh, before config and host; silent, exit 0
+# the turn hooks of Claude Code, Codex, OpenCode and agy workers: lib/event-hook.sh, before config and host; silent, exit 0
 # shellcheck disable=SC1091
 [ "${1:-} ${2:-}" = "hook event" ] && { [ -r "$JARVIS_LIB/event-hook.sh" ] && . "$JARVIS_LIB/event-hook.sh"; exit 0; }
 

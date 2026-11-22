@@ -201,7 +201,7 @@ fable_final() {
 
 under_agent() { # prints why, when an agent CLI runs this: its variables, or one among the parent processes
   local v c p
-  for v in CLAUDECODE CLAUDE_CODE_SESSION_ID CLAUDE_CODE_ENTRYPOINT CLAUDE_PID OPENCODE; do
+  for v in CLAUDECODE CLAUDE_CODE_SESSION_ID CLAUDE_CODE_ENTRYPOINT CLAUDE_PID OPENCODE ANTIGRAVITY_AGENT; do
     eval "c=\${$v:-}"
     [ -z "$c" ] || { echo "$v is set, so this runs inside an agent"; return 0; }
   done
@@ -211,7 +211,7 @@ under_agent() { # prints why, when an agent CLI runs this: its variables, or one
   for p in $(ancestors); do
     c=$(ps -ww -o command= -p "$p" 2>/dev/null)
     printf '%s\n' "$c" | awk '{ a = $1; sub(/.*\//, "", a); sub(/\.(js|mjs|cjs|exe)$/, "", a)
-        if (a ~ /^(claude|codex|opencode)$/ || $1 ~ /\/claude\/versions\// \
+        if (a ~ /^(claude|codex|opencode|agy)$/ || $1 ~ /\/claude\/versions\// \
             || (a ~ /^(node|bun|deno)$/ && $2 ~ /(claude|codex|opencode)/)) f = 1 }
       END { exit !f }' && { echo "an agent is among this command's parent processes (pid $p: $(printf '%s' "$c" | cut -c1-60))"; return 0; }
   done

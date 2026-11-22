@@ -26,7 +26,7 @@ tmux_spawn() {
     # a worker's hooks write its events (jarvis hook event) under its brief, signed with
     # its run: the pane id, which tmux gives the window as $TMUX_PANE and spawn as the id
     # shellcheck disable=SC2016
-    case "$agent" in claude|codex|opencode) [ -n "${SPAWN_BRIEF:-}" ] \
+    case "$agent" in claude|codex|opencode|agy) [ -n "${SPAWN_BRIEF:-}" ] \
       && echo "export JARVIS_ROLE=worker JARVIS_BRIEF='$(printf '%s' "$SPAWN_BRIEF" | sed "s/'/'\\\\''/g")'" \
       && echo 'export JARVIS_RUN="${TMUX_PANE:-}"' ;; esac
     tmux_event_lines "$agent"
@@ -34,8 +34,8 @@ tmux_spawn() {
     echo "$cmd"
     # shellcheck disable=SC2016
     echo 's=$?; printf "\n[jarvis] %s exited (%s). Its window stays open until jarvis merge or close.\n" "$JARVIS_AGENT" "$s"'
-    # OpenCode has no session-end event a plugin can rely on: its exit is the end
-    [ "$agent" = opencode ] && [ -n "${SPAWN_BRIEF:-}" ] && echo "$(tmux_sq "$ROOT/$BIN/jarvis") hook event ended </dev/null"
+    # OpenCode and agy have no session-end event a hook can rely on: their exit is the end
+    case "$agent" in opencode|agy) [ -n "${SPAWN_BRIEF:-}" ] && echo "$(tmux_sq "$ROOT/$BIN/jarvis") hook event ended </dev/null" ;; esac
     echo "exec tail -f /dev/null"
   } > "$launch"
   id=$(tmux new-window -d -P -F '#{pane_id}' -t "$sess:" -n "$name" -c "$ROOT" \
@@ -60,9 +60,13 @@ url_path() { # a file path as a URL's path: % first; # and ? would end it, \ rea
 #   JARVIS_AGENT_codex passes; a line without it keeps the screen path.
 # - opencode: a plugin, handoffs/.jarvis/launch/opencode-events.js, added through
 #   OPENCODE_CONFIG_CONTENT (its plugin list adds to the user's); none if that's set.
+# - agy: an agy() wrapper adds --add-dir handoffs/.jarvis/launch/agy, whose
+#   .agents/hooks.json agy loads beside the user's own hooks (PreInvocation of a turn's
+#   first model call → working, Stop → stop), and --settings trusting the checkout for
+#   this session only, so its "Do you trust this folder?" screen never comes up.
 # Superset and Ultron launch these agents themselves: the screen path stays.
 tmux_event_lines() { # $1 = agent
-  local j e c v
+  local j e c v d
   [ -n "${SPAWN_BRIEF:-}" ] || return 0
   j=$(tmux_sq "$ROOT/$BIN/jarvis")
   case "$1" in
@@ -82,7 +86,28 @@ tmux_event_lines() { # $1 = agent
       fi
       c=$(printf 'file://%s' "$(url_path "$ROOT/$STATE/launch/opencode-events.js")" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g')   # a JSON string
       echo "[ -n \"\${OPENCODE_CONFIG_CONTENT:-}\" ] || export OPENCODE_CONFIG_CONTENT=$(tmux_sq "{\"plugin\":[\"$c\"]}")" ;;
+    agy)
+      d="$ROOT/$STATE/launch/agy"
+      mkdir -p "$d/.agents" || return 0
+      if ! { tmux_agy_hooks "$j" > "$d/.agents/.hooks.$$" && mv "$d/.agents/.hooks.$$" "$d/.agents/hooks.json"; }; then
+        rm -f "$d/.agents/.hooks.$$"; return 0
+      fi
+      c=$(printf '%s' "$ROOT" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g')   # a JSON string
+      v=$(printf '%s' "$ROOTP" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g')
+      [ "$v" = "$c" ] || c="$c\",\"$v"
+      # shellcheck disable=SC2016
+      echo "agy() { command agy --add-dir $(tmux_sq "$d") --settings $(tmux_sq "{\"trustedWorkspaces\":[\"$c\"]}") \"\$@\"; }" ;;
   esac
+}
+
+# agy's hooks for a worker: PreInvocation runs before every model call, so only a turn's
+# first (invocationNum 0, which protojson may leave out) is working; Stop ends the turn.
+# The commands run in the .agents folder, inside the checkout. $1 = jarvis, quoted for sh.
+tmux_agy_hooks() {
+  local w s
+  w=$(printf '%s' "grep -Eq '\"invocationNum\"[[:space:]]*:[[:space:]]*[1-9]' || $1 hook event working </dev/null" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g')
+  s=$(printf '%s hook event stop' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g')
+  printf '{"jarvis-events": {\n  "PreInvocation": [{"type": "command", "command": "%s", "timeout": 10}],\n  "Stop": [{"type": "command", "command": "%s", "timeout": 10}]\n}}\n' "$w" "$s"
 }
 
 # The OpenCode plugin: the root session's busy → working, busy to idle → stop,

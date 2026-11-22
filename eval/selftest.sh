@@ -800,7 +800,7 @@ $trust"
       ! grep -q 'mid-turn\|Finish the phase' "$FAKE_LOG"; check "…a handoff written this turn: no busy stall" $?
       ev_setup claude; ev_tick frozen; ev_age $(( $(date +%s) - 120 )) handoffs/.jarvis/screen-ev; ev_tick frozen
       ev_nudge && ev_src nudge:screen; check "events: no events file: today's screen check" $?
-      for a in codex opencode; do
+      for a in codex opencode agy; do
         ev_setup $a; ev_at 30 working; ev_at 0 ended; ev_tick
         ev_woke 'ended without a handoff' && ev_src ended:event; check "events: a $a run's events are read too (tmux writes them)" $?
         ev_setup $a; ev_at 180 working; ev_at 120 stop; ev_frozen; ev_tick; ev_nudge && ev_src nudge:event; check "…its stop drives the stall path" $?
@@ -849,6 +849,27 @@ $trust"
       printf '# Only ignored\nstatus: done\nagent: codex x\n## Files\n- handoffs/note.txt — created\n' > handoffs/hj.md
       $J merge handoffs/hj.md --no-push >/dev/null 2>&1; [ $? != 0 ] && [ "$(git rev-parse HEAD)" = "$head" ] && [ -f handoffs/hj.md ]
       check "…and dies without committing (or moving the handoff) when every path is ignored" $?
+    )
+
+    # agy on Superset: the stock preset asks before every command, so spawn needs a config;
+    # a model id that names its effort takes no --effort (agy refuses a different one)
+    (
+      mkdir -p "$tmp/agy-ss" && cd "$tmp/agy-ss" || exit 1
+      export FAKE_LOG="$tmp/agy-ss.log"
+      git init -q; cp -R "$tpl/handoffs" .; sed -e 's/{{MAX_CLAUDE}}/3/' -e 's/{{AMBER}}/50/' -e 's/{{RED}}/75/' "$tpl/handoffs/jarvis.conf" > handoffs/jarvis.conf
+      echo a > a.txt; git add -A; git commit -qm init; $J start >/dev/null
+      mk g1 agy gemini-4-neon-high high; mk g2 agy gemini-4-neon medium
+      out=$($J spawn handoffs/briefs/g1.md 2>&1); [ $? != 0 ] && printf '%s' "$out" | grep -q 'no agy worker on Superset: its Antigravity preset' \
+        && ! grep -q 'agents create' "$FAKE_LOG"; check "agy on Superset: refused without JARVIS_AGY_SUPERSET_AGENT, nothing launched" $?
+      echo 'JARVIS_AGY_SUPERSET_AGENT=agy-skip' >> handoffs/jarvis.conf
+      $J spawn handoffs/briefs/g1.md >/dev/null 2>&1 && grep 'agents create' "$FAKE_LOG" | grep -q -- '--agent agy-skip .*--model gemini-4-neon-high' \
+        && ! grep 'agents create' "$FAKE_LOG" | grep -q -- '--effort'; check "…with it: that config, the model, and no --effort beside a model id that names one" $?
+      grep 'agents create' "$FAKE_LOG" | grep -q 'Touch only the files it lists. Never run git commands that change state.'; check "…and agy's prompt carries the contract line" $?
+      : > "$FAKE_LOG"; $J spawn handoffs/briefs/g2.md >/dev/null 2>&1 && grep 'agents create' "$FAKE_LOG" | grep -q -- '--model gemini-4-neon --effort medium'
+      check "…a model id without one gets the brief's effort" $?
+      echo g > g.txt; printf '# G\nstatus: done\nagent: agy gemini-4-neon-high\nbrief: handoffs/briefs/g1.md\n## Files\n- g.txt — created\n' > handoffs/hg.md
+      $J merge handoffs/hg.md --no-push >/dev/null 2>&1 && git log -1 --format=%B | grep -qx 'Co-Authored-By: Antigravity <gemini-4-neon-high> worker'
+      check "merge: an agy handoff gets the Antigravity worker trailer" $?
     )
 
     mk b7 opencode "" ""; $J spawn handoffs/briefs/b7.md >/dev/null 2>&1
@@ -1464,7 +1485,7 @@ if command -v tmux >/dev/null 2>&1 && command -v jq >/dev/null 2>&1; then
     # run anything but the stand-in, so a real agent never starts here.
     fb="$tmp/tb-bin"; mkdir -p "$fb"
     # shellcheck disable=SC2016
-    for a in codex opencode; do
+    for a in codex opencode agy; do
       printf 'JARVIS_AGENT_%s='"'"'export PATH="%s:$PATH"; [ -x "%s/%s" ] && %s'"'"'\n' \
         "$a" "$fb" "$fb" "$a" "$(sed -n "s/^JARVIS_AGENT_$a='\\(.*\\)'\$/\\1/p" "$tpl/handoffs/bin/lib/defaults.sh")"
     done >> handoffs/jarvis.conf
@@ -1531,10 +1552,39 @@ EOF
       [ -n "$to" ] && poll oc_done && shows_t "$to" '^fake opencode plugin: on' \
         && [ "$(jq -r .run "handoffs/.jarvis/events/2026-10-20-1200-to.jsonl" | sort -u)" = "$to" ]
       check "…the plugin maps busy, idle, permission and question (a subagent's ignored) and the exit is ended" $?
-      ! grep -q 'export JARVIS_ROLE\|OPENCODE_CONFIG_CONTENT\|^codex()' handoffs/.jarvis/launch/tw.sh; check "…another agent gets neither" $?
+      ! grep -q 'export JARVIS_ROLE\|OPENCODE_CONFIG_CONTENT\|^codex()\|^agy()' handoffs/.jarvis/launch/tw.sh; check "…another agent gets none of them" $?
     else
       echo "  (OpenCode plugin checks skipped: no node)"
     fi
+    # fake agy: runs the hooks.json in its --add-dir folder's .agents/ as agy does (sh -c,
+    # in that folder, the payload on stdin): a turn's first model call, the next, the stop
+    # shellcheck disable=SC2016
+    sed "s#@HERE@#$here#" > "$fb/agy" <<'EOF'
+#!/bin/sh
+d=""; s=""; f=""
+while [ $# -gt 0 ]; do
+  case "$1" in --add-dir) d=$2; shift ;; --settings) s=$2; shift ;; -i|--dangerously-skip-permissions) f="$f $1" ;; esac
+  shift
+done
+h="$d/.agents/hooks.json"
+echo "fake agy hooks: $(jq -r '[.[] | keys[]] | sort | join(" ")' "$h") |$f | trust=$(printf '%s' "$s" | jq -r '.trustedWorkspaces | join(",")')"
+run() { jq -r --arg e "$1" '.[][$e][]?.command' "$h" | while IFS= read -r c; do (cd "$d/.agents" && sh -c "$c" < "@HERE@/hook-payloads/agy-$2.json"); done; }
+run PreInvocation pre-invocation; sleep 0.3; run PreInvocation pre-invocation-next; sleep 0.3; run Stop stop
+echo "fake agy done"
+EOF
+    chmod +x "$fb/agy"
+    printf '# a\nworker: agy\nmodel: gemini-4-neon-high\neffort: high\nstarted: <x>\n' > handoffs/briefs/2026-10-20-1200-ta.md
+    ta=$(JARVIS_HOME="$tmp/jh-ta" T spawn handoffs/briefs/2026-10-20-1200-ta.md 2>/dev/null | sed -n 's/^spawned \([^ ]*\) .*/\1/p')
+    grep -qx "export JARVIS_ROLE=worker JARVIS_BRIEF='handoffs/briefs/2026-10-20-1200-ta.md'" handoffs/.jarvis/launch/ta.sh \
+      && grep -qF "agy() { command agy --add-dir '$(pwd -P)/handoffs/.jarvis/launch/agy' --settings '{\"trustedWorkspaces\":[\"" handoffs/.jarvis/launch/ta.sh \
+      && jq -e '."jarvis-events" | has("PreInvocation") and has("Stop")' handoffs/.jarvis/launch/agy/.agents/hooks.json >/dev/null \
+      && grep -q "jarvis' hook event ended </dev/null$" handoffs/.jarvis/launch/ta.sh
+    check "spawn on tmux: an agy worker's launch script sets its role, wraps agy with --add-dir hooks and session-only trust, then ended" $?
+    ta_done() { [ "$(evs 2026-10-20-1200-ta)" = 'working: stop: ended: ' ]; }
+    [ -n "$ta" ] && poll ta_done && shows_t "$ta" "^fake agy hooks: PreInvocation Stop | --dangerously-skip-permissions -i | trust=.*$(pwd -P)" \
+      && [ "$(jq -r .run "handoffs/.jarvis/events/2026-10-20-1200-ta.jsonl" | sort -u)" = "$ta" ] && grep -qx 'effort: -' "handoffs/.jarvis/runs/$ta"
+    rc=$?; check "…its hooks reach jarvis hook event with agy's payloads: working once a turn, stop, then ended; no effort beside -high" $rc
+    [ $rc = 0 ] || { [ -n "$ta" ] && T read "$ta" 40 | sed 's/^/        | /'; echo "        events: $(evs 2026-10-20-1200-ta)"; grep '^agy()' handoffs/.jarvis/launch/ta.sh | sed 's/^/        launch: /'; }
     tmux -L "$sock" kill-server
     rm -f "${tenv%%,*}"
   ) | tee "$tmp/tmux.out"

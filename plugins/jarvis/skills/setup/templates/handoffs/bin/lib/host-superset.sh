@@ -2,6 +2,8 @@
 # Sourced by bin/jarvis; not run on its own.
 superset_self() { printf '%s' "${SUPERSET_TERMINAL_ID:-}"; }
 
+AGY_SUPERSET_MSG="no agy worker on Superset: its Antigravity preset (--mode accept-edits) asks before every shell command. Add an agy agent config with --dangerously-skip-permissions in Superset's agent settings (or add the flag to the preset), then set JARVIS_AGY_SUPERSET_AGENT=<its id, or agy> in $H/jarvis.conf — or spawn it on tmux"
+
 superset_spawn() {
   local agent=$1 model=$2 effort=$3 prompt=$4 a out
   shift 5
@@ -12,6 +14,12 @@ superset_spawn() {
   if [ "${FABLE_LIFT:-0}" = 1 ] && [ "$agent" = claude ]; then
     [ -n "$JARVIS_FABLE_SUPERSET_AGENT" ] || { echo "$FABLE_SUPERSET_MSG" >&2; return 1; }
     agent=$JARVIS_FABLE_SUPERSET_AGENT
+  fi
+  # Superset's agy preset runs --mode accept-edits, which stops at every shell command for
+  # approval: an agy worker needs an agent config that skips permissions
+  if [ "$agent" = agy ]; then
+    [ -n "$JARVIS_AGY_SUPERSET_AGENT" ] || { echo "$AGY_SUPERSET_MSG" >&2; return 1; }
+    agent=$JARVIS_AGY_SUPERSET_AGENT
   fi
   set -- "$@" --workspace "$WS" --agent "$agent" --prompt "$prompt" --json
   case "$model" in ""|\<*) ;; *) set -- "$@" --model "$model" ;; esac

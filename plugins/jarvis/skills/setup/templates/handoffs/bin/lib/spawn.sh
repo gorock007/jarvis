@@ -36,12 +36,15 @@ cmd_spawn() {
   model=$(field model "$brief" | awk '{print $1}')
   effort=$(field effort "$brief" | awk '{print $1}')
   case "$worker" in
-    ""|\<*|*[!a-z0-9_]*) die "brief header needs worker: claude | codex | opencode | another agent the host knows" ;;
+    ""|\<*|*[!a-z0-9_]*) die "brief header needs worker: claude | codex | opencode | agy | another agent the host knows" ;;
   esac
   case "$model" in \<*) model="" ;; esac
   case "$effort" in \<*) effort="" ;; esac
   case "$worker" in claude|codex) [ -n "$model" ] || die "brief header needs a model" ;; esac
   [ "$worker" = opencode ] && effort=""
+  # agy: a model id that ends in its effort (gemini-4-neon-high) is the effort; agy refuses a
+  # different --effort beside it, so effort: counts only for an id without one
+  [ "$worker" = agy ] && case "$model" in *-low|*-medium|*-high|*-xhigh|*-max) effort="" ;; esac
   # the tier goes by the model's canonical name, so no alias skips the band checks;
   # a Claude model that can't be named is refused (it might resolve to Fable), and any
   # worker whose model names fable goes through every Fable check
@@ -71,7 +74,7 @@ cmd_spawn() {
 
   prompt="You are a Jarvis worker. Read AGENTS.md, then do the task in $brief."
   [ -n "$after" ] && prompt="$prompt $after records what is already done — start from there."
-  [ "$worker" = opencode ] && prompt="$prompt Touch only the files it lists. Never run git commands that change state."
+  case "$worker" in opencode|agy) prompt="$prompt Touch only the files it lists. Never run git commands that change state." ;; esac
   prompt="$prompt Put every question in one first handoff (status: blocked); once answered, finish this brief and hand off."
 
   # the brief's slug names the terminal: 2026-10-20-1030-fix-login.md → fix-login

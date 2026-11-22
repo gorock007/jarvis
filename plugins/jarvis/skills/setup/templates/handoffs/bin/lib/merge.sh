@@ -154,6 +154,7 @@ cmd_merge() {
     claude*) trailer="Co-Authored-By: Claude Code <$(printf '%s' "$agent" | awk '{print $2}')> worker" ;;
     codex*) trailer="Co-Authored-By: Codex <$(printf '%s' "$agent" | awk '{print $2}')> worker" ;;
     opencode*) trailer="Co-Authored-By: OpenCode <$(printf '%s' "$agent" | awk '{print $2}')> worker" ;;
+    agy*) trailer="Co-Authored-By: Antigravity <$(printf '%s' "$agent" | awk '{print $2}')> worker" ;;
   esac
   if [ -n "$trailer" ]; then
     git commit -q -m "$msg" -m "$trailer" -- "$@" || die "commit failed"

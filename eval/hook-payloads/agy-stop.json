@@ -1,0 +1,18 @@
+{
+  "artifactDirectoryPath": "/path/to/home/.gemini/antigravity-cli/brain/00000000-0000-0000-0000-000000000000",
+  "continuationActive": false,
+  "conversationId": "00000000-0000-0000-0000-000000000000",
+  "cwd": "/path/to/repo",
+  "error": "",
+  "executionNum": 0,
+  "fullyIdle": true,
+  "hookEventName": "Stop",
+  "lastUserInput": "You are a Jarvis worker. Read AGENTS.md, then do the task in handoffs/briefs/x.md.",
+  "modelName": "gemini-4-neon-low",
+  "terminationReason": "NO_TOOL_CALL",
+  "transcriptPath": "/path/to/home/.gemini/antigravity-cli/brain/00000000-0000-0000-0000-000000000000/.system_generated/logs/transcript_full.jsonl",
+  "workspacePaths": [
+    "/path/to/repo",
+    "/path/to/repo/handoffs/.jarvis/launch/agy"
+  ]
+}
