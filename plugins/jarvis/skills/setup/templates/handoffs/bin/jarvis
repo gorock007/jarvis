@@ -3,6 +3,9 @@
 # coordinator spends its turns on judgement instead of bookkeeping.
 #
 #   jarvis start                       claim this terminal as Jarvis in OPEN.md, then status
+#   jarvis lead [--print] [--force]    (the user) start Jarvis on agy in this terminal, when
+#                                      jarvis.conf sets JARVIS_LEAD_AGENT=agy: its hooks, trust
+#                                      for the session, its model and the start prompt
 #   jarvis status                      band, workers, new handoffs, git — one short screen
 #   jarvis spawn <brief.md> [--after <partial-handoff>] [--attach <file>]... [--force]
 #                                      lint, enforce the band and the Claude caps (machine-wide,
@@ -54,6 +57,7 @@
 #                                      coordinating vs building, from local transcripts
 #   jarvis hook prompt                 UserPromptSubmit guard (from .claude/settings.json)
 #   jarvis hook pretool                PreToolUse guard: no Fable subagent, no Fable in a settings allowlist
+#   jarvis hook lead working|stop      an agy Jarvis's own hooks (jarvis lead): its idle time, a 429
 #   jarvis fable allow <brief.md>      (the user, in their own terminal) let that brief's next spawn run on Fable
 #   jarvis fable list | revoke <brief.md>
 #                                      authorizations pending, used and expired, and the log tail
@@ -196,6 +200,7 @@ cmd="${1:-}"
 # shellcheck disable=SC2154 # scope, cap: set by lock_class in lib/lock.sh
 case "$cmd" in
   start) cmd_start "$@" ;;
+  lead) cmd_lead "$@" ;;
   status) cmd_status ;;
   log) cmd_log "$@" ;;
   lessons) exec python3 -I "$BIN/jarvis-lessons.py" "$@" ;;
@@ -227,6 +232,7 @@ case "$cmd" in
     case "${1:-}" in
       prompt) hook_prompt ;;
       pretool) hook_pretool ;;
+      lead) hook_lead "${2:-}" ;;
       *) exit 0 ;;
     esac ;;
   *) awk 'NR > 1 && !/^#/ {exit} NR > 1 {sub(/^# ?/, ""); print}' "$0"; exit 2 ;;

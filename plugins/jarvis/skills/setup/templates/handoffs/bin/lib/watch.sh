@@ -1,6 +1,11 @@
 # shellcheck shell=bash
 # Sourced by bin/jarvis; not run on its own.
 LIMIT_RE="(usage|rate|session|weekly|daily|hourly|5-hour) limit (was |has been )?(reached|exceeded|hit)|(hit|reached|exceeded) (your|the) [a-z0-9 -]*limit|limit reached|quota (was |has been )?(exceeded|exhausted)|out of credits|too many requests"
+# An agy Jarvis's 429, as its screen shows it (a line quoting it in backticks is text, not
+# the error) and as its Stop hook's error field carries it
+LEAD_SCREEN_LIMIT_RE='RESOURCE_EXHAUSTED[[:space:]]*\(code 429\)'
+# shellcheck disable=SC2034 # read by hook_lead in lib/hooks.sh
+LEAD_HOOK_LIMIT_RE='RESOURCE_EXHAUSTED|(^|[^0-9])429([^0-9]|$)'
 # A worker sitting at a trust or approval prompt does nothing until someone answers it.
 PROMPT_RE="trust (this|the files in this) folder|do you trust|is this a project you created or one you trust|allow codex to work in this folder|press enter to confirm|would you like to (run|make|apply)|do you want to (proceed|make this edit|create|overwrite|run|allow)|allow (this|once)|\\(y/n\\)|\\[y/n\\]"
 
@@ -9,7 +14,14 @@ PROMPT_RE="trust (this|the files in this) folder|do you trust|is this a project 
 WATCH_READ_LINES=15   # the last rows watch_tick reads for every worker; detection works from these alone
 
 jarvis_idle_min() { # minutes since the Jarvis transcript last changed; empty if unknown
-  local tp
+  local tp t k
+  # an agy Jarvis: since its last Stop (or the watcher's clear), from its hooks' stamp; mid-turn is 0
+  if ! lead_is_claude; then
+    [ -f "$STATE/lead.stamp" ] && read -r t k < "$STATE/lead.stamp" || return
+    case "$t" in ""|*[!0-9]*) return ;; esac
+    if [ "$k" = working ]; then echo 0; else echo $(( ($(now) - t) / 60 )); fi
+    return
+  fi
   have jq || return
   tp=$(jq -r '.transcript_path // empty' "$STATE/session.json" 2>/dev/null)
   [ -n "$tp" ] && [ -f "$tp" ] || return
@@ -18,6 +30,38 @@ jarvis_idle_min() { # minutes since the Jarvis transcript last changed; empty if
 
 send_jarvis() { # $1 = text
   host send "$(jarvis_terminal)" "$1" >/dev/null 2>&1
+}
+
+lead_limit_set() { # $1 = screen | hook, $2 = what showed the 429; kept until it clears, the first one wins
+  local tmp
+  [ -f "$STATE/lead-limit" ] && return 0
+  mkdir -p "$STATE" && tmp=$(mktemp "$STATE/.lead-limit.XXXXXX") || return 0
+  printf 't: %s\nsource: %s\ntext: %s\n' "$(now)" "$1" "$(printf '%s' "$2" | tr -d '\000-\037' | sed 's/^[[:space:]]*//' | cut -c1-200)" > "$tmp" \
+    && mv "$tmp" "$STATE/lead-limit"
+}
+
+# An agy Jarvis that Google answers with a 429 sits silent at its prompt, and the band
+# (Claude's) can't see it: each tick reads its screen, and while it is limited the
+# watcher says so loudly here, and in watch.log, once an hour. A screen-raised limit
+# lifts when the screen stops showing it; a hook-raised one at the next clean Stop.
+watch_lead() { # $1 = Jarvis's terminal; reads watch_tick's $seen
+  local scr line sum t
+  scr=$(host read "$1" "$WATCH_READ_LINES" 2>/dev/null | sed -e 's/[[:space:]]*$//')
+  line=$(printf '%s\n' "$scr" | grep -E "$LEAD_SCREEN_LIMIT_RE" | grep -v '`' | tail -n 1)
+  if [ -n "$line" ]; then
+    sum=$(printf '%s' "$scr" | cksum | cut -d' ' -f1)
+    grep -qxF "leadlimit $sum" "$seen" || { echo "leadlimit $sum" >> "$seen"; lead_limit_set screen "$line"; }
+  elif [ -n "$scr" ] && [ "$(rec_get "$STATE/lead-limit" source)" = screen ]; then
+    rm -f "$STATE/lead-limit" "$STATE/lead-limit.told"
+    echo "$(date +%H:%M) Jarvis's screen no longer shows the 429"
+  fi
+  [ -f "$STATE/lead-limit" ] || return 0
+  t=$(mtime "$STATE/lead-limit.told")
+  [ "$t" -ge "$(mtime "$STATE/lead-limit")" ] && [ $(( $(now) - t )) -lt 3600 ] && return 0
+  touch "$STATE/lead-limit.told"
+  printf '\a'
+  echo "!!!!! $(date +%H:%M) JARVIS IS LIMITED: its agy got a 429 from Google ($(rec_get "$STATE/lead-limit" text)), so it sits silent and no wake reaches it. Check agy -p /quota; send it \"resume\" later, or run Jarvis on Claude (JARVIS_LEAD_AGENT=claude in $H/jarvis.conf). !!!!!"
+  watch_log jarvis-limit "$(rec_get "$STATE/lead-limit" source)"
 }
 
 watch_running() { # a `jarvis watch` loop for this checkout is alive
@@ -435,6 +479,7 @@ EOF
   done <<EOF
 $(running_lines)
 EOF
+  lead_is_claude || { term=$(jarvis_terminal); [ -z "$term" ] || watch_lead "$term"; }
   # this tick's events join the pending batch; the batch goes out as one message on the
   # first tick JARVIS_BATCH_SEC after it opened, so a burst costs Jarvis one turn
   new=$events
@@ -463,7 +508,14 @@ EOF
     return 0
   fi
   idle=$(jarvis_idle_min)
-  if [ -n "$idle" ] && [ "$idle" -ge "$JARVIS_IDLE_MIN" ]; then
+  if [ -n "$idle" ] && [ "$idle" -ge "$JARVIS_IDLE_MIN" ] && ! lead_is_claude; then
+    # an agy Jarvis: its own /clear starts a new conversation in the same session (a
+    # host's clear restarts the host's agent); the stamp restarts the idle clock
+    send_jarvis "/clear"; sleep 3; lead_stamp cleared
+    send_jarvis "[jarvis watch] Fresh session: Jarvis was idle ${idle} min, so the watcher cleared its conversation. $(lead_role) run handoffs/bin/jarvis status, then handle:$events"
+    watch_log cleared "$kinds"
+    echo "$(date +%H:%M) cleared Jarvis (agy, idle ${idle} min) and woke it:$events"
+  elif [ -n "$idle" ] && [ "$idle" -ge "$JARVIS_IDLE_MIN" ]; then
     if type "${HOST}_clear" >/dev/null 2>&1; then host clear "$term" && sleep 5
     else send_jarvis "/clear"; sleep 3
     fi

@@ -1,7 +1,7 @@
 # shellcheck shell=bash
 # Sourced by bin/jarvis; not run on its own.
 # shellcheck disable=SC2034 # every setting here is read by bin/jarvis or another lib/*.sh
-JARVIS_MAX_CLAUDE=3      # Claude sessions at once in this checkout, Jarvis included; Codex/OpenCode/agy don't count
+JARVIS_MAX_CLAUDE=3      # Claude sessions at once in this checkout, Jarvis included (when it runs on Claude); Codex/OpenCode/agy don't count
 JARVIS_MAX_CLAUDE_GLOBAL=4  # active Claude sessions on the whole machine, any repo, the user's own included; Jarvis sessions don't count
 JARVIS_MAX_OPUS=2        # of those, Opus workers (or Fable, or a model that can't be told); Jarvis doesn't count
 JARVIS_AMBER_GLOBAL=3    # the machine-wide cap in the amber band (Jarvis sessions don't count)
@@ -39,6 +39,8 @@ JARVIS_HOST=""           # superset | ultron | tmux | <name> with handoffs/bin/h
 JARVIS_FABLE_TTL_MIN=120 # minutes a `jarvis fable allow` stays usable
 JARVIS_FABLE_SUPERSET_AGENT=""  # a Superset agent config id that lifts the backstop; empty = no Fable on Superset
 JARVIS_AGY_SUPERSET_AGENT=""    # a Superset agent config id (or preset) that runs agy with --dangerously-skip-permissions; empty = no agy on Superset
+JARVIS_LEAD_AGENT=claude # the agent Jarvis itself runs on: claude, or agy (started with `handoffs/bin/jarvis lead`)
+JARVIS_LEAD_MODEL=""     # an agy Jarvis's model; empty = gemini-4-neon-high
 # How a terminal host that isn't an agent launcher itself (tmux) starts each worker:
 # a sh command line reading $JARVIS_MODEL, $JARVIS_EFFORT and $JARVIS_PROMPT from its
 # environment. The flags are the ones Superset's agent presets launch with, so a

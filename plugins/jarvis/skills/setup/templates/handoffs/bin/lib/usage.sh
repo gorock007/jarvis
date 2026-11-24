@@ -66,7 +66,7 @@ print(count)
     wakes="wake-ups (this repo): no watcher log yet"
   fi
   printf '%s' "$json" | jq -r --argjson merged "$merged" --argjson ignored "$ignored" --argjson over "${over:-[]}" --arg wakes "$wakes" \
-    --argjson wruns "${wruns:-[]}" --argjson whos "${whos:-[]}" '
+    --argjson wruns "${wruns:-[]}" --argjson whos "${whos:-[]}" --arg lead "$(if lead_is_claude; then echo claude; else echo agy; fi)" '
     def usd: "$" + ((. * 100 | round) / 100 | tostring);
     def age:
       if . < 3600 then ((. / 60 | floor | tostring) + "m")
@@ -85,7 +85,7 @@ print(count)
          "subscription usage: 5h \(.subscription_usage.five_hour_pct // "?")% · 7d \(.subscription_usage.seven_day_pct // "?")% · reading \(.subscription_usage.age_seconds | age) old"
        else "subscription usage: no reading — check /usage" end),
       "",
-      "  coordinating (Jarvis + its subagents): \($coord | usd)",
+      "  coordinating (Jarvis + its subagents): \($coord | usd)\(if $lead != "claude" then " — Jarvis runs on \($lead): its own turns are not in these Claude numbers" else "" end)",
       "  building (workers + their subagents):  \($build | usd)",
       "  coordinating ÷ building: \(if $build > 0 then ($coord / $build * 100 | round) / 100 else "n/a" end)   (target ≤ 0.3)",
       "  merged handoffs: \($merged_count)\(if $scope == "this repo" and $ignored > 0 then " (\($ignored) by file mtime)" else "" end) · cost per merged handoff: \(if $merged_count > 0 then (($coord + $build) / $merged_count) | usd else "n/a" end)",

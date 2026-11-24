@@ -50,6 +50,34 @@ hook_prompt() {
     '{decision: "block", reason: $r}'
 }
 
+# An agy Jarvis's own hooks (jarvis lead writes them; agy loads them through --add-dir):
+# PreInvocation before every model call, Stop when a turn ends. They stamp its last turn
+# event, which the watcher reads for its idle time as it reads a Claude Jarvis's
+# transcript, and a Stop whose error is Google's 429 marks Jarvis limited (a clean Stop
+# lifts that). $1 = working | stop; the payload on stdin. Silent, exit 0.
+hook_lead() {
+  local in="" err=""
+  case "${1:-}" in working|stop) ;; *) exit 0 ;; esac
+  lead_is_claude && exit 0
+  [ -t 0 ] || in=$(cat)
+  if [ "$1" = stop ] && have jq; then
+    err=$(printf '%s' "$in" | jq -r '.error // empty | strings' 2>/dev/null)
+    err=$(printf '%s' "$err" | tr '\n\r\t' '   ')
+    if [ -z "$err" ]; then rm -f "$STATE/lead-limit"
+    elif printf '%s' "$err" | grep -Eq "$LEAD_HOOK_LIMIT_RE"; then lead_limit_set hook "$err"
+    fi
+  fi
+  lead_stamp "$1"
+  exit 0
+} >/dev/null 2>&1
+
+lead_hooks() { # $1 = jarvis, quoted for sh: the hooks.json jarvis lead gives an agy Jarvis
+  local w s
+  w=$(printf '%s hook lead working </dev/null' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g')   # JSON strings
+  s=$(printf '%s hook lead stop' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g')
+  printf '{"jarvis-lead": {\n  "PreInvocation": [{"type": "command", "command": "%s", "timeout": 10}],\n  "Stop": [{"type": "command", "command": "%s", "timeout": 10}]\n}}\n' "$w" "$s"
+}
+
 # PreToolUse, every session in the checkout: deny an Agent/Task call whose model is
 # Fable, and an Edit/Write/MultiEdit after which a settings file lets Fable in: in
 # availableModels (that re-opens it: allowlists merge), modelOverrides, or an alias

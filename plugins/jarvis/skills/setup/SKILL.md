@@ -13,8 +13,8 @@ file:
   says who is who, points Jarvis at its files, and lists the checks. Keep it
   short. Measured worker sessions started at ~55k tokens, and the old,
   longer `CLAUDE.md` was 3k of that.
-- `AGENTS.md`: the worker contract, read natively by Codex, OpenCode and agy and
-  by Claude Code workers. It covers git rules, shared files, ask-once, one
+- `AGENTS.md`: the worker contract, read natively by Codex, OpenCode, agy and
+  Claude Code workers. It covers git rules, shared files, ask-once, one
   brief then hand off, and the handoff format.
 - `handoffs/JARVIS.md`: this project's rules for Jarvis. Only Jarvis reads
   it.
@@ -26,7 +26,7 @@ file:
   authorization lifetime, the idle limit, and whether merge stops what a
   worker left running, plus spawn's overlap mode and the `--verify` timeout cap. Most
   keys are commented defaults.
-- `handoffs/bin/jarvis`: `start`, `status`, `log`, `lessons`, `spawn`, `merge`, `close`,
+- `handoffs/bin/jarvis`: `start`, `lead`, `status`, `log`, `lessons`, `spawn`, `merge`, `close`,
   `doctor`, `leftovers`, `lock`, `resources`, `watch`, `band`, `usage`,
   `sessions`, `budget`, `fable`, plus the prompt-guard and PreToolUse hooks
   and the statusline tap. It needs `jq` and, for `usage`, `merge --verify`
@@ -122,7 +122,7 @@ placeholders mean.
 ## 2. Interview — three questions, then build
 
 Ask three questions and show the rest as defaults, in one message. For "set
-up Jarvis, advanced" or the argument `--advanced`, ask all 13 as one batch:
+up Jarvis, advanced" or the argument `--advanced`, ask all 14 as one batch:
 the three questions, plus each default below as a question.
 
 **Questions** (best guess pre-filled so the user can say "yes"):
@@ -135,10 +135,8 @@ the three questions, plus each default below as a question.
    Opus; Codex, OpenCode and agy don't count. Those two stay defaults in
    `jarvis.conf`.
 3. **Statusline tap**: the repo's statusline becomes `jarvis statusline`. It
-   saves Claude Code's 5-hour reading, machine-wide, so the band (how much of
-   the 5-hour usage is spent) is computed, not guessed, then runs the user's
-   own statusline unchanged. **It is
-   required for the band:** with no tap in any Jarvis repo, nothing writes a
+   saves Claude Code's 5-hour reading, machine-wide, so the band is
+   computed, then runs the user's own statusline unchanged. **It is required for the band:** with no tap in any Jarvis repo, nothing writes a
    reading, the band reads amber on every spawn, and the caps stay lowered
    (3 machine-wide, 2 Opus). The default is yes. Ask once more if the user
    says no, and say that.
@@ -161,6 +159,8 @@ valid answer.
   credentials, production data, proprietary logic (third parties serve them).
 - **Usage bands**: amber at 50%, or when on pace to use the whole 5-hour
   window; red at 75%. The tool's defaults.
+- **Jarvis runs on**: Claude Code, or agy (`JARVIS_LEAD_AGENT=agy`; then
+  step 4 gives `handoffs/bin/jarvis lead`, per run's hosts.md).
 - **Plugins to switch off**: from `jq .enabledPlugins ~/.claude/settings.json`,
   only the plainly unused (Stripe with no payments, Swift LSP in a Python
   repo): each enabled plugin adds to every session's start-up tokens. Keep
@@ -301,8 +301,7 @@ claude --model claude-opus-5-5 --effort high 'You are Jarvis. Use the jarvis:run
 
   Workers then open as windows in that tmux session (`prefix + w` lists
   them). Spawn's launch script gives Codex, OpenCode and agy workers turn events
-  there (a `codex()` wrapper, an OpenCode plugin, an `agy()` wrapper), without touching their
-  config. On Ultron, from the repo root (Ultron's own Jarvis kit is a
+  there (a wrapper or plugin), without touching their config. On Ultron, from the repo root (Ultron's own Jarvis kit is a
   separate plugin; this starts the jarvis one):
 
 ```bash

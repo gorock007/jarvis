@@ -232,3 +232,86 @@ A chat Jarvis needs `bypassPermissions`: nobody can answer a permission
 prompt in chat mode.
 
 On any host, Jarvis then runs `handoffs/bin/jarvis watch --start` once.
+
+### Jarvis on agy
+
+A repo can run Jarvis itself on agy (Gemini 4 Neon, on Google's quota)
+instead of Claude Code. Claude stays the default; nothing changes for a repo
+that doesn't opt in. To switch, put this in `handoffs/jarvis.conf`:
+
+```bash
+JARVIS_LEAD_AGENT=agy
+JARVIS_LEAD_MODEL=gemini-4-neon-high   # the default; its effort is in the id
+```
+
+Install the jarvis plugin into agy once, so it has the `jarvis:run` skill:
+`agy plugin import claude` (it copies the user's Claude Code plugins) or
+`agy plugin install <the jarvis plugin's folder>`. Then, from the repo root,
+in the terminal Jarvis is to run in (a tmux pane, or a plain Superset
+terminal; no Superset agent config is needed):
+
+```bash
+handoffs/bin/jarvis lead            # --print shows the launch instead
+```
+
+`jarvis lead` launches agy as `JARVIS_AGENT_agy` launches a worker
+(`--dangerously-skip-permissions`, `-i`), plus:
+
+- **Its own hooks**: `--add-dir handoffs/.jarvis/launch/lead`, whose
+  `.agents/hooks.json` runs `jarvis hook lead working` before every model
+  call and `jarvis hook lead stop` when a turn ends. They write
+  `handoffs/.jarvis/lead.stamp`, which stands in for the Claude transcript
+  the watcher reads for Jarvis's idle time.
+- **Session trust** for the checkout, as for an agy worker.
+- **The start prompt**: "You are Jarvis, on agy …: use the jarvis:run
+  skill, read handoffs/JARVIS.md and OPEN.md, run handoffs/bin/jarvis
+  start". agy reads `AGENTS.md`, whose role rule makes every other agent a
+  worker except one whose prompt begins "You are Jarvis, on agy". The prompt
+  carries the role, not a `GEMINI.md`, because agy workers read `GEMINI.md`
+  too, and because the watcher sends the same words after a clear.
+
+`jarvis start` then writes `Jarvis session: <terminal> · agy/<model>` in
+`OPEN.md`. It refuses to run in Claude Code while the config says agy
+(`--force` claims the terminal anyway), and `jarvis lead` refuses unless the
+config says agy.
+
+**What changes for an agy Jarvis:**
+
+- **Caps.** It isn't a Claude session: `JARVIS_MAX_CLAUDE` counts only Claude
+  workers in this checkout, so the default 3 allows three.
+- **Idle clear.** The watcher reads idle time from `lead.stamp`. That is the
+  minutes since its last Stop, and 0 while a turn is running. Past
+  `JARVIS_IDLE_MIN` it types agy's own `/clear` (a new conversation, the same
+  session; never a host's `clear`), restarts the clock, and sends the start
+  prompt with the events.
+- **Its own quota.** A 429 (`RESOURCE_EXHAUSTED`) from Google leaves Jarvis
+  silent at its prompt. The band can't see this, because the band is the
+  Claude fleet's. The watcher reads Jarvis's screen on every tick. On
+  `RESOURCE_EXHAUSTED (code 429)`, or a Stop hook whose `error` carries a
+  429, it rings the bell and prints a `JARVIS IS LIMITED` line in its own
+  terminal, at most once an hour, and logs `jarvis-limit` in `watch.log`.
+  `jarvis status` shows the same line until the screen moves on or a clean
+  Stop comes. Wake events still go to Jarvis.
+- **Merge review.** Neon may be the only merge reviewer when it is Jarvis
+  (user ruling, 2026-11-25). Workers on agy are still never the only
+  reviewer.
+
+**What an agy Jarvis loses** (each degrades quietly, with no errors):
+
+- the prompt guard (Claude's `UserPromptSubmit`) that stops the first message
+  after a long idle;
+- the statusline: the band still comes from the machine-wide reading, which
+  only Claude sessions write. With no Claude session running it goes stale,
+  and the band reads amber;
+- `jarvis usage`'s coordinating cost. It prices Claude transcripts only, and
+  says that Jarvis runs on agy;
+- `jarvis doctor`'s session checks for Jarvis. Its process isn't a Claude
+  one; doctor still names its terminal;
+- the PreToolUse Fable guard and Claude's subagents (`.claude/agents/`). agy
+  has its own tools, and the run skill's Claude-only tools have no agy
+  equivalent;
+- `setup/SKILL.md` is past agy's 24 000-byte skill limit, so its tail is
+  cut there. Run setup in Claude Code. `run/SKILL.md` fits.
+
+A real agy Jarvis has not yet run a full session. Try it in a throwaway repo
+first.

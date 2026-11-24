@@ -243,7 +243,7 @@ runs, even a `claude-*` one: agy never counts toward the Claude caps.
 | --- | --- |
 | Text meant for agents: `SKILL.md`, `AGENTS.md`, brief templates | Stays on Claude until Neon is tested on it. |
 | Security work | Stays on Codex `gpt-5.6-sol`. |
-| Sole merge review | Not for Neon. |
+| Sole merge review | Not for an agy worker. An agy **Jarvis** may be the only reviewer of its merges (user ruling, 2026-11-25). |
 
 ### Spawning
 
@@ -259,6 +259,15 @@ only the files it lists, never run git commands that change state").
 - **A 429 isn't a crash.** Google can answer `RESOURCE_EXHAUSTED` (429) with
   quota left; the worker idles at its prompt and `jarvis status` shows it as
   crashed. Retry later or route the brief elsewhere.
+
+### Jarvis on agy
+
+A repo may run Jarvis itself on agy: `JARVIS_LEAD_AGENT=agy` in
+`jarvis.conf` (`JARVIS_LEAD_MODEL`, default `gemini-4-neon-high`), started
+with `handoffs/bin/jarvis lead`. It is a per-repo option; Claude stays the
+default. Routing the workers doesn't change: the band and caps are still the
+Claude fleet's, and an agy Jarvis doesn't count toward them. Setup, what it
+loses, and its 429 notice: `references/hosts.md`, "Jarvis on agy".
 
 ## 4. The usage ladder
 

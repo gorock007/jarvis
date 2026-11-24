@@ -54,8 +54,8 @@ claude_active() {
     recs="$recs$(jq -r "$q" "$@" 2>/dev/null || for f; do jq -r "$q" "$f" 2>/dev/null; done)
 "
   done
-  # Jarvis's sessions and its running workers', with the model each worker was spawned on
-  jar=$(cat "$STATE/sessions/$(jarvis_terminal)" 2>/dev/null; jq -r '.session_id // empty' "$STATE/session.json" 2>/dev/null)
+  # Jarvis's sessions (none when it runs on agy) and its running workers', with the model each worker was spawned on
+  lead_is_claude && jar=$(cat "$STATE/sessions/$(jarvis_terminal)" 2>/dev/null; jq -r '.session_id // empty' "$STATE/session.json" 2>/dev/null)
   for f in "$RUNS"/*; do
     [ -f "$f" ] && grep -qx 'state: running' "$f" || continue
     r=${f##*/}
@@ -118,6 +118,7 @@ heavy() { case "$1" in opus|fable|unknown) return 0 ;; esac; return 1; } # count
 
 jarvis_sids() { # $1 = a project root: the session ids of its Jarvis coordinators, one a line (none without one)
   local t f
+  [ "$1" = "$ROOTP" ] && ! lead_is_claude && return 0   # this checkout's Jarvis runs on agy: no Claude session
   # every notes file there: in team mode each person's Jarvis has its own (docs/teams.md);
   # and this one's own, wherever JARVIS_OPEN puts it
   set -- "$1" "$1/$H"/OPEN*.md
@@ -133,7 +134,7 @@ jarvis_sids() { # $1 = a project root: the session ids of its Jarvis coordinator
 }
 
 # Sets CAP_BAND, the effective caps CAP_G (machine) CAP_P (this checkout) CAP_O (Opus),
-# the counts N_ALL N_HERE N_OPUS, N_OPEN (OPEN.md's, Jarvis included), CAP_LINES (the
+# the counts N_ALL N_HERE N_OPUS, N_OPEN (OPEN.md's, Jarvis included on Claude), CAP_LINES (the
 # sessions that count), CAP_IDLE (the idle ones) and CAP_JARVIS (" <sid> " for each
 # Jarvis coordinator session, any repo's). This checkout counts as whichever is higher:
 # OPEN.md's Jarvis + running Claude workers, or its active sessions; so Jarvis and its
@@ -179,7 +180,7 @@ LINES
   done
   N_HERE=$here; [ "$N_OPEN" -gt "$N_HERE" ] && N_HERE=$N_OPEN
   [ "$open_h" -gt "$hh" ] && hh=$open_h
-  [ $((N_OPEN - 1)) -gt "$here_w" ] && here_w=$((N_OPEN - 1)) # OPEN.md's workers, without Jarvis
+  [ $((N_OPEN - $(lead_n))) -gt "$here_w" ] && here_w=$((N_OPEN - $(lead_n))) # OPEN.md's workers, without Jarvis
   N_ALL=$((oth + here_w))
   N_OPUS=$((oh + hh))
 }
@@ -217,7 +218,7 @@ cap_claim() {
   elif [ "$N_HERE" -ge "$CAP_P" ]; then
     cap="this checkout"; n=$N_HERE; lim=$CAP_P
     who="$(printf '%s\n' "$CAP_LINES" | awk -F'\t' -v p="$ROOTP" '$3 == p' | cap_holders)
-  ${OPEN##*/}: Jarvis + $((N_OPEN - 1)) running Claude worker(s)"
+  ${OPEN##*/}: $(lead_who)"
   elif heavy "$canon" && [ "$N_OPUS" -ge "$CAP_O" ]; then
     cap="Opus"; n=$N_OPUS; lim=$CAP_O
     who=$(printf '%s\n' "$CAP_LINES" | awk -F'\t' -v j="$CAP_JARVIS" \
@@ -271,7 +272,7 @@ cmd_sessions() {
   done <<LINES
 $CAP_LINES
 LINES
-  [ "$N_OPEN" -gt 1 ] && echo "  (${OPEN##*/} here: Jarvis + $((N_OPEN - 1)) running Claude worker(s))"
+  [ "$N_OPEN" -gt "$(lead_n)" ] && echo "  (${OPEN##*/} here: $(lead_who))"
   # open for hours and idle: they cost nothing, but they're the user's to close
   t=$(now)
   old=$(printf '%s\n' "$CAP_IDLE" | awk -F'\t' -v t="$t" 'NF >= 7 && $6 > 0 && t * 1000 - $6 > 8 * 3600000')

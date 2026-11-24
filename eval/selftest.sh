@@ -872,6 +872,65 @@ $trust"
       check "merge: an agy handoff gets the Antigravity worker trailer" $?
     )
 
+    # Jarvis itself on agy (JARVIS_LEAD_AGENT=agy): jarvis lead starts it with its own hooks,
+    # it isn't a Claude session for the caps, its idle time comes from those hooks, the
+    # watcher clears it with agy's /clear, and a 429 on its screen or in its Stop is loud
+    (
+      mkdir -p "$tmp/lead/bin" && cd "$tmp/lead" || exit 1
+      export FAKE_LOG="$tmp/lead.log" JARVIS_HOME="$tmp/jh-lead" PATH="$tmp/lead/bin:$PATH"
+      unset CLAUDECODE ANTIGRAVITY_AGENT
+      cat > bin/agy <<'EOT'
+#!/bin/sh
+[ "$1" = plugin ] && { printf '%s\n' "${FAKE_AGY_PLUGINS:-[]}"; exit 0; }
+echo "agy $*" >> "$FAKE_LOG"
+EOT
+      chmod +x bin/agy
+      git init -q; cp -R "$tpl/handoffs" .; sed -e 's/{{MAX_CLAUDE}}/3/' -e 's/{{AMBER}}/50/' -e 's/{{RED}}/75/' "$tpl/handoffs/jarvis.conf" > handoffs/jarvis.conf
+      printf '%s\n' JARVIS_BATCH_SEC=0 JARVIS_AMBER_GLOBAL=4 >> handoffs/jarvis.conf
+      echo a > a.txt; git add -A; git commit -qm init
+      $J lead --print >/dev/null 2>&1; [ $? = 1 ]; check "lead=claude: jarvis lead refuses (it starts only an agy Jarvis)" $?
+      $J hook lead stop < "$here/hook-payloads/agy-stop.json"; [ ! -e handoffs/.jarvis/lead.stamp ]; check "…and jarvis hook lead writes nothing" $?
+      echo 'JARVIS_LEAD_AGENT=agy' >> handoffs/jarvis.conf
+      $J start >/dev/null && grep -qx 'Jarvis session: jarvis-t · agy/gemini-4-neon-high' handoffs/OPEN.md; check "lead=agy: start records the terminal, agent and model in OPEN.md" $?
+      CLAUDECODE=1 $J start >/dev/null 2>&1; [ $? = 1 ]; check "…and Claude Code can't claim it without --force" $?
+      mk l1 claude sonnet low; mk l2 claude sonnet low; mk l3 claude sonnet low; mk l4 claude sonnet low
+      $J spawn handoffs/briefs/l1.md >/dev/null 2>&1 && $J spawn handoffs/briefs/l2.md >/dev/null 2>&1 && $J spawn handoffs/briefs/l3.md >/dev/null 2>&1
+      check "caps: an agy Jarvis isn't a Claude session (3 Claude workers at cap 3)" $?
+      out=$($J spawn handoffs/briefs/l4.md 2>&1); [ $? = 1 ] && printf '%s' "$out" | grep -q '3 running Claude worker(s) (Jarvis runs on agy)'; check "…a fourth is refused, and the message says why" $?
+      out=$($J lead 2>&1); [ $? = 1 ] && printf '%s' "$out" | grep -q 'agy has no jarvis plugin' && ! grep -q '^agy -' "$FAKE_LOG"; check "jarvis lead: refused while agy lacks the jarvis plugin" $?
+      FAKE_AGY_PLUGINS='[{"name":"jarvis","enabled":true}]' $J lead >/dev/null 2>&1
+      grep -F -- "agy --add-dir $(git rev-parse --show-toplevel)/handoffs/.jarvis/launch/lead --settings {\"trustedWorkspaces\":[\"" "$FAKE_LOG" \
+        | grep -F -- '--dangerously-skip-permissions --model gemini-4-neon-high -i You are Jarvis, on agy' | grep -q 'run handoffs/bin/jarvis start' \
+        && ! grep '^agy ' "$FAKE_LOG" | grep -q -- '--effort' \
+        && jq -e '."jarvis-lead" | (.PreInvocation[0].command | test("hook lead working")) and (.Stop[0].command | test("hook lead stop"))' handoffs/.jarvis/launch/lead/.agents/hooks.json >/dev/null
+      check "…with it: agy with Jarvis's hooks dir, session trust, the model (its effort in the id) and the start prompt" $?
+      lh() { (cd handoffs/.jarvis/launch/lead/.agents && sh -c "$(jq -r --arg e "$1" '."jarvis-lead"[$e][0].command' hooks.json)"); } # run one, as agy does
+      lh PreInvocation </dev/null && grep -q ' working$' handoffs/.jarvis/lead.stamp && $J status | grep -qx 'jarvis: agy/gemini-4-neon-high · not counted toward the Claude caps · idle 0 min'
+      check "its PreInvocation hook stamps working; status shows it idle 0 min" $?
+      lh Stop < "$here/hook-payloads/agy-stop.json" && grep -q ' stop$' handoffs/.jarvis/lead.stamp; check "…its Stop hook stamps stop" $?
+      echo "$(( $(date +%s) - 70 * 60 )) working" > handoffs/.jarvis/lead.stamp; : > "$FAKE_LOG"
+      printf '# t\nstatus: done\nbrief: handoffs/briefs/l1.md\n## Files\n- x\n' > handoffs/hl1.md
+      $J watch --once >/dev/null; ! grep -q 'text /clear' "$FAKE_LOG" && grep -q 'send .*--text \[jarvis watch\] handoff handoffs/hl1.md' "$FAKE_LOG"
+      check "watch: an agy Jarvis mid-turn (last stamp working) is woken, never cleared" $?
+      echo "$(( $(date +%s) - 70 * 60 )) stop" > handoffs/.jarvis/lead.stamp; : > "$FAKE_LOG"
+      printf '# t\nstatus: done\nbrief: handoffs/briefs/l2.md\n## Files\n- x\n' > handoffs/hl2.md
+      $J watch --once >/dev/null; grep -q 'send .*--text /clear' "$FAKE_LOG" && grep -q 'send .*Fresh session.*You are Jarvis, on agy.*hl2.md' "$FAKE_LOG" \
+        && grep -q ' cleared$' handoffs/.jarvis/lead.stamp && tail -n 1 handoffs/.jarvis/watch.log | grep -q "$(printf '\tcleared\thandoff\t1')"
+      check "…idle 70 min after its Stop: agy's /clear, then the start prompt with the handoff; the idle clock restarts" $?
+      FAKE_SCREEN='he said `RESOURCE_EXHAUSTED (code 429)` once' $J watch --once >/dev/null; [ ! -e handoffs/.jarvis/lead-limit ]; check "watch: a 429 quoted in backticks on Jarvis's screen isn't one" $?
+      out=$(FAKE_SCREEN=$(printf 'Model unavailable (attempt 9/9)\n⚠ RESOURCE_EXHAUSTED (code 429)\n>') $J watch --once)
+      printf '%s' "$out" | grep -q 'JARVIS IS LIMITED' && grep -qx 'source: screen' handoffs/.jarvis/lead-limit \
+        && tail -n 1 handoffs/.jarvis/watch.log | grep -q "$(printf '\tjarvis-limit\tscreen\t1')"
+      check "watch: a 429 on an agy Jarvis's screen: said loudly, logged as jarvis-limit" $?
+      $J status | grep -q '^JARVIS IS LIMITED: its screen showed "⚠ RESOURCE_EXHAUSTED (code 429)"'; check "…status shows it" $?
+      out=$(FAKE_SCREEN=$(printf 'Model unavailable (attempt 9/9)\n⚠ RESOURCE_EXHAUSTED (code 429)\n>') $J watch --once); ! printf '%s' "$out" | grep -q 'JARVIS IS LIMITED'
+      check "…once an hour, not every tick" $?
+      $J watch --once | grep -q 'no longer shows the 429' && [ ! -e handoffs/.jarvis/lead-limit ] && ! $J status | grep -q 'JARVIS IS LIMITED'; check "…and lifts when the screen moves on" $?
+      jq '.error = "RESOURCE_EXHAUSTED (code 429): Resource has been exhausted"' "$here/hook-payloads/agy-stop.json" | $J hook lead stop
+      grep -qx 'source: hook' handoffs/.jarvis/lead-limit && $J watch --once | grep -q 'JARVIS IS LIMITED'; check "a Stop whose error is a 429 marks Jarvis limited; the watcher says so" $?
+      $J hook lead stop < "$here/hook-payloads/agy-stop.json"; [ ! -e handoffs/.jarvis/lead-limit ]; check "…a clean Stop lifts it" $?
+    )
+
     mk b7 opencode "" ""; $J spawn handoffs/briefs/b7.md >/dev/null 2>&1
     b7t=$(sed -n 's/.*terminal: //p' handoffs/briefs/b7.md)
     echo c > corr.txt

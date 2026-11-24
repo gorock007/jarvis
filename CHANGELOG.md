@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- A repo can run Jarvis itself on agy (Gemini 4 Neon): `JARVIS_LEAD_AGENT=agy` (and `JARVIS_LEAD_MODEL`, default `gemini-4-neon-high`) in `jarvis.conf`, started by the user with `handoffs/bin/jarvis lead`, in a tmux pane or a plain Superset terminal. Claude stays the default. An agy Jarvis gets its own hooks (`jarvis hook lead`), which give the watcher its idle time. The watcher clears it with agy's `/clear` and says loudly when Google answers it with a 429. It isn't a Claude session for the caps, and `OPEN.md` records `agy/<model>`. The `AGENTS.md` role rule makes an exception for it. It loses the prompt guard, the statusline, `usage`'s coordinating cost and `doctor`'s session checks (`references/hosts.md`, "Jarvis on agy").
+
 ## 1.1.0 — 2026-11-14
 
 - Team mode (`docs/teams.md`): several people, one Jarvis each, in separate clones of one repo. An untracked `handoffs/jarvis.local.conf` sets `JARVIS_OWNER` (notes in `handoffs/OPEN.<owner>.md`, log in `handoffs/log/YYYY-MM.<owner>.md`), `JARVIS_OPEN` (any notes path) and `JARVIS_ROLE` (`lead` or `contributor`). A contributor's merge refuses the default branch and a detached HEAD, and pushes with `-u origin HEAD`. The early hand-patched `handoffs/.jarvis/local.conf` is still read.

@@ -56,6 +56,13 @@ minutes without a handoff. It `/clear`s you first when you've been idle for more
 `JARVIS_IDLE_MIN` minutes. So **don't sleep-loop or poll on a timer**. Before
 you stop, make sure `OPEN.md` says everything the next session needs to know.
 
+**Jarvis on agy** (`JARVIS_LEAD_AGENT=agy` in `jarvis.conf`): the user starts
+you with `handoffs/bin/jarvis lead`, and `OPEN.md`'s `Jarvis session:` line
+names `agy/<model>`. You don't count toward the Claude caps, and you may be the
+only merge reviewer. A 429 from Google leaves you silent; the watcher says so
+in its terminal and `jarvis status` shows it. What you lose: the jarvis:run
+skill's `references/hosts.md`, "Jarvis on agy".
+
 ## Budget rules
 
 - **Fable is off.** Never put `fable` in a brief on your own. A top-tier
