@@ -51,6 +51,12 @@
 #                                      handoff, then presses Escape if it keeps going; /clears
 #                                      Jarvis first after a long idle. --start opens that
 #                                      terminal, unless a watcher is already running
+#   jarvis models [check]              the models each agent CLI offers now and its tier in
+#                                      jarvis.conf (no model is called); check prints only what
+#                                      is new (until accepted or ignored) or gone since last time
+#   jarvis models accept <cli> <model> --tier <top|workhorse|light|trivial|free>[,<tier>]
+#                                      write JARVIS_TIER_<tier>_<cli>=<model> into jarvis.conf
+#   jarvis models ignore <cli> <model> mark it seen without mapping it
 #   jarvis band                        the usage band from the machine-wide statusline reading
 #                                      and its burn rate; no reading or a stale one is amber
 #   jarvis usage [--days N | --since DATE] [--all-projects]
@@ -191,7 +197,7 @@ HOST=$(host_pick)
 # shellcheck disable=SC1090
 [ -n "$HOST" ] && [ -f "$BIN/hosts/$HOST.sh" ] && . "$BIN/hosts/$HOST.sh"
 # shellcheck disable=SC1090
-for JARVIS_M in band caps status spawn leftovers runs merge doctor budget watch fable hooks usage lock; do . "$JARVIS_LIB/$JARVIS_M.sh" || exit 1; done
+for JARVIS_M in band caps status spawn leftovers runs merge doctor budget watch fable hooks usage lock models; do . "$JARVIS_LIB/$JARVIS_M.sh" || exit 1; done
 
 # ---------------------------------------------------------------- main
 
@@ -226,6 +232,7 @@ case "$cmd" in
   doctor) cmd_doctor "$@" ;;
   watch) cmd_watch "$@" ;;
   usage) cmd_usage "$@" ;;
+  models) cmd_models "$@" ;;
   statusline) cmd_statusline ;;
   fable) cmd_fable "$@" ;;
   hook)

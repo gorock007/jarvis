@@ -93,6 +93,7 @@ EOF
   printf '%s: %s question(s) for the user · %s to-do · %s KB\n' "${OPEN##*/}" "$q" "$n" "$(( (sz + 512) / 1024 ))"
   open_checks "$sz"
   lessons_hint
+  models_status_line
   watch_running || echo "watcher: not running — start it: handoffs/bin/jarvis watch --start"
   cmd_leftovers --quiet
   cmd_doctor --quiet

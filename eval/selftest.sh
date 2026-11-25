@@ -19,6 +19,7 @@ tmp=$(mktemp -d "${TMPDIR:-/tmp}/jev-selftest.XXXXXX")
 export JEV_LOG_DIR="$tmp/log"
 # spawn counts every Claude session on the machine and reads ~/.jarvis: keep the real ones out
 export HOME="$tmp/home" JARVIS_HOME="$tmp/jh" CLAUDE_CONFIG_DIR="$tmp/cc" GIT_AUTHOR_NAME=selftest GIT_AUTHOR_EMAIL=selftest@example.invalid GIT_COMMITTER_NAME=selftest GIT_COMMITTER_EMAIL=selftest@example.invalid
+export JARVIS_MODELS_REFRESH_H=0   # jarvis status lists the real agent CLIs' models in the background otherwise
 fails=0
 ok() { echo "  ok    $1"; }
 bad() { echo "  FAIL  $1"; fails=$((fails + 1)); }
@@ -1703,6 +1704,105 @@ if [ -n "$ub" ] && command -v jq >/dev/null 2>&1; then
 else
   echo "ultron host: skipped (no ultron binary: put it on PATH or set ULTRON_BIN; jq needed too)"
 fi
+
+# jarvis models: what each agent CLI offers, the tier map, check/accept/ignore, the status
+# line and its background refresh, against fake claude/codex/agy/opencode on a PATH that
+# hides the real ones (they'd go to the network).
+echo "jarvis models (fake CLIs)"
+(
+  tpl="$here/../plugins/jarvis/skills/setup/templates"; mr="$tmp/mr"; md="$tmp/mr-cli"; mb="$tmp/mr-bin"
+  mkdir -p "$mr" "$md" "$mb" && cd "$mr" || exit 1
+  for t in git jq perl python3; do c=$(command -v "$t") && ln -s "$c" "$mb/$t"; done
+  ln -s "$BASH" "$mb/bash"
+  export PATH="$md:$mb:/usr/bin:/bin:/usr/sbin:/sbin" MD="$md" JARVIS_MODELS_REFRESH_H=0
+  git init -q && cp -R "$tpl/handoffs" . \
+    && sed -e 's/{{MAX_CLAUDE}}/3/' -e 's/{{AMBER}}/50/' -e 's/{{RED}}/75/' "$tpl/handoffs/jarvis.conf" > handoffs/jarvis.conf
+  mkdir -p handoffs/.jarvis
+  fclaude() { printf '#!/bin/sh\n# ships with: %s\nexit 0\n' "$*" > "$md/claude"; chmod +x "$md/claude"; }
+  fclaude '"claude-opus-5-5" "claude-sonnet-5-5" "claude-haiku-5-5" "claude-fable-5-1" "claude-opus-4-8" "claude-opus-4-20250514"'
+  printf '#!/bin/sh\n[ "$1 $2" = "debug models" ] && cat "$MD/codex.json"\n' > "$md/codex"
+  printf '#!/bin/sh\n[ "$1" = models ] || exit 2\necho "Fetching available models..." >&2\n[ -f "$MD/agy.sleep" ] && sleep "$(cat "$MD/agy.sleep")"\necho ran >> "$MD/agy.ran"\ncat "$MD/agy.ids"\n' > "$md/agy"
+  printf '#!/bin/sh\n[ "$1" = models ] || exit 2\n[ -f "$MD/opencode.fail" ] && exit 1\ncat "$MD/opencode.ids"\n' > "$md/opencode"
+  chmod +x "$md/codex" "$md/agy" "$md/opencode"
+  cjson() { printf '{"models":['; for s in "$@"; do printf '%s{"slug":"%s","visibility":"%s"}' "${sep:-}" "${s%:*}" "${s#*:}"; sep=,; done; printf ']}\n'; sep=; }
+  cjson gpt-reserve:hide gpt-6-astra:list gpt-6-sol:list gpt-5.6-sol:list gpt-5.6-terra:list gpt-5.6-luna:list > "$md/codex.json"
+  printf 'gemini-4-neon-high\tGemini 4 Neon (High)\ngemini-4-neon-xhigh\tGemini 4 Neon (XHigh)\ngemini-4-carbon-high\tGemini 4 Carbon (High)\n' > "$md/agy.ids"
+  printf 'opencode/beam-free\nopencode/iceman-free\n' > "$md/opencode.ids"
+  J=handoffs/bin/jarvis
+  row() { printf '%s\n' "$out" | grep -Eq "^  $1 +$2\$"; }
+
+  out=$($J models 2>&1); rc=$?
+  [ $rc = 0 ] && for c in claude codex opencode agy; do printf '%s\n' "$out" | grep -q "^$c — " || exit 1; done; check "models: a section per installed CLI" $?
+  printf '%s\n' "$out" | grep -qx 'claude — ids found in the installed Claude Code; nothing called' \
+    && ! printf '%s\n' "$out" | grep -q 20250514 && ! printf '%s\n' "$out" | grep -q gpt-reserve; check "…claude's ids read from the program (dated ids aside), codex's hidden ones left out" $?
+  row claude-opus-5-5 'top, workhorse' && row claude-sonnet-5-5 light && row claude-haiku-5-5 trivial \
+    && row gpt-6-astra top && row gpt-5.6-sol workhorse && row gpt-5.6-terra light && row gpt-5.6-luna trivial \
+    && row gemini-4-neon-high workhorse; check "…each mapped id shows its tiers from the default map" $?
+  row claude-fable-5-1 'gated: jarvis fable allow'; check "…Fable is listed as gated" $?
+  row gpt-6-sol 'new — suggest tier workhorse\?' && row claude-opus-4-8 unmapped && row gemini-4-neon-xhigh unmapped \
+    && row opencode/beam-free unmapped; check "…first listing is a quiet baseline: only a newer version of a mapped family is new" $?
+  out=$($J models check 2>&1); rc=$?
+  [ $rc = 0 ] && [ "$out" = "new: codex gpt-6-sol — suggest tier workhorse?" ]; check "check: only the change, exit 0" $?
+
+  # a release on every CLI, one removed, one Fable
+  fclaude '"claude-opus-5-5" "claude-opus-6" "claude-sonnet-5-5" "claude-haiku-5-5" "claude-fable-5-1" "claude-fable-6" "claude-opus-4-8"'
+  cjson gpt-6-astra:list gpt-6-sol:list gpt-5.6-sol:list gpt-5.6-luna:list > "$md/codex.json"
+  printf 'gemini-5-neon-high\tx\ngemini-5-neon-low\tx\ngemini-4-neon-high\tx\ngemini-4-neon-xhigh\tx\ngemini-4-carbon-high\tx\n' > "$md/agy.ids"
+  printf 'opencode/beam-free\nopencode/iceman-free\nopencode/tidepool-free\n' > "$md/opencode.ids"
+  out=$($J models check 2>&1); rc=$?
+  exp='new: claude claude-fable-6 — gated: jarvis fable allow
+new: claude claude-opus-6 — suggest tier top,workhorse?
+new: codex gpt-6-sol — suggest tier workhorse?
+new: opencode opencode/tidepool-free — suggest tier free?
+new: agy gemini-5-neon-high — suggest tier workhorse?
+new: agy gemini-5-neon-low — suggest ignore? (no mapped family)
+gone: codex gpt-5.6-terra — still mapped to light in jarvis.conf; accept a replacement'
+  [ $rc = 0 ] && [ "$out" = "$exp" ]; check "check: new ids with a suggested tier, Fable gated, a gone mapped id" $?
+  [ "$out" = "$exp" ] || printf '%s\n' "$out" | sed 's/^/        /'
+  out=$($J models check 2>&1)
+  [ "$(printf '%s\n' "$out" | grep -c '^new: ')" = 6 ] && ! printf '%s\n' "$out" | grep -q '^gone: '; check "check again: new lines repeat until dealt with, a gone line is said once" $?
+  n0=$(wc -l < "$md/agy.ran"); out=$($J status 2>&1); rc=$?
+  [ $rc = 0 ] && printf '%s\n' "$out" | grep -qx 'models: 6 new — jarvis models check' && [ "$(wc -l < "$md/agy.ran")" = "$n0" ]
+  check "status: one models line; with JARVIS_MODELS_REFRESH_H=0 it lists nothing itself" $?
+
+  out=$($J models accept codex gpt-6-sol --tier workhorse 2>&1); rc=$?
+  [ $rc = 0 ] && [ "$(grep -c '^JARVIS_TIER_workhorse_codex=' handoffs/jarvis.conf)" = 1 ] && grep -qx 'JARVIS_TIER_workhorse_codex=gpt-6-sol' handoffs/jarvis.conf \
+    && printf '%s\n' "$out" | grep -q '(was gpt-5.6-sol)'; check "accept: writes one JARVIS_TIER line into jarvis.conf" $?
+  $J models accept codex gpt-6-astra --tier workhorse >/dev/null 2>&1 && $J models accept codex gpt-6-sol --tier workhorse,light >/dev/null 2>&1
+  [ "$(grep -c '^JARVIS_TIER_workhorse_codex=' handoffs/jarvis.conf)" = 1 ] && grep -qx 'JARVIS_TIER_workhorse_codex=gpt-6-sol' handoffs/jarvis.conf \
+    && grep -qx 'JARVIS_TIER_light_codex=gpt-6-sol' handoffs/jarvis.conf; check "…replaces the line, never adds a second; a comma list sets several tiers" $?
+  $J models ignore agy gemini-5-neon-low >/dev/null 2>&1; check "ignore exits 0" $?
+  out=$($J models check 2>&1)
+  ! printf '%s\n' "$out" | grep -Eq 'gpt-6-sol|gemini-5-neon-low' && printf '%s\n' "$out" | grep -q '^new: agy gemini-5-neon-high'; check "…accepted and ignored ids are seen: check stops suggesting them" $?
+  out=$($J models 2>&1); row gemini-5-neon-low unmapped && row gpt-6-sol 'workhorse, light'; check "…and models lists them as unmapped / by their new tiers" $?
+  cp handoffs/jarvis.conf "$tmp/mr.conf"
+  out=$($J models accept claude claude-fable-6 --tier top 2>&1); rc=$?
+  [ $rc = 1 ] && printf '%s\n' "$out" | grep -q 'jarvis fable allow' && cmp -s handoffs/jarvis.conf "$tmp/mr.conf"; check "accept refuses a Fable id, jarvis.conf untouched" $?
+  $J models accept claude claude-opus-6 --tier huge >/dev/null 2>&1; [ $? = 2 ] && cmp -s handoffs/jarvis.conf "$tmp/mr.conf"; check "accept refuses an unknown tier" $?
+  $J models accept nope x --tier top >/dev/null 2>&1; [ $? = 2 ]; check "accept refuses an unknown CLI" $?
+
+  : > "$md/opencode.fail"; out=$($J models check 2>&1); rc=$?
+  [ $rc = 0 ] && ! printf '%s\n' "$out" | grep -q '^gone: opencode' && printf '%s\n' "$out" | grep -q '^note: opencode: couldn.t list now'; check "a CLI that fails to list: no gone lines, a note, exit 0" $?
+  rm -f "$md/opencode.fail" "$md/agy"; out=$($J models 2>&1); rc=$?
+  [ $rc = 0 ] && ! printf '%s\n' "$out" | grep -q '^agy' && ! $J models check 2>&1 | grep -q '^gone: agy'; check "a CLI that isn't installed is skipped silently, its ids kept" $?
+
+  # the refresh from status: in the background, never waited on, at most every N hours
+  printf 'gemini-6-neon-high\tx\n' > "$md/agy.ids"
+  printf '#!/bin/sh\n[ "$1" = models ] || exit 2\nsleep 3\necho ran >> "$MD/agy.bg"\ncat "$MD/agy.ids"\n' > "$md/agy"; chmod +x "$md/agy"
+  rm -f handoffs/.jarvis/models.checked; s=$(date +%s)
+  out=$(JARVIS_MODELS_REFRESH_H=24 $J status 2>&1); rc=$?
+  [ $rc = 0 ] && [ $(( $(date +%s) - s )) -lt 3 ] && [ -f handoffs/.jarvis/models.checked ]; check "status starts a refresh and doesn't wait for it" $?
+  i=0; while [ $i -lt 100 ] && { [ ! -f "$md/agy.bg" ] || [ -d handoffs/.jarvis/models.lock ] || ! grep -q gemini-6-neon-high handoffs/.jarvis/models.seen; }; do sleep 0.2; i=$((i + 1)); done
+  grep -q "gemini-6-neon-high$(printf '\t')new" handoffs/.jarvis/models.seen \
+    && JARVIS_MODELS_REFRESH_H=24 $J status 2>&1 | grep -qx 'models: 4 new, 5 gone — jarvis models check'; check "…which records the new id for the next status" $?
+  JARVIS_MODELS_REFRESH_H=24 $J status >/dev/null 2>&1; i=0; while [ $i -lt 20 ]; do sleep 0.2; i=$((i + 1)); done
+  [ "$(wc -l < "$md/agy.bg" | tr -d ' ')" = 1 ]; check "…and not again within JARVIS_MODELS_REFRESH_H" $?
+  printf 'garbage\n\n' > handoffs/.jarvis/models.seen; rm -f handoffs/.jarvis/models.checked; rm -f "$md/agy"
+  printf '#!/bin/sh\nexit 1\n' > "$md/codex"
+  JARVIS_MODELS_REFRESH_H=24 $J status >/dev/null 2>&1; check "status still exits 0 with a broken models.seen and failing CLIs" $?
+  i=0; while [ $i -lt 50 ] && [ -d handoffs/.jarvis/models.lock ]; do sleep 0.2; i=$((i + 1)); done
+) | tee "$tmp/models.out"
+n=$(grep -c '^  FAIL' "$tmp/models.out"); fails=$((fails + n))
 
 echo "brief template"
 body=$(awk '/^```bash verify/ {on = 1; next} on && /^```/ {exit} on' "$here/../plugins/jarvis/skills/setup/templates/handoffs/briefs/TEMPLATE.md")

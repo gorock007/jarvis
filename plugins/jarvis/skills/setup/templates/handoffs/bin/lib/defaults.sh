@@ -41,6 +41,26 @@ JARVIS_FABLE_SUPERSET_AGENT=""  # a Superset agent config id that lifts the back
 JARVIS_AGY_SUPERSET_AGENT=""    # a Superset agent config id (or preset) that runs agy with --dangerously-skip-permissions; empty = no agy on Superset
 JARVIS_LEAD_AGENT=claude # the agent Jarvis itself runs on: claude, or agy (started with `handoffs/bin/jarvis lead`)
 JARVIS_LEAD_MODEL=""     # an agy Jarvis's model; empty = gemini-4-neon-high
+# Models: the tier map (`jarvis models`), one id per tier per CLI. New ids are suggested by
+# `jarvis models check` and mapped only by the user's `jarvis models accept` (jarvis.conf).
+# Pinned ids, not aliases: an alias would switch to a new release unseen.
+JARVIS_TIER_top_claude=claude-opus-5-5         # Claude's top is Fable only with `jarvis fable allow`; Fable is never mapped
+JARVIS_TIER_workhorse_claude=claude-opus-5-5
+JARVIS_TIER_light_claude=claude-sonnet-5-5
+JARVIS_TIER_trivial_claude=claude-haiku-5-5
+JARVIS_TIER_top_codex=gpt-6-astra
+JARVIS_TIER_workhorse_codex=gpt-5.6-sol
+JARVIS_TIER_light_codex=gpt-5.6-terra
+JARVIS_TIER_trivial_codex=gpt-5.6-luna
+JARVIS_TIER_workhorse_agy=gemini-4-neon-high
+# opencode: no free id pinned, the free list rotates (model-routing.md 3b); `models accept` sets one
+# The ids a CLI offers when it can't be listed: Claude Code has no list command (its ids
+# are read out of the installed program, this list only when that fails); codex's
+# `codex debug models` needs jq.
+JARVIS_MODELS_claude="claude-opus-5-5 claude-sonnet-5-5 claude-haiku-5-5 claude-fable-5-1"
+JARVIS_MODELS_codex="gpt-6-astra gpt-5.6-sol gpt-5.6-terra gpt-5.6-luna"
+JARVIS_MODELS_TIMEOUT=30 # seconds one CLI gets to list its models
+JARVIS_MODELS_REFRESH_H=${JARVIS_MODELS_REFRESH_H:-24}  # jarvis status re-lists them in the background at most this often (hours); 0 = never
 # How a terminal host that isn't an agent launcher itself (tmux) starts each worker:
 # a sh command line reading $JARVIS_MODEL, $JARVIS_EFFORT and $JARVIS_PROMPT from its
 # environment. The flags are the ones Superset's agent presets launch with, so a

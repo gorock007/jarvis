@@ -269,6 +269,40 @@ default. Routing the workers doesn't change: the band and caps are still the
 Claude fleet's, and an agy Jarvis doesn't count toward them. Setup, what it
 loses, and its 429 notice: `references/hosts.md`, "Jarvis on agy".
 
+## 3d. Which id is which tier: `jarvis models`
+
+The tables above say which tier a task needs. The **tier map** in
+`handoffs/jarvis.conf` says which id that tier is on each CLI today:
+`JARVIS_TIER_<top|workhorse|light|trivial|free>_<cli>=<id>`, with the
+defaults in `lib/defaults.sh`. When you write a brief's `model:`, read the
+map with `handoffs/bin/jarvis models`. It also lists what each installed
+CLI offers right now. Spawn still takes the id written in the brief.
+
+- **New ids are only suggested, never switched to** (user ruling,
+  2026-11-25). `jarvis models check` prints `new: <cli> <id> — suggest tier
+  <t>?` (repeated until it's dealt with) and `gone: …` (printed once).
+  `jarvis status` shows `models: N new — jarvis models check` from a
+  background refresh at most once a day (`JARVIS_MODELS_REFRESH_H`).
+  Put the lines in front of the user. Only they decide:
+  `jarvis models accept <cli> <id> --tier <t>` writes the map line, and
+  `jarvis models ignore <cli> <id>` drops the suggestion.
+- **The suggestion is mechanical.** A newer version of an id the map
+  already holds, with the same effort suffix, gets that id's tier
+  (`gpt-6-sol` → the tier of `gpt-5.6-sol`). An opencode id gets `free`.
+  Anything else gets "ignore". When a CLI is listed for the first time,
+  everything it offers is recorded quietly, except newer versions of mapped
+  families.
+- **The claude rows are pinned ids**, not the `opus`/`sonnet`/`haiku`
+  aliases: an alias moves to a new release without anyone accepting it.
+  Claude Code has no list command, so `jarvis models` reads the ids out of
+  the installed program. A new Claude release shows up after Claude Code
+  updates. When the program can't be read, the ids come from
+  `JARVIS_MODELS_claude`, and new ones have to be added there by hand.
+- **Fable is never mapped.** It is listed as `gated: jarvis fable allow`,
+  and `accept` refuses it (2b).
+- Listing calls no model and costs nothing: `agy models`,
+  `codex debug models`, `opencode models`.
+
 ## 4. The usage ladder
 
 Claude Code usage is shared across Jarvis and every Claude session on the
