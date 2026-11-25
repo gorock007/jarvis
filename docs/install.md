@@ -42,6 +42,40 @@ are still called `setup` and `run` (the `name:` in each `SKILL.md`). Start them
 the same way as under Option 2: "set up Jarvis in this repo", and "Use the run
 skill" in the start prompt.
 
+## Option 4: Without Claude Code (`install.sh`)
+
+For a repo whose Jarvis runs on agy, Codex or OpenCode, with no Claude Code
+on the machine. Clone this repo once, then run its installer from the root
+of the repo you're setting up:
+
+```bash
+git clone https://github.com/gorock007/jarvis.git ~/src/jarvis
+cd path/to/your-repo
+~/src/jarvis/plugins/jarvis/install.sh
+```
+
+It finds the agent CLIs and hosts on your PATH, and asks its questions only
+when it runs in a terminal. It fills in the same templates `jarvis:setup`
+uses, copies the run skill a Codex or OpenCode Jarvis reads to
+`handoffs/skills/jarvis-run/`, and ends by printing the next step.
+
+| Flag | What it sets |
+| --- | --- |
+| `--lead claude\|agy\|codex\|opencode` | The agent Jarvis runs on. Default: `claude` if it's installed, else `codex`, `agy`, `opencode`, in that order. |
+| `--lead-model <id>` | Jarvis's model. Defaults: claude `claude-opus-5-5`, agy `gemini-4-neon-high` (experimental), codex `gpt-6-astra`. OpenCode has none: give `provider/model`. |
+| `--workers a,b` | The agents workers may run on, comma-separated. |
+| `--host superset\|ultron\|tmux` | The host the workers run on. |
+| `--checks "<cmd>"` | The checks workers run before handing off. |
+| `--yes` | Take the defaults without asking. |
+
+It refuses any Fable model, and a repo that already has `handoffs/JARVIS.md`
+(upgrade that one with `jarvis:setup`). For an agy lead it prints the
+`agy plugin install …` line for you to run; it doesn't run it.
+
+Recommended leads: Claude Opus 5.5, or Gemini Neon on agy. Neon as Jarvis
+is experimental until a live trial passes. How each lead starts, and what
+it lacks next to a Claude Jarvis: [Jarvis on another agent](hosts.md#jarvis-on-another-agent).
+
 ## Check that it installed
 
 Open a new Claude Code session and ask *"what skills do you have?"* You should

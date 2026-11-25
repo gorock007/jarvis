@@ -260,14 +260,19 @@ only the files it lists, never run git commands that change state").
   quota left; the worker idles at its prompt and `jarvis status` shows it as
   crashed. Retry later or route the brief elsewhere.
 
-### Jarvis on agy
+### Jarvis on another agent
 
-A repo may run Jarvis itself on agy: `JARVIS_LEAD_AGENT=agy` in
-`jarvis.conf` (`JARVIS_LEAD_MODEL`, default `gemini-4-neon-high`), started
-with `handoffs/bin/jarvis lead`. It is a per-repo option; Claude stays the
-default. Routing the workers doesn't change: the band and caps are still the
-Claude fleet's, and an agy Jarvis doesn't count toward them. Setup, what it
-loses, and its 429 notice: `references/hosts.md`, "Jarvis on agy".
+A repo may run Jarvis itself on agy, Codex or OpenCode:
+`JARVIS_LEAD_AGENT=agy|codex|opencode` in `jarvis.conf` (`JARVIS_LEAD_MODEL`:
+agy `gemini-4-neon-high`, codex `gpt-6-astra`, opencode a required
+`provider/model`), started with `handoffs/bin/jarvis lead`. It is a per-repo
+choice; Claude stays the default. Recommended: Claude Opus 5.5, or Neon on
+agy (experimental until a live trial passes). Never Fable. Routing the
+workers doesn't change: the band and caps are still the Claude fleet's, and
+a non-Claude Jarvis doesn't count toward them. 3c's sole-review ruling
+names a Neon Jarvis; it gives no free model sole review.
+Setup, what it loses, and its quota notice: `references/hosts.md`, "Jarvis
+on another agent".
 
 ## 3d. Which id is which tier: `jarvis models`
 

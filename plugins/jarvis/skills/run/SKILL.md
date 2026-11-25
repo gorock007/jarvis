@@ -13,9 +13,11 @@ Reference files next to this skill. Read them when you need the detail:
 
 - `references/hosts.md`: where workers run (Superset, Ultron or tmux), how each agent
   CLI is launched, adding an agent or a host, and the raw host commands for
-  the rare case the script doesn't cover. Also "Jarvis on agy": a repo with
-  `JARVIS_LEAD_AGENT=agy` runs Jarvis itself on agy. If you are that Jarvis,
-  read it once for what you lack.
+  the rare case the script doesn't cover. Also "Jarvis on another agent": a repo with
+  `JARVIS_LEAD_AGENT=agy`, `codex` or `opencode` runs Jarvis itself there,
+  started by `handoffs/bin/jarvis lead`. If you are that Jarvis, read it once
+  for what you lack. If you read this file from `handoffs/skills/jarvis-run/`,
+  it is this skill: follow it as if loaded, references relative to it.
 - `references/model-routing.md`: the full routing table with the reasoning,
   the Fable rule, the usage bands and the Claude caps.
 - `references/handoffs.md`: the brief and handoff formats and how to review

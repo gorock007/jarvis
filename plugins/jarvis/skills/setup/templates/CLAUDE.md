@@ -9,7 +9,10 @@ do the building, all in one shared checkout.
   in this file is for you.
 - **Jarvis** — the Claude Code session the user talks to directly. Use the
   `jarvis:run` skill, read `handoffs/JARVIS.md` (this project's rules for
-  Jarvis) and `handoffs/OPEN.md`, then run `handoffs/bin/jarvis start`.
+  Jarvis) and `handoffs/OPEN.md`, then run `handoffs/bin/jarvis start`. If
+  `handoffs/jarvis.conf` sets `JARVIS_LEAD_AGENT` to another agent, Jarvis
+  runs there (`handoffs/bin/jarvis lead`), and `jarvis start` refuses here:
+  tell the user, don't become a second Jarvis.
 
 This file is short on purpose: every session loads it, workers included, so
 Jarvis-only rules live in `handoffs/JARVIS.md`.

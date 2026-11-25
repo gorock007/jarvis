@@ -159,8 +159,12 @@ valid answer.
   credentials, production data, proprietary logic (third parties serve them).
 - **Usage bands**: amber at 50%, or when on pace to use the whole 5-hour
   window; red at 75%. The tool's defaults.
-- **Jarvis runs on**: Claude Code, or agy (`JARVIS_LEAD_AGENT=agy`; then
-  step 4 gives `handoffs/bin/jarvis lead`, per run's hosts.md).
+- **Jarvis runs on**: Claude Code on `claude-opus-5-5` (recommended). Or,
+  per repo, `JARVIS_LEAD_AGENT=agy` (Neon, `gemini-4-neon-high`,
+  experimental until a live trial passes), `codex` (`gpt-6-astra`, effort
+  `JARVIS_LEAD_EFFORT`, default high) or `opencode` (ask for its
+  `provider/model`: it has no default). Never Fable. Then step 4 gives
+  `handoffs/bin/jarvis lead`, per run's hosts.md, "Jarvis on another agent".
 - **Plugins to switch off**: from `jq .enabledPlugins ~/.claude/settings.json`,
   only the plainly unused (Stripe with no payments, Swift LSP in a Python
   repo): each enabled plugin adds to every session's start-up tokens. Keep
@@ -215,7 +219,11 @@ Then:
   needs no `chmod`, and `handoffs/bin/jarvis-verify.py` and
   `handoffs/bin/jarvis-scope.py`, which run through `python3` and need no
   `chmod`, and so do `jarvis-lessons.py` and `lessons-prompt.txt`), and `chmod +x handoffs/bin/jarvis handoffs/bin/jarvis-lock.pl handoffs/bin/jev.sh`.
-  Skip `jev.sh` if the user said no to Jev.
+  Skip `jev.sh` if the user said no to Jev. This also brings
+  `handoffs/bin/lead-opencode.mjs`, the OpenCode lead's plugin.
+- Copy this plugin's `skills/run/SKILL.md` and `skills/run/references/` to
+  `<repo>/handoffs/skills/jarvis-run/` (tracked). A Codex or OpenCode Jarvis
+  reads its instructions there, and `jarvis lead` refuses without them.
 - Apply the heavy-suite wrappers the user said yes to in the heavy-suites default, and
   any `JARVIS_LOCK_<class>` lines to `jarvis.conf`.
 - Copy the hidden `templates/.claude/agents/` folder to
@@ -316,6 +324,13 @@ ultron agent spawn --role jarvis --agent claude --model claude-opus-5-5 --effort
   prompt. On any host Jarvis starts the watcher itself
   (`handoffs/bin/jarvis watch --start`) when `jarvis status` says it isn't
   running.
+
+  **A non-Claude lead** (`JARVIS_LEAD_AGENT` set): no start command above.
+  The user runs `handoffs/bin/jarvis lead` from the repo root in the tmux
+  pane or Superset terminal Jarvis is to run in (`--print` shows the launch
+  first). For agy, give them the one-time `agy plugin import claude` or
+  `agy plugin install <this plugin's folder>` line; don't run it. Codex may
+  ask once for folder trust. Never edit their agy, Codex or OpenCode config.
 
   Jarvis runs on `claude-opus-5-5` at `high`: in `eval/jarvis-model/` it
   routed and reviewed as well as Fable at about a third of the cost. Workers
@@ -496,8 +511,31 @@ and stops before moving anything when it can't. See the plugin's
    commit overlaps uncommitted work, the merge stops with "origin has
    commits this checkout can't fast-forward to" and nothing moves.
 
+## 11. Upgrading a repo set up with jarvis 1.1
+
+This release lets Jarvis itself run on agy, Codex or OpenCode
+(`JARVIS_LEAD_AGENT`, started with `handoffs/bin/jarvis lead`), and adds
+`jarvis models`. A repo that keeps Claude as Jarvis changes nothing else.
+
+1. Replace `handoffs/bin/lib/` whole, as in section 10, then copy
+   `handoffs/bin/jarvis` and the new `handoffs/bin/lead-opencode.mjs`.
+2. Copy `skills/run/SKILL.md` and `skills/run/references/` to
+   `handoffs/skills/jarvis-run/` (step 3). Every later upgrade copies them
+   again, so the repo's copy matches the plugin.
+3. Append to `handoffs/jarvis.conf` the template's commented blocks it
+   lacks (the lead keys `JARVIS_LEAD_AGENT` … `JARVIS_LEAD_PERMISSIONS`,
+   the agy lines, the `JARVIS_TIER_*` map). Add the template's role
+   exception to `AGENTS.md`, its "Jarvis on another agent" paragraph to
+   `handoffs/JARVIS.md`, and its non-Claude-lead sentence to `CLAUDE.md`.
+   Keep the project's own rules.
+4. Run `handoffs/bin/jarvis status`. With a non-Claude lead set, its
+   `jarvis: <agent>/<model>` line must show no config error.
+
 ## Notes
 
+- **Without Claude Code**, a clone of this repo can set up a repo with
+  `plugins/jarvis/install.sh` (the plugin's `docs/install.md`), which fills
+  the same templates.
 - One checkout, many terminals. Workers share it, which is why the git
   rules in `AGENTS.md` are absolute. If the user wants isolated
   worktrees per worker instead, that is Superset's built-in

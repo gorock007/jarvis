@@ -6,7 +6,7 @@ Jarvis is an open-source workflow for running one coordinating agent plus a
 fleet of workers, in [Superset](https://superset.sh),
 [Ultron](https://github.com/subiixu/Ultron), or plain
 [tmux](https://github.com/tmux/tmux) anywhere else. It ships as a Claude
-Code plugin. The coordinating agent, called Jarvis, plans the work and writes
+Code plugin, with an installer for machines without Claude Code. The coordinating agent, called Jarvis, plans the work and writes
 a short brief for each task. It starts worker agents (Claude Code, Codex,
 OpenCode, or any other agent CLI) in separate terminals, reviews what they
 hand back, and commits it. You never manage the
@@ -54,7 +54,7 @@ It's probably not for you if:
 | Requirement | Why |
 | --- | --- |
 | A host for the workers: the [Superset](https://docs.superset.sh/install) desktop app and CLI (Superset host only: Claude Code configured as an agent, built against CLI v1.28), **or** [Ultron](https://github.com/subiixu/Ultron), **or** [tmux](https://github.com/tmux/tmux/wiki/Installing) 3.0+ | Jarvis starts, reads and types into worker terminals through it. See [Hosts and agents](docs/hosts.md#hosts-and-agents). |
-| [Claude Code](https://claude.com/claude-code) CLI on your PATH | Jarvis itself and most workers run on it |
+| [Claude Code](https://claude.com/claude-code) CLI on your PATH | Jarvis itself and most workers run on it. Jarvis can run on agy, Codex or OpenCode instead: see [Jarvis on another agent](#jarvis-on-another-agent) |
 | A git repository | Jarvis commits each handoff |
 | `jq` (and `python3` for `jarvis usage`) | `handoffs/bin/jarvis` reads JSON from the host and Claude Code |
 | *Optional:* Codex, OpenCode | Codex for images, computer-use testing and extra work at high usage; OpenCode's free models for small tasks. Without them those tasks go to Claude models. |
@@ -118,15 +118,42 @@ Close some; see the [FAQ entry](docs/faq.md).
 On Superset or Ultron, the start command differs: see
 [docs/hosts.md](docs/hosts.md).
 
+## Jarvis on another agent
+
+Jarvis itself can run on Claude Code (the default), agy, Codex or OpenCode.
+We recommend Claude Opus 5.5, or Gemini Neon on agy; Neon as Jarvis is
+experimental until a live trial passes. Set `JARVIS_LEAD_AGENT` (and
+`JARVIS_LEAD_MODEL`) in `handoffs/jarvis.conf`, then start it from the repo
+root in the terminal it is to run in:
+
+```bash
+handoffs/bin/jarvis lead --print   # shows the launch, starts nothing
+handoffs/bin/jarvis lead
+```
+
+A non-Claude Jarvis doesn't count toward the Claude caps, and loses a few
+Claude-only features. See [docs/hosts.md](docs/hosts.md#jarvis-on-another-agent).
+
+## Which model is which tier
+
+`handoffs/bin/jarvis models` lists the models each installed agent CLI
+offers, with no model call, and `jarvis models check` shows what's new since
+last time. It only suggests a tier for a new id; nothing changes until you
+run `jarvis models accept <cli> <model> --tier <tier>` (or `ignore` it).
+`jarvis status` says when there's something new.
+
 ## Other install options
 
 The quick start already installed the plugin (Option 1: the Claude Code
-marketplace), so don't run it twice. The other two:
+marketplace), so don't run it twice. The others:
 
 - **Option 2, Skills CLI:** `npx skills add gorock007/jarvis`, for Claude
   Code, Codex, or any agent that reads `SKILL.md` files. See [docs/install.md](docs/install.md).
 - **Option 3, manual:** clone the repo and copy two skill folders. See
   [docs/install.md](docs/install.md).
+- **Option 4, without Claude Code:** clone the repo and run
+  `plugins/jarvis/install.sh` from your repo's root, for a Jarvis on agy,
+  Codex or OpenCode. See [docs/install.md](docs/install.md#option-4-without-claude-code-installsh).
 
 [docs/install.md](docs/install.md) also covers checking that it installed and
 moving from `superset-jarvis`.
@@ -134,7 +161,7 @@ moving from `superset-jarvis`.
 ## Learn more
 
 - [Install](docs/install.md): all options, checking it, moving from superset-jarvis
-- [Hosts](docs/hosts.md): starting Jarvis on Superset, Ultron or tmux; agents and custom hosts
+- [Hosts](docs/hosts.md): starting Jarvis on Superset, Ultron or tmux; Jarvis on another agent; agents and custom hosts
 - [How it works](docs/how-it-works.md): what it does, talking to Jarvis, what gets added to your repo, customizing
 - [Model routing](docs/routing.md): which agent and model gets which task
 - [Usage-aware spending](docs/usage.md): bands, caps and token efficiency

@@ -50,6 +50,48 @@ On any host Jarvis then starts the watcher (`handoffs/bin/jarvis watch
 Jarvis when a handoff lands, or when a worker hits a usage limit, sits at a
 prompt, or freezes.
 
+## Jarvis on another agent
+
+Jarvis itself runs on Claude Code by default. A repo can run it on agy,
+Codex or OpenCode instead. We recommend Claude Opus 5.5, or Gemini Neon on
+agy; Neon as Jarvis is **experimental** until a live trial passes, so try it
+in a throwaway repo first. Set it in `handoffs/jarvis.conf`:
+
+```bash
+JARVIS_LEAD_AGENT=agy            # claude (default), agy, codex or opencode
+JARVIS_LEAD_MODEL=               # empty: agy gemini-4-neon-high, codex gpt-6-astra; opencode needs provider/model
+JARVIS_LEAD_EFFORT=              # codex only; empty = high
+JARVIS_LEAD_PERMISSIONS=full     # full: Jarvis runs commands without asking; ask: its CLI asks
+```
+
+Then, from the repo root, in the tmux pane or Superset terminal Jarvis is to
+run in:
+
+```bash
+handoffs/bin/jarvis lead --print   # shows the launch, starts nothing
+handoffs/bin/jarvis lead           # starts Jarvis in this terminal
+```
+
+- **agy** needs the jarvis plugin installed into it once: `agy plugin import
+  claude`, or `agy plugin install <the jarvis plugin's folder>`.
+- **Codex and OpenCode** read the run skill from
+  `handoffs/skills/jarvis-run/`, which setup (or `install.sh`) copies. Codex
+  may ask once for folder trust at its first launch.
+- **OpenCode:** the launch script under `handoffs/.jarvis/` holds the merged
+  `OPENCODE_CONFIG_CONTENT`, so any keys in that variable stay local
+  (`handoffs/.jarvis/` is git-ignored). An OpenCode config that sets the
+  build agent's model may override the `-m` Jarvis passes; that is
+  unverified, so check the model on its screen.
+- **`ask`** means agy runs with `--mode accept-edits`, Codex without
+  `--dangerously-bypass-approvals-and-sandbox` (its own approval settings
+  apply), and OpenCode without `--auto`.
+
+A non-Claude Jarvis doesn't count toward the Claude caps. It has no prompt
+guard or statusline, `jarvis usage` doesn't price its turns, and the watcher
+watches its screen for that CLI's quota error and says so loudly. Any Fable
+model is refused. The full list:
+[`hosts.md`, "Jarvis on another agent"](https://github.com/gorock007/jarvis/blob/main/plugins/jarvis/skills/run/references/hosts.md#jarvis-on-another-agent-agy-codex-or-opencode).
+
 ## Hosts and agents
 
 Jarvis keeps two things apart: the **host**, which runs worker terminals,

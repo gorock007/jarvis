@@ -233,70 +233,126 @@ prompt in chat mode.
 
 On any host, Jarvis then runs `handoffs/bin/jarvis watch --start` once.
 
-### Jarvis on agy
+### Jarvis on another agent (agy, Codex or OpenCode)
 
-A repo can run Jarvis itself on agy (Gemini 4 Neon, on Google's quota)
-instead of Claude Code. Claude stays the default; nothing changes for a repo
-that doesn't opt in. To switch, put this in `handoffs/jarvis.conf`:
+A repo can run Jarvis itself on agy, Codex or OpenCode instead of Claude
+Code. Claude stays the default, and nothing changes for a repo that doesn't
+opt in. The recommended leads are Claude Opus 5.5 (the default) or Gemini
+Neon on agy. **Neon as Jarvis is experimental** until a live trial passes:
+try it in a throwaway repo first. A Codex or OpenCode Jarvis has passed only
+offline tests with fake CLIs.
+
+Pick the lead in `handoffs/jarvis.conf`:
+
+| Key | Values |
+| --- | --- |
+| `JARVIS_LEAD_AGENT` | `claude` (default), `agy`, `codex` or `opencode`. Anything else is counted as Claude, `jarvis status` warns, and `jarvis lead` refuses it. |
+| `JARVIS_LEAD_MODEL` | Empty means agy `gemini-4-neon-high` (its effort is in the id) or codex `gpt-6-astra`. OpenCode has no default: give `provider/model` (`opencode models` lists them). Any Fable id is refused, in any case and behind a provider, `--force` included. |
+| `JARVIS_LEAD_EFFORT` | Codex only; empty means `high`. agy and OpenCode refuse any value. |
+| `JARVIS_LEAD_PERMISSIONS` | `full` (default) or `ask`, below. |
 
 ```bash
-JARVIS_LEAD_AGENT=agy
-JARVIS_LEAD_MODEL=gemini-4-neon-high   # the default; its effort is in the id
+JARVIS_LEAD_AGENT=codex
+JARVIS_LEAD_MODEL=gpt-6-astra   # the default for codex
 ```
 
-Install the jarvis plugin into agy once, so it has the `jarvis:run` skill:
-`agy plugin import claude` (it copies the user's Claude Code plugins) or
-`agy plugin install <the jarvis plugin's folder>`. Then, from the repo root,
-in the terminal Jarvis is to run in (a tmux pane, or a plain Superset
-terminal; no Superset agent config is needed):
+**Instructions.** agy reads the `jarvis:run` skill from its own plugins:
+install the jarvis plugin into agy once, with `agy plugin import claude`
+(it copies the user's Claude Code plugins) or `agy plugin install <the
+jarvis plugin's folder>`. `jarvis lead` refuses an agy without it (`--force`
+starts it anyway). Codex and OpenCode read the skill as a file: setup
+copies `run/SKILL.md` and `references/` to `handoffs/skills/jarvis-run/`.
+`jarvis lead` refuses when that copy or a reference it names is missing or
+empty, `--force` included.
+
+**Starting it.** From the repo root, in the terminal Jarvis is to run in (a
+tmux pane, or a plain Superset terminal; no Superset agent config is
+needed):
 
 ```bash
-handoffs/bin/jarvis lead            # --print shows the launch instead
+handoffs/bin/jarvis lead            # --print shows the launch instead, and starts nothing
 ```
 
-`jarvis lead` launches agy as `JARVIS_AGENT_agy` launches a worker
-(`--dangerously-skip-permissions`, `-i`), plus:
+It refuses to run inside an agent, when the CLI isn't on PATH, and while
+another Jarvis terminal is still open (it never takes one over). It launches
+the CLI with the same `JARVIS_AGENT_<cli>` line a worker gets, through a
+wrapper that adds the lead's own hooks for that run only. Jarvis never
+writes the user's agy, Codex or OpenCode config. The launch script is
+`handoffs/.jarvis/launch/lead.sh`; read it when the lead won't start.
 
-- **Its own hooks**: `--add-dir handoffs/.jarvis/launch/lead`, whose
-  `.agents/hooks.json` runs `jarvis hook lead working` before every model
-  call and `jarvis hook lead stop` when a turn ends. They write
-  `handoffs/.jarvis/lead.stamp`, which stands in for the Claude transcript
-  the watcher reads for Jarvis's idle time.
-- **Session trust** for the checkout, as for an agy worker.
-- **The start prompt**: "You are Jarvis, on agy …: use the jarvis:run
-  skill, read handoffs/JARVIS.md and OPEN.md, run handoffs/bin/jarvis
-  start". agy reads `AGENTS.md`, whose role rule makes every other agent a
-  worker except one whose prompt begins "You are Jarvis, on agy". The prompt
-  carries the role, not a `GEMINI.md`, because agy workers read `GEMINI.md`
-  too, and because the watcher sends the same words after a clear.
+| Lead | What the launch adds | Clear |
+| --- | --- | --- |
+| agy | `--add-dir handoffs/.jarvis/launch/lead`, whose `.agents/hooks.json` runs `jarvis hook lead working` on each model call (`PreInvocation`) and `… stop` when a turn ends; `--settings` trusting the checkout for this session | `/clear` |
+| codex | `--no-daemon` and per-run hooks as `-c hooks.<event>=…`: `UserPromptSubmit` → working, `Stop` → stop, `Interrupt` and `SessionEnd` → unknown, beside the user's own hooks and notify. They need `--dangerously-bypass-hook-trust`, which the built-in line has | `/clear` |
+| opencode | the lead plugin, `handoffs/bin/lead-opencode.mjs`, copied into the launch folder and added to `OPENCODE_CONFIG_CONTENT`'s `plugin` list (the rest of that variable is kept; invalid JSON or a `plugin` that isn't a list is refused); `--agent build`, so a default plan agent doesn't make Jarvis read-only. It needs `jq` | `/new` |
 
-`jarvis start` then writes `Jarvis session: <terminal> · agy/<model>` in
-`OPEN.md`. It refuses to run in Claude Code while the config says agy
-(`--force` claims the terminal anyway), and `jarvis lead` refuses unless the
-config says agy.
+The first prompt begins "You are Jarvis, on <agent>". `AGENTS.md`'s role
+rule makes every other non-Claude session a worker, except one started by
+`jarvis lead` whose first or fresh prompt begins that way. The prompt
+carries the role, not a `GEMINI.md`, because workers read those files too,
+and because the watcher sends the same words after a clear. agy is told to
+use the `jarvis:run` skill; Codex and OpenCode to read
+`handoffs/skills/jarvis-run/SKILL.md` in full.
 
-**What changes for an agy Jarvis:**
+`jarvis start` then writes `Jarvis session: <terminal> · <agent>/<model>` in
+`OPEN.md`. It refuses to run in Claude Code while the config names another
+lead (`--force` claims the terminal anyway), and it warns when the running
+Jarvis was started on a different agent than the config now names.
+
+**Permissions.** `JARVIS_LEAD_PERMISSIONS=full`, the default, lets the lead
+run any command without asking, as workers do. `ask` keeps its CLI's own
+prompts:
+
+- agy: `--mode accept-edits` instead of `--dangerously-skip-permissions`;
+- codex: no `--dangerously-bypass-approvals-and-sandbox`, so Codex's own
+  approval settings apply (`--dangerously-bypass-hook-trust` stays: it only
+  lets the launch's hooks run);
+- opencode: no `--auto`.
+
+In `ask` mode, the CLI's `JARVIS_AGENT_<cli>` line must begin with the bare
+CLI name (not `env …`, a path or `npx`), and nothing else in it may skip
+approvals (`dangerously…`, `--yolo`, `--full-auto`, `danger-full-access`,
+`-a never`). Otherwise `jarvis lead` refuses and `jarvis status` says why.
+
+**Codex.** It may ask once for folder trust at its first launch; answer it.
+Jarvis doesn't write that trust for a lead.
+
+**OpenCode.**
+- The launch script under `handoffs/.jarvis/` holds the merged
+  `OPENCODE_CONFIG_CONTENT`. Any keys in that variable land in the script,
+  which stays local: `handoffs/.jarvis/` is git-ignored.
+- An OpenCode config that sets the build agent's model may override the
+  `-m` Jarvis passes. That is unverified; check the model on its screen.
+- `--pure` turns plugins off, and with them the lead's turn signals.
+
+**What changes for a non-Claude Jarvis:**
 
 - **Caps.** It isn't a Claude session: `JARVIS_MAX_CLAUDE` counts only Claude
   workers in this checkout, so the default 3 allows three.
-- **Idle clear.** The watcher reads idle time from `lead.stamp`. That is the
-  minutes since its last Stop, and 0 while a turn is running. Past
-  `JARVIS_IDLE_MIN` it types agy's own `/clear` (a new conversation, the same
-  session; never a host's `clear`), restarts the clock, and sends the start
-  prompt with the events.
-- **Its own quota.** A 429 (`RESOURCE_EXHAUSTED`) from Google leaves Jarvis
-  silent at its prompt. The band can't see this, because the band is the
-  Claude fleet's. The watcher reads Jarvis's screen on every tick. On
-  `RESOURCE_EXHAUSTED (code 429)`, or a Stop hook whose `error` carries a
-  429, it rings the bell and prints a `JARVIS IS LIMITED` line in its own
-  terminal, at most once an hour, and logs `jarvis-limit` in `watch.log`.
-  `jarvis status` shows the same line until the screen moves on or a clean
-  Stop comes. Wake events still go to Jarvis.
+- **Idle clear.** Its hooks write `handoffs/.jarvis/lead.stamp`, which stands
+  in for the Claude transcript: the minutes since its last Stop, 0 while a
+  turn runs, unknown after an interrupt or before any signal. Past
+  `JARVIS_IDLE_MIN` the watcher types the row's clear (never a host's
+  `clear`) and sends the start prompt with the events. Unknown idle never
+  clears. agy's clear keeps the session, and is taken as done. A Codex or
+  OpenCode clear is confirmed only when the next role prompt comes from a
+  new root session (`reset-confirmed` in `watch.log`); if it comes from the
+  old one, `jarvis status` shows "reset unconfirmed" and the watcher won't
+  clear it again until `jarvis lead` restarts it.
+- **Its own quota.** The band is the Claude fleet's and can't see the lead's
+  limit. The watcher reads Jarvis's screen on every tick for that CLI's
+  quota or rate-limit error (agy `RESOURCE_EXHAUSTED (code 429)`, Codex's
+  usage-limit message, OpenCode's `Too Many Requests` or quota text), and
+  the hooks report agy's and OpenCode's errors. It then rings the bell and
+  prints a `JARVIS IS LIMITED` line in its own terminal, at most once an
+  hour, and logs `jarvis-limit` in `watch.log`. `jarvis status` shows the
+  same line, with what to do, until the screen moves on or a clean turn
+  ends. Wake events still go to Jarvis.
 - **Merge review.** Neon may be the only merge reviewer when it is Jarvis
   (user ruling, 2026-11-25). Workers on agy are still never the only
   reviewer.
 
-**What an agy Jarvis loses** (each degrades quietly, with no errors):
+**What a non-Claude Jarvis loses** (each degrades quietly, with no errors):
 
 - the prompt guard (Claude's `UserPromptSubmit`) that stops the first message
   after a long idle;
@@ -304,14 +360,15 @@ config says agy.
   only Claude sessions write. With no Claude session running it goes stale,
   and the band reads amber;
 - `jarvis usage`'s coordinating cost. It prices Claude transcripts only, and
-  says that Jarvis runs on agy;
-- `jarvis doctor`'s session checks for Jarvis. Its process isn't a Claude
-  one; doctor still names its terminal;
-- the PreToolUse Fable guard and Claude's subagents (`.claude/agents/`). agy
-  has its own tools, and the run skill's Claude-only tools have no agy
-  equivalent;
-- `setup/SKILL.md` is past agy's 24 000-byte skill limit, so its tail is
-  cut there. Run setup in Claude Code. `run/SKILL.md` fits.
+  says which agent Jarvis runs on;
+- `jarvis doctor`'s session checks for Jarvis; doctor still names its
+  terminal;
+- the PreToolUse Fable guard and Claude's subagents (`.claude/agents/`);
+- idle clearing, when its hooks can't run: a `JARVIS_AGENT_codex` line that
+  doesn't call `codex` by name, or OpenCode with `--pure`, leaves idle
+  unknown, so the watcher never clears it;
+- for agy, `setup/SKILL.md`, which is past agy's 24 000-byte skill limit:
+  run setup in Claude Code. `run/SKILL.md` fits.
 
-A real agy Jarvis has not yet run a full session. Try it in a throwaway repo
-first.
+agy's same-session `/clear` has not been checked live, and no Codex or
+OpenCode Jarvis has run a real session yet.
