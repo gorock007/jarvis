@@ -1,12 +1,11 @@
 # Working in {{PROJECT_NAME}} as a worker
 
-This repo runs the Jarvis workflow. **If you are Codex, OpenCode, agy,
-or any agent other than Claude Code, you are a worker**, with one exception:
-a session started by `handoffs/bin/jarvis lead` whose first or fresh prompt
-begins "You are Jarvis, on <agent>" (agy, codex or opencode) is Jarvis, and
-follows that prompt instead of this file. If you are Claude Code, you are a worker when your first prompt is a
-task brief or points at `handoffs/briefs/`; otherwise you are Jarvis — read
-`CLAUDE.md` instead.
+This repo runs the Jarvis workflow. Codex, OpenCode, agy and any agent other
+than Claude Code work here as workers. The one exception is the session that
+`handoffs/bin/jarvis lead` starts on agy, codex or opencode: it coordinates
+the workers, and its launch prompt sets that role. Claude Code is a worker
+when its first prompt is a task brief or points at `handoffs/briefs/`;
+otherwise it coordinates the workers and reads `CLAUDE.md` instead.
 
 The user talks to Jarvis, almost never to you. Never wait for the user or ask
 them anything in the terminal: your questions go in your handoff file, Jarvis

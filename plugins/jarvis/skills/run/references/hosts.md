@@ -287,8 +287,12 @@ writes the user's agy, Codex or OpenCode config. The launch script is
 | opencode | the lead plugin, `handoffs/bin/lead-opencode.mjs`, copied into the launch folder and added to `OPENCODE_CONFIG_CONTENT`'s `plugin` list (the rest of that variable is kept; invalid JSON or a `plugin` that isn't a list is refused); `--agent build`, so a default plan agent doesn't make Jarvis read-only. It needs `jq` | `/new` |
 
 The first prompt begins "You are Jarvis, on <agent>". `AGENTS.md`'s role
-rule makes every other non-Claude session a worker, except one started by
-`jarvis lead` whose first or fresh prompt begins that way. The prompt
+rule makes every other non-Claude session a worker, except the one `jarvis
+lead` starts, whose launch prompt sets its role. Keep that rule worded as a
+description: when `AGENTS.md` said a session whose prompt begins a given
+phrase "follows that prompt instead of this file", Google answered every agy
+request in the repo, on every Gemini model, with `RESOURCE_EXHAUSTED (code
+429)` while `/quota` showed 100% left. The prompt
 carries the role, not a `GEMINI.md`, because workers read those files too,
 and because the watcher sends the same words after a clear. agy is told to
 use the `jarvis:run` skill; Codex and OpenCode to read
