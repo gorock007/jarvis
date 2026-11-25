@@ -50,32 +50,88 @@ hook_prompt() {
     '{decision: "block", reason: $r}'
 }
 
-# An agy Jarvis's own hooks (jarvis lead writes them; agy loads them through --add-dir):
-# PreInvocation before every model call, Stop when a turn ends. They stamp its last turn
-# event, which the watcher reads for its idle time as it reads a Claude Jarvis's
-# transcript, and a Stop whose error is Google's 429 marks Jarvis limited (a clean Stop
-# lifts that). $1 = working | stop; the payload on stdin. Silent, exit 0.
+# A non-Claude Jarvis's own hooks (jarvis lead writes them; lib/lead.sh):
+#   jarvis hook lead <working|stop|unknown|limit|ok> <agent> <generation>, the payload on stdin.
+# A callback whose agent or generation isn't the running launch's (lead.launch) is
+# dropped, as is a worker's. They stamp its last turn event, which the watcher reads for
+# its idle time as it reads a Claude Jarvis's transcript, and record a quota error.
+# - agy: PreInvocation → working, Stop → stop; a Stop whose error is Google's 429 marks it
+#   limited, a clean one lifts a limit its hooks set. The old one-argument form (an agy
+#   started before callbacks named their launch) counts only while no launch is recorded.
+# - codex, opencode: only the root session's turns count. Until one is bound, a working
+#   whose prompt begins "You are Jarvis, on <agent>" binds its session; after the watcher's
+#   clear, that prompt from a different session confirms the clear (from the same one: the
+#   reset is unconfirmed, and the watcher stops clearing). stop after stop keeps the first
+#   one's time. limit carries an error (opencode: its plugin's session.error or retry);
+#   ok is an error-free turn, which lifts a limit its hooks set. Silent, exit 0.
 hook_lead() {
-  local in="" err=""
-  case "${1:-}" in working|stop) ;; *) exit 0 ;; esac
-  lead_is_claude && exit 0
-  [ -t 0 ] || in=$(cat)
-  if [ "$1" = stop ] && have jq; then
-    err=$(printf '%s' "$in" | jq -r '.error // empty | strings' 2>/dev/null)
-    err=$(printf '%s' "$err" | tr '\n\r\t' '   ')
-    if [ -z "$err" ]; then rm -f "$STATE/lead-limit"
-    elif printf '%s' "$err" | grep -Eq "$LEAD_HOOK_LIMIT_RE"; then lead_limit_set hook "$err"
-    fi
+  local kind=${1:-} agent=${2:-} gen=${3:-} cur in=""
+  case "$kind" in working|stop|unknown|limit|ok) ;; *) exit 0 ;; esac
+  cur=$(lead_agent)
+  [ "$cur" != claude ] && [ "${JARVIS_ROLE:-}" != worker ] || exit 0
+  if [ -z "$agent" ]; then
+    [ "$cur" = agy ] && [ ! -f "$STATE/lead.launch" ] || exit 0
+    case "$kind" in working|stop) ;; *) exit 0 ;; esac
+  else
+    [ "$agent" = "$cur" ] && [ -n "$gen" ] || exit 0
   fi
-  lead_stamp "$1"
+  [ -t 0 ] || in=$(cat)
+  lead_lock || exit 0
+  trap lead_unlock EXIT
+  # under the lock: a relaunch since this hook's launch makes it stale
+  [ -z "$agent" ] || { [ "$(rec_get "$STATE/lead.launch" agent)" = "$agent" ] && [ "$(rec_get "$STATE/lead.launch" generation)" = "$gen" ]; } || exit 0
+  if [ "$cur" = agy ]; then hook_lead_agy "$kind" "$in"; else hook_lead_root "$kind" "$in"; fi
   exit 0
 } >/dev/null 2>&1
 
-lead_hooks() { # $1 = jarvis, quoted for sh: the hooks.json jarvis lead gives an agy Jarvis
-  local w s
-  w=$(printf '%s hook lead working </dev/null' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g')   # JSON strings
-  s=$(printf '%s hook lead stop' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g')
-  printf '{"jarvis-lead": {\n  "PreInvocation": [{"type": "command", "command": "%s", "timeout": 10}],\n  "Stop": [{"type": "command", "command": "%s", "timeout": 10}]\n}}\n' "$w" "$s"
+hook_lead_agy() { # $1 = kind, $2 = payload
+  local err
+  if [ "$1" = stop ] && have jq; then
+    err=$(printf '%s' "$2" | jq -r '.error // empty | strings' 2>/dev/null)
+    err=$(printf '%s' "$err" | tr '\n\r\t' '   ')
+    if [ -z "$err" ]; then [ "$(rec_get "$STATE/lead-limit" source)" != hook ] || lead_limit_clear
+    elif printf '%s' "$err" | grep -Eiq "$(lead_attr ERROR_RE)"; then lead_limit_set hook "$err"
+    fi
+  fi
+  case "$1" in
+    working) lead_stamp working ;;
+    stop) case "$(lead_stamp_kind)" in stop|cleared) ;; *) lead_stamp stop ;; esac ;;
+  esac
+}
+
+hook_lead_root() { # $1 = kind, $2 = payload
+  local sid root e code
+  have jq || return 0
+  sid=$(printf '%s' "$2" | jq -r '(.session_id // .sessionID // empty) | strings' 2>/dev/null)
+  case "$sid" in ""|*[!A-Za-z0-9_.:-]*) return 0 ;; esac
+  root=$(lead_get root)
+  if [ "$1" = working ] && printf '%s' "$2" | jq -e --arg p "$(lead_prefix)" '(.prompt // "") | strings | startswith($p)' >/dev/null 2>&1; then
+    if [ -z "$root" ]; then
+      if [ "$(lead_get reset)" != requested ]; then lead_put root "$sid"
+      elif [ "$sid" != "$(lead_get oldroot)" ]; then lead_put root "$sid" reset "" oldroot ""; watch_log reset-confirmed "$(lead_agent)"
+      else lead_put root "$sid" reset unconfirmed oldroot ""; watch_log reset-unconfirmed "$(lead_agent)"
+      fi
+      root=$sid
+    elif [ "$sid" != "$root" ] && [ "$(lead_stamp_kind)" != working ]; then
+      lead_put root "$sid"; root=$sid   # a new root while the old one is idle: the user's own new session
+    fi
+  fi
+  [ "$sid" = "$root" ] || return 0
+  case "$1" in
+    working) lead_stamp working ;;
+    stop) case "$(lead_stamp_kind)" in stop|cleared) ;; *) lead_stamp stop ;; esac ;;
+    unknown) lead_stamp unknown ;;
+    limit)
+      e=$(printf '%s' "$2" | jq -r '.error // empty | strings' 2>/dev/null)
+      e=$(printf '%s' "$e" | tr '\n\r\t' '   ')
+      code=$(printf '%s' "$2" | jq -r '.status_code // empty | numbers' 2>/dev/null)
+      if [ "$code" = 429 ] || { [ -n "$e" ] && [ -n "$(lead_attr ERROR_RE)" ] && printf '%s' "$e" | grep -Eiq "$(lead_attr ERROR_RE)"; }; then
+        lead_limit_set hook "${e:-HTTP 429}"
+      fi
+      # a retry is still its turn; an error ends it, unless an idle follows
+      if [ "$(printf '%s' "$2" | jq -r '.state // empty' 2>/dev/null)" = retry ]; then lead_stamp working; else lead_stamp unknown; fi ;;
+    ok) [ "$(rec_get "$STATE/lead-limit" source)" != hook ] || lead_limit_clear ;;
+  esac
 }
 
 # PreToolUse, every session in the checkout: deny an Agent/Task call whose model is

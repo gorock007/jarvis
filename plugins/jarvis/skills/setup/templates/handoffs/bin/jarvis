@@ -3,9 +3,9 @@
 # coordinator spends its turns on judgement instead of bookkeeping.
 #
 #   jarvis start                       claim this terminal as Jarvis in OPEN.md, then status
-#   jarvis lead [--print] [--force]    (the user) start Jarvis on agy in this terminal, when
-#                                      jarvis.conf sets JARVIS_LEAD_AGENT=agy: its hooks, trust
-#                                      for the session, its model and the start prompt
+#   jarvis lead [--print] [--force]    (the user) start Jarvis in this terminal on the agent
+#                                      jarvis.conf's JARVIS_LEAD_AGENT names (agy, codex or
+#                                      opencode): its hooks, its model and the start prompt
 #   jarvis status                      band, workers, new handoffs, git — one short screen
 #   jarvis spawn <brief.md> [--after <partial-handoff>] [--attach <file>]... [--force]
 #                                      lint, enforce the band and the Claude caps (machine-wide,
@@ -63,7 +63,9 @@
 #                                      coordinating vs building, from local transcripts
 #   jarvis hook prompt                 UserPromptSubmit guard (from .claude/settings.json)
 #   jarvis hook pretool                PreToolUse guard: no Fable subagent, no Fable in a settings allowlist
-#   jarvis hook lead working|stop      an agy Jarvis's own hooks (jarvis lead): its idle time, a 429
+#   jarvis hook lead <kind> <agent> <generation>
+#                                      a non-Claude Jarvis's own hooks (jarvis lead): its idle
+#                                      time, its session, a quota error
 #   jarvis fable allow <brief.md>      (the user, in their own terminal) let that brief's next spawn run on Fable
 #   jarvis fable list | revoke <brief.md>
 #                                      authorizations pending, used and expired, and the log tail
@@ -192,7 +194,7 @@ TAB=$(printf '\t')
 
 # the functions, from lib/: the host ones before a host of handoffs/bin/hosts/, the rest after it
 # shellcheck disable=SC1090
-for JARVIS_M in core hosts host-superset host-ultron host-tmux; do . "$JARVIS_LIB/$JARVIS_M.sh" || exit 1; done
+for JARVIS_M in core hosts host-superset host-ultron host-tmux lead; do . "$JARVIS_LIB/$JARVIS_M.sh" || exit 1; done
 HOST=$(host_pick)
 # shellcheck disable=SC1090
 [ -n "$HOST" ] && [ -f "$BIN/hosts/$HOST.sh" ] && . "$BIN/hosts/$HOST.sh"
@@ -239,7 +241,7 @@ case "$cmd" in
     case "${1:-}" in
       prompt) hook_prompt ;;
       pretool) hook_pretool ;;
-      lead) hook_lead "${2:-}" ;;
+      lead) shift; hook_lead "$@" ;;
       *) exit 0 ;;
     esac ;;
   *) awk 'NR > 1 && !/^#/ {exit} NR > 1 {sub(/^# ?/, ""); print}' "$0"; exit 2 ;;

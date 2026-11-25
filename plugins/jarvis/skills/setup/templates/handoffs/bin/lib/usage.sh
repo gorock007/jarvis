@@ -66,7 +66,7 @@ print(count)
     wakes="wake-ups (this repo): no watcher log yet"
   fi
   printf '%s' "$json" | jq -r --argjson merged "$merged" --argjson ignored "$ignored" --argjson over "${over:-[]}" --arg wakes "$wakes" \
-    --argjson wruns "${wruns:-[]}" --argjson whos "${whos:-[]}" --arg lead "$(if lead_is_claude; then echo claude; else echo agy; fi)" '
+    --argjson wruns "${wruns:-[]}" --argjson whos "${whos:-[]}" --arg lead "$(lead_agent)" '
     def usd: "$" + ((. * 100 | round) / 100 | tostring);
     def age:
       if . < 3600 then ((. / 60 | floor | tostring) + "m")

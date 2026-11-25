@@ -102,6 +102,7 @@ case "$1 $2" in
     for a in "$@"; do [ "$p" != --text ] || x=$a; case "$a" in --text=*) x=${a#--text=} ;; esac; p=$a; done
     [ -z "${FAKE_SEND_FAIL:-}" ] || [ "$6" = jarvis-t ] || { echo "Error: Terminal session \"$6\" is not active; create it before connecting." >&2; exit 1; }
     [ -z "${FAKE_SEND_FAIL_ONCE:-}" ] || [ -e "$FAKE_SEND_FAIL_ONCE" ] || { : > "$FAKE_SEND_FAIL_ONCE"; echo "Error: Terminal session \"$6\" is not active; create it before connecting." >&2; exit 1; }
+    [ -z "${FAKE_SEND_FAIL_RE:-}" ] || ! printf '%s' "$x" | grep -Eq "$FAKE_SEND_FAIL_RE" || { echo "Error: send refused" >&2; exit 1; }   # one text that can't go in
     [ -z "${FAKE_SEND_EMPTY:-}" ] || exit 0   # a busy terminal that answers nothing
     [ -n "${FAKE_SEND_DROP:-}" ] || [ -z "${FAKE_SCREEN_FILE:-}" ] || [ -z "$x" ] || printf '%s\n' "$x" >> "$FAKE_SCREEN_FILE"
     case " $* " in *" --keys "*) printf '{"terminalId":"%s","keys":1}\n' "$6" ;;
@@ -879,7 +880,7 @@ $trust"
     (
       mkdir -p "$tmp/lead/bin" && cd "$tmp/lead" || exit 1
       export FAKE_LOG="$tmp/lead.log" JARVIS_HOME="$tmp/jh-lead" PATH="$tmp/lead/bin:$PATH"
-      unset CLAUDECODE ANTIGRAVITY_AGENT
+      unset CLAUDECODE ANTIGRAVITY_AGENT OPENCODE CODEX_THREAD_ID CODEX_SHELL JARVIS_ROLE
       cat > bin/agy <<'EOT'
 #!/bin/sh
 [ "$1" = plugin ] && { printf '%s\n' "${FAKE_AGY_PLUGINS:-[]}"; exit 0; }
@@ -926,11 +927,291 @@ EOT
       $J status | grep -q '^JARVIS IS LIMITED: its screen showed "⚠ RESOURCE_EXHAUSTED (code 429)"'; check "…status shows it" $?
       out=$(FAKE_SCREEN=$(printf 'Model unavailable (attempt 9/9)\n⚠ RESOURCE_EXHAUSTED (code 429)\n>') $J watch --once); ! printf '%s' "$out" | grep -q 'JARVIS IS LIMITED'
       check "…once an hour, not every tick" $?
-      $J watch --once | grep -q 'no longer shows the 429' && [ ! -e handoffs/.jarvis/lead-limit ] && ! $J status | grep -q 'JARVIS IS LIMITED'; check "…and lifts when the screen moves on" $?
-      jq '.error = "RESOURCE_EXHAUSTED (code 429): Resource has been exhausted"' "$here/hook-payloads/agy-stop.json" | $J hook lead stop
+      $J watch --once | grep -q 'no longer shows the quota error' && [ ! -e handoffs/.jarvis/lead-limit ] && ! $J status | grep -q 'JARVIS IS LIMITED'; check "…and lifts when the screen moves on" $?
+      g=$(sed -n 's/^generation: //p' handoffs/.jarvis/lead.launch)   # the hooks name their launch
+      jq '.error = "RESOURCE_EXHAUSTED (code 429): Resource has been exhausted"' "$here/hook-payloads/agy-stop.json" | $J hook lead stop agy "$g"
       grep -qx 'source: hook' handoffs/.jarvis/lead-limit && $J watch --once | grep -q 'JARVIS IS LIMITED'; check "a Stop whose error is a 429 marks Jarvis limited; the watcher says so" $?
-      $J hook lead stop < "$here/hook-payloads/agy-stop.json"; [ ! -e handoffs/.jarvis/lead-limit ]; check "…a clean Stop lifts it" $?
+      $J hook lead stop agy "$g" < "$here/hook-payloads/agy-stop.json"; [ ! -e handoffs/.jarvis/lead-limit ]; check "…a clean Stop lifts it" $?
     )
+
+    # Jarvis on codex or opencode (and agy) through lib/lead.sh's adapter rows: fake CLIs run
+    # what jarvis lead hands them (codex's -c hooks parsed as TOML and run; opencode's plugin
+    # imported from OPENCODE_CONFIG_CONTENT by node and fed events without awaiting them), in
+    # a checkout whose path has a space, an apostrophe, a double quote and a #
+    (
+      unset CLAUDECODE ANTIGRAVITY_AGENT OPENCODE CODEX_THREAD_ID CODEX_SHELL JARVIS_ROLE OPENCODE_CONFIG_CONTENT
+      lb="$tmp/lead-bin"; mkdir -p "$lb"
+      export FAKE_LOG="$tmp/ld.log" FAKE_DIR="$tmp/ld-fake" PATH="$lb:$PATH" JARVIS_LEAD_SETTLE_SEC=0
+      mkdir -p "$FAKE_DIR"
+      py=$(command -v python3)
+      # fake codex: argv, the role's env and each -c hooks.<Event> (parsed as TOML) saved; nothing run
+      cat > "$lb/codex" <<EOF
+#!$py
+import json, os, sys, tomllib
+a = sys.argv[1:]; hooks = {}
+for i, x in enumerate(a[:-1]):
+    if x == "-c" and a[i + 1].startswith("hooks."):
+        k, v = a[i + 1][6:].split("=", 1)
+        hooks[k] = tomllib.loads("v = " + v)["v"]
+d = os.environ["FAKE_DIR"]
+json.dump({"argv": a, "role": os.environ.get("JARVIS_ROLE"), "launched": os.environ.get("JARVIS_LEAD_LAUNCHED_AGENT")}, open(d + "/codex-argv.json", "w"))
+json.dump(hooks, open(d + "/codex-hooks.json", "w"))
+open(os.environ["FAKE_LOG"], "a").write("codex ran\n")
+EOF
+      # fake opencode: argv and OPENCODE_CONFIG_CONTENT saved; oc-drive.mjs then plays events into its plugin
+      cat > "$lb/opencode" <<'EOF'
+#!/bin/sh
+node -e 'require("fs").writeFileSync(process.env.FAKE_DIR + "/oc-argv.json", JSON.stringify(process.argv.slice(1)))' -- "$@"
+printf '%s' "${OPENCODE_CONFIG_CONTENT:-}" > "$FAKE_DIR/oc-config.json"
+echo "opencode ran" >> "$FAKE_LOG"
+EOF
+      cat > "$lb/agy" <<'EOF'
+#!/bin/sh
+[ "$1" = plugin ] && { echo '[{"name":"jarvis","enabled":true}]'; exit 0; }
+echo "agy $*" >> "$FAKE_LOG"
+EOF
+      chmod +x "$lb/codex" "$lb/opencode" "$lb/agy"
+      # the plugin, as OpenCode's bus calls it: chat.message and event, none awaited; then the queue drained
+      cat > "$FAKE_DIR/oc-drive.mjs" <<'EOF'
+import { readFileSync } from "node:fs";
+const cfg = JSON.parse(readFileSync(process.env.FAKE_DIR + "/oc-config.json", "utf8"));
+const url = cfg.plugin.find((u) => u.includes("lead-opencode.mjs"));
+const hooks = await (await import(url)).JarvisLeadEvents({});
+let last = Promise.resolve();
+for (const l of readFileSync(process.argv[2], "utf8").split("\n").filter(Boolean)) {
+  const s = JSON.parse(l);
+  if (s.chat) last = hooks["chat.message"]({ sessionID: s.chat.sid, agent: s.chat.agent ?? "build" }, { parts: [{ type: "text", text: s.chat.text }] });
+  else last = hooks.event({ event: s.event });
+}
+await last;
+EOF
+      fire() { # $1 = Codex event: its saved hook commands run with $2 as the payload, as Codex does
+        "$py" - "$1" "$2" <<'EOF'
+import json, os, subprocess, sys
+for g in json.load(open(os.environ.get("FIRE_HOOKS") or os.environ["FAKE_DIR"] + "/codex-hooks.json")).get(sys.argv[1], []):
+    for h in g["hooks"]:
+        r = subprocess.run(h["command"], shell=True, input=sys.argv[2], text=True, capture_output=True, timeout=h.get("timeout", 10))
+        if sys.argv[1] == "Stop": assert json.loads(r.stdout) == {}, r.stdout
+EOF
+      }
+      oc() { printf '%s\n' "$@" > "$FAKE_DIR/steps.jsonl"; node "$FAKE_DIR/oc-drive.mjs" "$FAKE_DIR/steps.jsonl"; }
+      ups() { printf '{"session_id":"%s","hook_event_name":"UserPromptSubmit","prompt":"%s"}' "$1" "$2"; }
+      cstop() { printf '{"session_id":"%s","hook_event_name":"Stop","stop_hook_active":false,"last_assistant_message":"%s"}' "$1" "${2:-ok}"; }
+      noran() { ! grep -q ' ran$' "$FAKE_LOG"; }   # no fake CLI was started
+      kind() { awk '{print $2}' handoffs/.jarvis/lead.stamp; }
+      ago() { echo "$(( $(date +%s) - $1 * 60 )) $2" > handoffs/.jarvis/lead.stamp; }
+      st() { sed -n "s/^$1: //p" handoffs/.jarvis/lead.state 2>/dev/null; }
+      gen() { sed -n 's/^generation: //p' handoffs/.jarvis/lead.launch; }
+      argv() { jq -r '.argv | join("\n")' "$FAKE_DIR/codex-argv.json"; }
+      mkrepo() { # $1 = name, then jarvis.conf lines; leaves the shell in it
+        r="$tmp/ld $1 o'q\"#/repo"; mkdir -p "$r" && cd "$r" || exit 1
+        git init -q; cp -R "$tpl/handoffs" .; sed -e 's/{{MAX_CLAUDE}}/3/' -e 's/{{AMBER}}/50/' -e 's/{{RED}}/75/' "$tpl/handoffs/jarvis.conf" > handoffs/jarvis.conf
+        shift; printf '%s\n' JARVIS_BATCH_SEC=0 JARVIS_AMBER_GLOBAL=4 "$@" >> handoffs/jarvis.conf
+        mkdir -p handoffs/skills/jarvis-run && cp -R "$here/../plugins/jarvis/skills/run/." handoffs/skills/jarvis-run/
+        echo a > a.txt; git add -A; git commit -qm init; : > "$FAKE_LOG"; rm -f "$FAKE_DIR"/*.json
+        export JARVIS_HOME="$tmp/jh-ld-$1"
+      }
+
+      grep -c '^JARVIS_LEAD_CLI_' "$tpl/handoffs/bin/lib/lead.sh" | grep -qx 3; check "lead table: exactly three non-Claude rows" $?
+      mkrepo typo JARVIS_LEAD_AGENT=gemini
+      out=$($J status 2>&1); printf '%s' "$out" | grep -q 'JARVIS_LEAD_AGENT=gemini is not claude, agy, codex or opencode: Jarvis is treated as Claude' \
+        && printf '%s' "$out" | grep -q '^claude sessions:'; check "lead=unknown: status warns and counts it as Claude" $?
+      out=$($J lead 2>&1); [ $? = 1 ] && printf '%s' "$out" | grep -q 'give claude, agy, codex or opencode' && noran; check "…and jarvis lead refuses it" $?
+
+      if [ -n "$py" ] && "$py" -c 'import tomllib' 2>/dev/null; then
+        mkrepo codex JARVIS_LEAD_AGENT=codex; $J start >/dev/null
+        grep -qx 'Jarvis session: jarvis-t · codex/gpt-6-astra' handoffs/OPEN.md; check "lead=codex: start records codex/gpt-6-astra in OPEN.md" $?
+        $J lead >/dev/null 2>&1
+        a=$(argv); p=$(jq -r '.argv[-1]' "$FAKE_DIR/codex-argv.json")
+        printf '%s\n' "$a" | grep -qx -- --no-daemon && printf '%s\n' "$a" | grep -qx gpt-6-astra && printf '%s\n' "$a" | grep -qx 'model_reasoning_effort=high' \
+          && [ "$(printf '%s\n' "$a" | grep -cx -- --dangerously-bypass-approvals-and-sandbox)" = 1 ] && printf '%s\n' "$a" | grep -qx -- --dangerously-bypass-hook-trust \
+          && [ "$(printf '%s\n' "$a" | tail -n 2 | head -n 1)" = -- ] && jq -e '.role == "lead" and .launched == "codex"' "$FAKE_DIR/codex-argv.json" >/dev/null
+        check "jarvis lead (codex): gpt-6-astra, effort high, no daemon, both bypass flags once, the prompt one argument after --, JARVIS_ROLE=lead" $?
+        case "$p" in "You are Jarvis, on codex"*"Read handoffs/skills/jarvis-run/SKILL.md in full"*"handoffs/OPEN.md"*"run handoffs/bin/jarvis start, then tell the user what is open.") true ;; *) false ;; esac
+        check "…its prompt: the role first, the skill's file, OPEN.md, then jarvis start" $?
+        jq -e '[keys[]] == ["Interrupt","SessionEnd","Stop","UserPromptSubmit"] and .Interrupt[0].hooks[0].timeout == 3 and .SessionEnd[0].hooks[0].timeout == 3
+          and .Stop[0].hooks[0].timeout == 10 and .UserPromptSubmit[0].hooks[0].timeout == 10
+          and all(.[][0].hooks[0].command; test("hook lead (working|stop|unknown) codex [0-9]"))' "$FAKE_DIR/codex-hooks.json" >/dev/null \
+          && ! argv | grep -q '^notify' && [ "$(kind)" = unknown ]
+        check "…its hooks: UserPromptSubmit, Stop, Interrupt, SessionEnd, naming codex and the launch (TOML parsed); no notify; idle unknown at first" $?
+        $J status | grep -qx 'jarvis: idle unknown; automatic clear disabled until turn signals arrive'; check "…status says idle is unknown and nothing clears it" $?
+        g=$(gen); fire UserPromptSubmit "$(ups S1 'say hi')"; [ "$(kind)" = unknown ] && [ -z "$(st root)" ]; check "codex hooks: a prompt without the role binds no session" $?
+        fire UserPromptSubmit "$(ups S1 'You are Jarvis, on codex (x)')"; [ "$(kind)" = working ] && [ "$(st root)" = S1 ] \
+          && $J status | grep -qx 'jarvis: codex/gpt-6-astra high · not counted toward the Claude caps · idle 0 min'
+        check "…the role prompt binds its session: working, status idle 0 min" $?
+        fire Stop "$(cstop S2)"; [ "$(kind)" = working ]; check "…another session's Stop (a subagent) changes nothing" $?
+        fire Stop "$(cstop S1 'you have hit your usage limit, quota exceeded')"; [ "$(kind)" = stop ] && [ ! -e handoffs/.jarvis/lead-limit ]
+        check "…its own Stop (output {}) stamps stop; quota words in its last message aren't a limit" $?
+        ago 70 stop; fire Stop "$(cstop S1)"; [ "$(awk '{print $1}' handoffs/.jarvis/lead.stamp)" -le $(( $(date +%s) - 69 * 60 )) ]; check "…a second Stop keeps the first one's time" $?
+        ago 70 working; [ "$($J status | grep -c 'idle 0 min')" = 1 ]; check "…working 70 min ago is still idle 0" $?
+        echo "$(( $(date +%s) + 600 )) stop" > handoffs/.jarvis/lead.stamp; $J status | grep -q 'idle unknown'; check "…a stamp from the future is unknown" $?
+        ago 5 stop; for x in "working codex bogus" "working opencode $g" "working codex"; do
+          # shellcheck disable=SC2086
+          $J hook lead $x < <(ups S1 'You are Jarvis, on codex'); done
+        JARVIS_ROLE=worker $J hook lead working codex "$g" < <(ups S1 'You are Jarvis, on codex')
+        [ "$(kind)" = stop ] && [ ! -d handoffs/.jarvis/events ]; check "…a wrong generation, a wrong agent, no generation, a worker's call: dropped; no worker event file" $?
+        fire Interrupt '{"session_id":"S1","hook_event_name":"Interrupt"}'; [ "$(kind)" = unknown ] && [ -z "$($J status | grep -o 'idle [0-9]* min')" ]; check "…Interrupt makes idle unknown" $?
+        fire UserPromptSubmit "$(ups S1 'next')"; fire Stop "$(cstop S1)"; ago 70 stop; : > "$FAKE_LOG"
+        printf '# t\nstatus: done\nbrief: handoffs/briefs/c1.md\n## Files\n- x\n' > handoffs/hc1.md
+        FAKE_SEND_FAIL_RE='^/clear$' $J watch --once >/dev/null; [ -f handoffs/.jarvis/watch.pending ] && [ "$(st root)" = S1 ] && [ -z "$(st reset)" ] && [ "$(kind)" = stop ]
+        check "watch (codex): a /clear that can't be sent keeps the batch and the session as they were" $?
+        : > "$FAKE_LOG"; $J watch --once >/dev/null
+        grep -q 'send .*--text /clear' "$FAKE_LOG" && grep 'send .*--text' "$FAKE_LOG" | tail -n 1 | grep -q -- "--text You are Jarvis, on codex.*SKILL.md.*handoffs/OPEN.md.*\[jarvis watch\] Fresh session.*hc1.md" \
+          && [ "$(st reset)" = requested ] && [ "$(st oldroot)" = S1 ] && ! cut -f2 handoffs/.jarvis/watch.log | grep -qx cleared \
+          && cut -f2 handoffs/.jarvis/watch.log | grep -qx reset-requested && [ ! -e handoffs/.jarvis/watch.pending ]
+        check "…idle 70 min: /clear, then the role prompt with the handoff; only reset-requested is logged, nothing claims it cleared" $?
+        $J status | grep -q 'waits for a new session to confirm it'; check "…status: waiting for a new session" $?
+        fire Stop "$(cstop S1)"; [ "$(kind)" = unknown ]; check "…a late Stop of the old session can't make it idle" $?
+        fire UserPromptSubmit "$(ups S3 'You are Jarvis, on codex (fresh)')"; [ "$(st root)" = S3 ] && [ -z "$(st reset)" ] && [ "$(kind)" = working ] \
+          && tail -n 1 handoffs/.jarvis/watch.log | cut -f2 | grep -qx reset-confirmed
+        check "…the role prompt from a new session confirms the clear" $?
+        fire Stop "$(cstop S3)"; ago 70 stop; printf '# t\nstatus: done\nbrief: handoffs/briefs/c2.md\n## Files\n- x\n' > handoffs/hc2.md; : > "$FAKE_LOG"
+        FAKE_SEND_FAIL_RE='^You are Jarvis' $J watch --once >/dev/null; [ "$(st prompt)" = pending ] && [ -f handoffs/.jarvis/watch.pending ]
+        check "…a fresh prompt that can't be sent stays owed, and the batch with it" $?
+        : > "$FAKE_LOG"; $J watch --once >/dev/null; ! grep -q 'text /clear' "$FAKE_LOG" && grep -q 'send .*--text You are Jarvis, on codex.*hc2.md' "$FAKE_LOG" && [ -z "$(st prompt)" ]
+        check "…next tick: the prompt again, never a second /clear" $?
+        fire UserPromptSubmit "$(ups S3 'You are Jarvis, on codex (same)')"; [ "$(st reset)" = unconfirmed ] && $J status | grep -q 'reset unconfirmed'
+        check "…the role prompt from the old session: reset unconfirmed, status says so" $?
+        fire Stop "$(cstop S3)"; ago 70 stop; printf '# t\nstatus: done\nbrief: handoffs/briefs/c3.md\n## Files\n- x\n' > handoffs/hc3.md; : > "$FAKE_LOG"
+        $J watch --once >/dev/null; ! grep -q 'text /clear' "$FAKE_LOG" && grep -q 'send .*--text \[jarvis watch\] handoff handoffs/hc3.md' "$FAKE_LOG"
+        check "…and then it is woken, not cleared again" $?
+        # limits on the screen
+        out=$(FAKE_SCREEN=$(printf '\033[31m■ You’ve hit your usage limit. Try again at 5pm.\033[0m\n›') $J watch --once)
+        printf '%s' "$out" | grep -q 'JARVIS IS LIMITED: codex/gpt-6-astra: its screen showed ■ You’ve hit your usage limit' && grep -qx 'source: screen' handoffs/.jarvis/lead-limit \
+          && $J status | grep -q "^JARVIS IS LIMITED: its screen showed .* (codex/gpt-6-astra). Codex's /status"
+        check "codex limit: its usage-limit screen (colour codes stripped): loud, with codex's advice in status" $?
+        : > "$tmp/ld-empty"; FAKE_SCREEN_FILE="$tmp/ld-empty" $J watch --once >/dev/null
+        fire Stop "$(cstop S3)"; [ -f handoffs/.jarvis/lead-limit ]; check "…an empty screen read and a clean Stop don't lift it" $?
+        ago 70 stop; printf '# t\nstatus: done\nbrief: handoffs/briefs/c4.md\n## Files\n- x\n' > handoffs/hc4.md; : > "$FAKE_LOG"
+        FAKE_SCREEN='■ You’ve hit your usage limit.' $J watch --once >/dev/null; ! grep -q 'text /clear' "$FAKE_LOG"; check "…a limited Jarvis isn't cleared" $?
+        $J watch --once | grep -q 'no longer shows the quota error' && [ ! -e handoffs/.jarvis/lead-limit ]; check "…a screen without it lifts it" $?
+        FAKE_SCREEN="You've hit your usage limit." $J watch --once | grep -q 'JARVIS IS LIMITED'; check "…the same error again rings again (straight apostrophe too)" $?
+        $J watch --once >/dev/null
+        for s in 'he said `You’ve hit your usage limit` once' 'HTTP 429 from the proxy' 'grep -E "rate limit (reached|exceeded)" src/limits.rs'; do
+          FAKE_SCREEN=$s $J watch --once >/dev/null; [ ! -e handoffs/.jarvis/lead-limit ] || { rm -f handoffs/.jarvis/lead-limit; false; }; check "…not a limit: $s" $?
+        done
+        # the same checkout, one more launch: generations, nesting, ask
+        old=$(gen); : > "$FAKE_LOG"; $J lead --print > "$tmp/ld-print" 2>&1; [ "$(gen)" = "$old" ] && noran && grep -q 'launch/lead/preview/lead.sh' "$tmp/ld-print" \
+          && grep -q "hook lead working codex preview" handoffs/.jarvis/launch/lead/preview/lead.sh
+        check "lead --print: runs nothing, keeps the running launch, writes a preview of its own" $?
+        for v in CODEX_THREAD_ID=x CODEX_SHELL=1 OPENCODE=1 ANTIGRAVITY_AGENT=1 CLAUDECODE=1 JARVIS_ROLE=worker; do
+          : > "$FAKE_LOG"; out=$(env "$v" "$J" lead 2>&1); [ $? = 1 ] && printf '%s' "$out" | grep -q 'runs inside an agent' && noran; check "lead refused inside an agent: $v" $?
+        done
+        cp "$FAKE_DIR/codex-hooks.json" "$FAKE_DIR/old-hooks.json"
+        CODEX_HOME="$tmp/ch" $J lead >/dev/null 2>&1; [ "$(gen)" != "$old" ]; check "…CODEX_HOME alone is no agent" $?
+        FIRE_HOOKS="$FAKE_DIR/old-hooks.json" fire UserPromptSubmit "$(ups S9 'You are Jarvis, on codex')"; [ -z "$(st root)" ] && [ "$(kind)" = unknown ]; check "…the old launch's hooks are stale after a relaunch" $?
+        (rm "$FAKE_DIR/codex-hooks.json"; printf '%s\n' JARVIS_LEAD_MODEL=gpt-5.6-sol JARVIS_LEAD_EFFORT=medium JARVIS_LEAD_PERMISSIONS=ask >> handoffs/jarvis.conf; $J lead >/dev/null 2>&1)
+        a=$(argv); printf '%s\n' "$a" | grep -qx gpt-5.6-sol && printf '%s\n' "$a" | grep -qx 'model_reasoning_effort=medium' \
+          && ! printf '%s\n' "$a" | grep -q -- --dangerously-bypass-approvals && printf '%s\n' "$a" | grep -qx -- --dangerously-bypass-hook-trust
+        check "lead=codex, PERMISSIONS=ask: its model and effort, no approvals bypass (hook trust kept)" $?
+        for l in 'codex --yolo -- "$JARVIS_PROMPT"' 'codex -a never --sandbox danger-full-access -- "$JARVIS_PROMPT"' 'env X=1 codex -- "$JARVIS_PROMPT"' '/usr/local/bin/codex -- "$JARVIS_PROMPT"'; do
+          printf "JARVIS_AGENT_codex='%s'\n" "$l" >> handoffs/jarvis.conf; : > "$FAKE_LOG"
+          out=$($J lead 2>&1); [ $? = 1 ] && printf '%s' "$out" | grep -q 'JARVIS_AGENT_codex' && noran; check "…ask refuses a launch line that would skip approvals or miss the wrapper: ${l% --*}" $?
+          sed -i.bak '/^JARVIS_AGENT_codex=/d' handoffs/jarvis.conf
+        done
+        printf '%s\n' JARVIS_LEAD_PERMISSIONS=full 'JARVIS_LEAD_MODEL=OpenAI/Claude-FABLE-5' >> handoffs/jarvis.conf
+        : > "$FAKE_LOG"; out=$($J lead --force 2>&1); [ $? = 1 ] && printf '%s' "$out" | grep -q 'Fable never runs Jarvis' && noran; check "…a Fable model in any case, behind a provider, refused even with --force" $?
+        printf '%s\n' JARVIS_LEAD_MODEL= >> handoffs/jarvis.conf
+        FAKE_OPEN=other-t; export FAKE_OPEN; sed -i.bak 's/^Jarvis session: .*/Jarvis session: other-t · codex\/gpt-6-astra/' handoffs/OPEN.md
+        : > "$FAKE_LOG"; out=$($J lead 2>&1); [ $? = 1 ] && printf '%s' "$out" | grep -q 'another Jarvis (other-t) is still open' && noran; check "…another live Jarvis terminal: refused, not taken over" $?
+        unset FAKE_OPEN; $J start >/dev/null && $J start >/dev/null; check "…jarvis start again in its own terminal is fine" $?
+        JARVIS_LEAD_LAUNCHED_AGENT=agy $J start 2>&1 >/dev/null | grep -q 'started as agy, and handoffs/jarvis.conf now says codex'; check "…a Jarvis started as another agent is told" $?
+        $J doctor 2>/dev/null | grep -q 'Jarvis runs on codex: it is never among them'; check "doctor names codex" $?
+        ! $J status | grep -qi agy; check "status for a codex Jarvis says nothing of agy" $?
+        mk m1 claude sonnet low; mk m2 claude sonnet low; mk m3 claude sonnet low; mk m4 claude sonnet low
+        $J spawn handoffs/briefs/m1.md >/dev/null 2>&1 && $J spawn handoffs/briefs/m2.md >/dev/null 2>&1 && $J spawn handoffs/briefs/m3.md >/dev/null 2>&1
+        check "caps: a codex Jarvis isn't a Claude session (3 Claude workers at cap 3)" $?
+        out=$($J spawn handoffs/briefs/m4.md 2>&1); [ $? = 1 ] && printf '%s' "$out" | grep -q '3 running Claude worker(s) (Jarvis runs on codex)'; check "…a fourth is refused, and says why" $?
+        # instructions: the file copy is required, --force or not
+        : > handoffs/skills/jarvis-run/references/hosts.md; : > "$FAKE_LOG"
+        out=$($J lead --force 2>&1); [ $? = 1 ] && printf '%s' "$out" | grep -q 'references/hosts.md is missing or empty' && noran; check "lead: an empty reference of the skill copy refuses, --force too" $?
+        rm handoffs/skills/jarvis-run/SKILL.md; out=$($J lead --print 2>&1); [ $? = 1 ] && printf '%s' "$out" | grep -q 'SKILL.md is missing or empty.*Re-run jarvis:setup'; check "…so does a missing SKILL.md" $?
+        mv "$lb/codex" "$lb/codex.off"; cp -R "$here/../plugins/jarvis/skills/run/." handoffs/skills/jarvis-run/
+        out=$(PATH="$lb:/usr/bin:/bin" "$BASH" "$J" lead 2>&1); [ $? = 1 ] && printf '%s' "$out" | grep -q 'no codex on PATH'; check "…no codex on PATH: named" $?
+        mv "$lb/codex.off" "$lb/codex"
+      else
+        echo "  (codex lead checks skipped: python3 has no tomllib)"
+      fi
+
+      if command -v node >/dev/null 2>&1; then
+        mkrepo opencode JARVIS_LEAD_AGENT=opencode; $J start >/dev/null
+        out=$($J lead 2>&1); [ $? = 1 ] && printf '%s' "$out" | grep -q 'JARVIS_LEAD_MODEL is empty: an OpenCode Jarvis needs one' && noran
+        check "lead=opencode: no model refuses, nothing started" $?
+        echo JARVIS_LEAD_MODEL=gpt >> handoffs/jarvis.conf; $J lead >/dev/null 2>&1; [ $? = 1 ] && noran; check "…a model that isn't provider/model refuses" $?
+        printf '%s\n' JARVIS_LEAD_MODEL=prov/m-1 JARVIS_LEAD_EFFORT=high >> handoffs/jarvis.conf
+        out=$($J lead 2>&1); [ $? = 1 ] && printf '%s' "$out" | grep -q 'takes no effort setting'; check "…an effort refuses" $?
+        echo JARVIS_LEAD_EFFORT= >> handoffs/jarvis.conf
+        out=$(OPENCODE_CONFIG_CONTENT='{"plugin":' $J lead 2>&1); [ $? = 1 ] && printf '%s' "$out" | grep -q "OPENCODE_CONFIG_CONTENT can't take the lead plugin" && noran
+        check "…an OPENCODE_CONFIG_CONTENT that isn't JSON refuses, nothing started" $?
+        OPENCODE_CONFIG_CONTENT='{"plugin":"x"}' $J lead >/dev/null 2>&1; [ $? = 1 ] && noran; check "…nor one whose plugin isn't a list" $?
+        OPENCODE_CONFIG_CONTENT='{"theme":"t","plugin":["file:///elsewhere/p.js"]}' $J lead >/dev/null 2>&1
+        [ "$(jq -r 'join(" ")' "$FAKE_DIR/oc-argv.json" | sed 's/ --prompt .*//')" = '--agent build --auto -m prov/m-1' ] \
+          && jq -r '.[-1]' "$FAKE_DIR/oc-argv.json" | grep -q '^You are Jarvis, on opencode .*jarvis-run/SKILL.md.*run handoffs/bin/jarvis start, then tell the user what is open\.$' \
+          && jq -e '.theme == "t" and (.plugin | length) == 2 and .plugin[0] == "file:///elsewhere/p.js" and (.plugin[1] | test("lead-opencode.mjs$"))' "$FAKE_DIR/oc-config.json" >/dev/null
+        check "jarvis lead (opencode): build agent, --auto, its model, the role prompt; the plugin added to the user's config, the rest kept" $?
+        g=$(gen); P='You are Jarvis, on opencode (x)'
+        oc '{"chat":{"sid":"R","text":"'"$P"'"}}' '{"event":{"type":"session.status","properties":{"sessionID":"R","status":{"type":"busy"}}}}' \
+          '{"event":{"type":"session.status","properties":{"sessionID":"R","status":{"type":"busy"}}}}' \
+          '{"event":{"type":"session.created","properties":{"sessionID":"C","info":{"id":"C","parentID":"R"}}}}' \
+          '{"event":{"type":"session.status","properties":{"sessionID":"C","status":{"type":"busy"}}}}' \
+          '{"event":{"type":"session.status","properties":{"sessionID":"C","status":{"type":"idle"}}}}' \
+          '{"event":{"type":"session.status","properties":{"sessionID":"R","status":{"type":"idle"}}}}' '{"event":{}}' '{"event":{"type":"session.status"}}' '{"event":{"type":"session.error","properties":{}}}'
+        [ "$(st root)" = R ] && [ "$(kind)" = stop ]; check "opencode plugin: the role prompt binds the root; busy, a subagent's turn, then idle, unawaited: stop lands last" $?
+        oc '{"chat":{"sid":"R","text":"go"}}' '{"event":{"type":"session.status","properties":{"sessionID":"R","status":{"type":"busy"}}}}' \
+          '{"event":{"type":"session.status","properties":{"sessionID":"U","status":{"type":"busy"}}}}' '{"event":{"type":"session.status","properties":{"sessionID":"U","status":{"type":"idle"}}}}' \
+          '{"chat":{"sid":"V","agent":"plan","text":"'"$P"'"}}'
+        [ "$(kind)" = working ] && [ "$(st root)" = R ]; check "…another root's idle and a plan agent's role prompt don't touch the working lead" $?
+        oc '{"event":{"type":"session.status","properties":{"sessionID":"R","status":{"type":"busy"}}}}' \
+          '{"event":{"type":"session.status","properties":{"sessionID":"R","status":{"type":"retry","attempt":1,"message":"Too Many Requests","next":1}}}}'
+        grep -qx 'source: hook' handoffs/.jarvis/lead-limit && [ "$(kind)" = working ]; check "…a retry with Too Many Requests: limited, still working" $?
+        oc '{"event":{"type":"session.status","properties":{"sessionID":"R","status":{"type":"busy"}}}}' \
+          '{"event":{"type":"session.error","properties":{"sessionID":"R","error":{"name":"APIError","data":{"message":"","statusCode":429}}}}}' \
+          '{"event":{"type":"session.status","properties":{"sessionID":"R","status":{"type":"idle"}}}}'
+        [ -f handoffs/.jarvis/lead-limit ] && [ "$(kind)" = stop ]; check "…an error (HTTP 429) then idle: stopped, the limit kept" $?
+        $J status | grep -q '^JARVIS IS LIMITED: its hook showed .* (opencode/prov/m-1). check the quota and billing'; check "…status says so, with opencode's advice" $?
+        oc '{"event":{"type":"session.status","properties":{"sessionID":"R","status":{"type":"busy"}}}}' '{"event":{"type":"session.status","properties":{"sessionID":"R","status":{"type":"idle"}}}}'
+        [ ! -e handoffs/.jarvis/lead-limit ]; check "…a clean turn lifts it" $?
+        oc '{"event":{"type":"session.status","properties":{"sessionID":"R","status":{"type":"busy"}}}}' \
+          '{"event":{"type":"session.status","properties":{"sessionID":"R","status":{"type":"retry","attempt":1,"message":"Provider is overloaded","next":1}}}}' \
+          '{"event":{"type":"session.error","properties":{"sessionID":"R","error":{"name":"APIError","data":{"message":"Service Unavailable","statusCode":503}}}}}'
+        [ ! -e handoffs/.jarvis/lead-limit ] && [ "$(kind)" = unknown ]; check "…overload and a 503 aren't limits; an error leaves idle unknown" $?
+        oc '{"event":{"type":"session.status","properties":{"sessionID":"R","status":{"type":"idle"}}}}'; ago 70 stop; : > "$FAKE_LOG"
+        printf '# t\nstatus: done\nbrief: handoffs/briefs/o1.md\n## Files\n- x\n' > handoffs/ho1.md
+        $J watch --once >/dev/null; grep -q 'send .*--text /new' "$FAKE_LOG" && grep -q 'send .*--text You are Jarvis, on opencode.*\[jarvis watch\] Fresh session.*ho1.md' "$FAKE_LOG" \
+          && [ "$(st reset)" = requested ] && ! grep -q 'terminals close\|text /clear' "$FAKE_LOG"
+        check "watch (opencode): idle 70 min: /new, then the role prompt; no host clear" $?
+        oc '{"event":{"type":"session.status","properties":{"sessionID":"R","status":{"type":"busy"}}}}' '{"event":{"type":"session.status","properties":{"sessionID":"R","status":{"type":"idle"}}}}'
+        [ "$(kind)" = unknown ]; check "…the old root's late turn can't make it idle" $?
+        oc '{"chat":{"sid":"N","text":"'"$P"' fresh"}}' '{"event":{"type":"session.status","properties":{"sessionID":"N","status":{"type":"busy"}}}}'
+        [ "$(st root)" = N ] && [ -z "$(st reset)" ] && [ "$(kind)" = working ]; check "…the new root's role prompt confirms it" $?
+        for s in 'Too Many Requests' 'Quota exceeded. Check your plan and billing details.'; do
+          out=$(FAKE_SCREEN=$s $J watch --once); printf '%s' "$out" | grep -q 'JARVIS IS LIMITED: opencode/prov/m-1'; check "opencode limit on its screen: $s" $?
+          $J watch --once >/dev/null
+        done
+        FAKE_SCREEN='error 429' $J watch --once >/dev/null; [ ! -e handoffs/.jarvis/lead-limit ]; check "…a bare 429 on its screen isn't one" $?
+        printf '%s\n' JARVIS_LEAD_PERMISSIONS=ask >> handoffs/jarvis.conf; $J lead >/dev/null 2>&1
+        [ "$(jq -r 'join(" ")' "$FAKE_DIR/oc-argv.json" | sed 's/ --prompt .*//')" = '--agent build -m prov/m-1' ]; check "lead=opencode, PERMISSIONS=ask: no --auto" $?
+        [ "$(ls -d handoffs/.jarvis/launch/lead/g-* | wc -l | tr -d ' ')" = 1 ]; check "…one launch folder: the old launch's is gone" $?
+        mk n1 claude sonnet low; mk n2 claude sonnet low; mk n3 claude sonnet low; mk n4 claude sonnet low
+        $J spawn handoffs/briefs/n1.md >/dev/null 2>&1 && $J spawn handoffs/briefs/n2.md >/dev/null 2>&1 && $J spawn handoffs/briefs/n3.md >/dev/null 2>&1 \
+          && $J spawn handoffs/briefs/n4.md 2>&1 | grep -q '(Jarvis runs on opencode)'; check "caps: an opencode Jarvis isn't a Claude session; the fourth is refused and says why" $?
+      else
+        echo "  (opencode lead checks skipped: no node)"
+      fi
+
+      mkrepo agy JARVIS_LEAD_AGENT=agy; $J start >/dev/null
+      $J lead >/dev/null 2>&1; grep '^agy ' "$FAKE_LOG" | grep -q -- '--dangerously-skip-permissions' && ! grep '^agy ' "$FAKE_LOG" | grep -q -- '--mode accept-edits'
+      check "lead=agy, PERMISSIONS=full: skip-permissions" $?
+      : > "$FAKE_LOG"; echo JARVIS_LEAD_PERMISSIONS=ask >> handoffs/jarvis.conf; $J lead >/dev/null 2>&1
+      grep '^agy ' "$FAKE_LOG" | grep -q -- '--mode accept-edits' && ! grep '^agy ' "$FAKE_LOG" | grep -q -- '--dangerously-skip-permissions'; check "…ask: --mode accept-edits instead" $?
+      printf '%s\n' JARVIS_LEAD_PERMISSIONS=sometimes >> handoffs/jarvis.conf; out=$($J lead 2>&1); [ $? = 1 ] && printf '%s' "$out" | grep -q 'full or ask'; check "…anything else refuses" $?
+      printf '%s\n' JARVIS_LEAD_PERMISSIONS=full JARVIS_LEAD_EFFORT=high >> handoffs/jarvis.conf; out=$($J lead 2>&1); [ $? = 1 ] && printf '%s' "$out" | grep -q 'takes no effort setting'; check "…an agy Jarvis takes no effort" $?
+      echo JARVIS_LEAD_EFFORT= >> handoffs/jarvis.conf; : > "$FAKE_LOG"; $J lead >/dev/null 2>&1; g=$(gen)
+      sh -c "$(jq -r '."jarvis-lead".PreInvocation[0].command' handoffs/.jarvis/launch/lead/.agents/hooks.json)"; [ "$(kind)" = working ]
+      $J hook lead stop < "$here/hook-payloads/agy-stop.json"; [ "$(kind)" = working ]; check "agy: the old one-argument hook is dropped once a launch is recorded" $?
+      FAKE_SCREEN=$(printf 'Model unavailable\n\033[2KRESOURCE_EXHAUSTED (code 429)\n>') $J watch --once >/dev/null; grep -qx 'source: screen' handoffs/.jarvis/lead-limit
+      check "watch: an erase-line escape right before agy's 429 on its screen still raises the limit" $?
+    ) 2>&1
 
     mk b7 opencode "" ""; $J spawn handoffs/briefs/b7.md >/dev/null 2>&1
     b7t=$(sed -n 's/.*terminal: //p' handoffs/briefs/b7.md)

@@ -164,7 +164,7 @@ cmd_doctor() {
 
   echo "agent processes (Claude, in this checkout):"
   [ -n "$procs" ] || echo "  none"
-  lead_is_claude || echo "  (Jarvis runs on agy: it is never among them; its terminal is below)"
+  lead_is_claude || echo "  (Jarvis runs on $(lead_agent): it is never among them; its terminal is below)"
   printf '%s\n' "$procs" | while read -r pid ps sid st class run brief term; do
     [ -n "$pid" ] || continue
     printf '  pid %s · up %s · %s · session %s · ' "$pid" "$(doc_up "$ps")" "${st#-}" "$(short "$sid")"

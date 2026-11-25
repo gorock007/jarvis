@@ -1,11 +1,6 @@
 # shellcheck shell=bash
 # Sourced by bin/jarvis; not run on its own.
 LIMIT_RE="(usage|rate|session|weekly|daily|hourly|5-hour) limit (was |has been )?(reached|exceeded|hit)|(hit|reached|exceeded) (your|the) [a-z0-9 -]*limit|limit reached|quota (was |has been )?(exceeded|exhausted)|out of credits|too many requests"
-# An agy Jarvis's 429, as its screen shows it (a line quoting it in backticks is text, not
-# the error) and as its Stop hook's error field carries it
-LEAD_SCREEN_LIMIT_RE='RESOURCE_EXHAUSTED[[:space:]]*\(code 429\)'
-# shellcheck disable=SC2034 # read by hook_lead in lib/hooks.sh
-LEAD_HOOK_LIMIT_RE='RESOURCE_EXHAUSTED|(^|[^0-9])429([^0-9]|$)'
 # A worker sitting at a trust or approval prompt does nothing until someone answers it.
 PROMPT_RE="trust (this|the files in this) folder|do you trust|is this a project you created or one you trust|allow codex to work in this folder|press enter to confirm|would you like to (run|make|apply)|do you want to (proceed|make this edit|create|overwrite|run|allow)|allow (this|once)|\\(y/n\\)|\\[y/n\\]"
 
@@ -15,11 +10,14 @@ WATCH_READ_LINES=15   # the last rows watch_tick reads for every worker; detecti
 
 jarvis_idle_min() { # minutes since the Jarvis transcript last changed; empty if unknown
   local tp t k
-  # an agy Jarvis: since its last Stop (or the watcher's clear), from its hooks' stamp; mid-turn is 0
+  # a non-Claude Jarvis: since its last stop (or the watcher's clear), from its hooks'
+  # stamp; mid-turn is 0; unknown (no stamp, an interrupt, a clear not yet confirmed, a
+  # stamp from the future) is empty, and nothing clears it
   if ! lead_is_claude; then
     [ -f "$STATE/lead.stamp" ] && read -r t k < "$STATE/lead.stamp" || return
     case "$t" in ""|*[!0-9]*) return ;; esac
-    if [ "$k" = working ]; then echo 0; else echo $(( ($(now) - t) / 60 )); fi
+    [ "$t" -le "$(now)" ] || return
+    case "$k" in working) echo 0 ;; stop|cleared) echo $(( ($(now) - t) / 60 )) ;; esac
     return
   fi
   have jq || return
@@ -32,36 +30,50 @@ send_jarvis() { # $1 = text
   host send "$(jarvis_terminal)" "$1" >/dev/null 2>&1
 }
 
-lead_limit_set() { # $1 = screen | hook, $2 = what showed the 429; kept until it clears, the first one wins
-  local tmp
-  [ -f "$STATE/lead-limit" ] && return 0
-  mkdir -p "$STATE" && tmp=$(mktemp "$STATE/.lead-limit.XXXXXX") || return 0
-  printf 't: %s\nsource: %s\ntext: %s\n' "$(now)" "$1" "$(printf '%s' "$2" | tr -d '\000-\037' | sed 's/^[[:space:]]*//' | cut -c1-200)" > "$tmp" \
-    && mv "$tmp" "$STATE/lead-limit"
-}
-
-# An agy Jarvis that Google answers with a 429 sits silent at its prompt, and the band
-# (Claude's) can't see it: each tick reads its screen, and while it is limited the
-# watcher says so loudly here, and in watch.log, once an hour. A screen-raised limit
-# lifts when the screen stops showing it; a hook-raised one at the next clean Stop.
-watch_lead() { # $1 = Jarvis's terminal; reads watch_tick's $seen
-  local scr line sum t
-  scr=$(host read "$1" "$WATCH_READ_LINES" 2>/dev/null | sed -e 's/[[:space:]]*$//')
-  line=$(printf '%s\n' "$scr" | grep -E "$LEAD_SCREEN_LIMIT_RE" | grep -v '`' | tail -n 1)
+# A non-Claude Jarvis's quota error, which the band (Claude's) can't see: each tick reads
+# its screen for its row's SCREEN_RE (colour codes stripped, case-blind; a line with a
+# backtick is someone quoting it, not the error), and while it is limited the watcher
+# says so loudly here, and in watch.log, once an hour. A screen-raised limit lifts when a
+# read of the screen comes back without it (an empty or failed read proves nothing); a
+# hook-raised one when its hooks report a clean turn. After a lift, the same error again
+# is a new limit, and rings again.
+watch_lead() { # $1 = Jarvis's terminal
+  local scr line t esc
+  esc=$(printf '\033')
+  scr=$(host read "$1" "$WATCH_READ_LINES" 2>/dev/null | sed -e "s#$esc\\[[0-9;?]*[ -/]*[@-~]##g" -e 's/[[:space:]]*$//')
+  line=$(printf '%s\n' "$scr" | grep -Ei "$(lead_attr SCREEN_RE)" | grep -v '`' | tail -n 1)
   if [ -n "$line" ]; then
-    sum=$(printf '%s' "$scr" | cksum | cut -d' ' -f1)
-    grep -qxF "leadlimit $sum" "$seen" || { echo "leadlimit $sum" >> "$seen"; lead_limit_set screen "$line"; }
+    lead_limit_set screen "$line"
   elif [ -n "$scr" ] && [ "$(rec_get "$STATE/lead-limit" source)" = screen ]; then
-    rm -f "$STATE/lead-limit" "$STATE/lead-limit.told"
-    echo "$(date +%H:%M) Jarvis's screen no longer shows the 429"
+    lead_limit_clear
+    echo "$(date +%H:%M) Jarvis's screen no longer shows the quota error"
   fi
   [ -f "$STATE/lead-limit" ] || return 0
   t=$(mtime "$STATE/lead-limit.told")
   [ "$t" -ge "$(mtime "$STATE/lead-limit")" ] && [ $(( $(now) - t )) -lt 3600 ] && return 0
   touch "$STATE/lead-limit.told"
   printf '\a'
-  echo "!!!!! $(date +%H:%M) JARVIS IS LIMITED: its agy got a 429 from Google ($(rec_get "$STATE/lead-limit" text)), so it sits silent and no wake reaches it. Check agy -p /quota; send it \"resume\" later, or run Jarvis on Claude (JARVIS_LEAD_AGENT=claude in $H/jarvis.conf). !!!!!"
+  echo "!!!!! $(date +%H:%M) JARVIS IS LIMITED: $(lead_agent)/$(lead_model): its $(rec_get "$STATE/lead-limit" source) showed $(rec_get "$STATE/lead-limit" text); $(lead_attr ADVICE) (in $H/jarvis.conf). !!!!!"
   watch_log jarvis-limit "$(rec_get "$STATE/lead-limit" source)"
+}
+
+# A non-Claude Jarvis's wake, when the batch is due: the fresh prompt still owed after a
+# clear, else a clear first when it's been idle long enough (lead_reset), else the plain
+# wake. 0 = the batch went out; 1 = it stays for a later tick (a send failed).
+watch_lead_wake() { # $1 = idle minutes, $2 = events, $3 = kinds
+  if [ "$(lead_get prompt)" = pending ]; then
+    send_jarvis "$(lead_fresh_prompt "" "$2")" || { echo "$(date +%H:%M) still couldn't wake Jarvis after its clear; the events wait"; return 1; }
+    lead_put prompt ""; watch_log woke "$3"
+    echo "$(date +%H:%M) woke Jarvis after its clear:$2"
+    return 0
+  fi
+  if lead_clearable "$1"; then
+    lead_reset "$1" "$2" "$3"
+    case $? in 0) return 0 ;; 1) return 1 ;; esac
+  fi
+  send_jarvis "[jarvis watch]$2" || { echo "$(date +%H:%M) couldn't reach Jarvis; the events wait for the next tick"; return 1; }
+  watch_log woke "$3"
+  echo "$(date +%H:%M) woke Jarvis:$2"
 }
 
 watch_running() { # a `jarvis watch` loop for this checkout is alive
@@ -508,13 +520,10 @@ EOF
     return 0
   fi
   idle=$(jarvis_idle_min)
-  if [ -n "$idle" ] && [ "$idle" -ge "$JARVIS_IDLE_MIN" ] && ! lead_is_claude; then
-    # an agy Jarvis: its own /clear starts a new conversation in the same session (a
-    # host's clear restarts the host's agent); the stamp restarts the idle clock
-    send_jarvis "/clear"; sleep 3; lead_stamp cleared
-    send_jarvis "[jarvis watch] Fresh session: Jarvis was idle ${idle} min, so the watcher cleared its conversation. $(lead_role) run handoffs/bin/jarvis status, then handle:$events"
-    watch_log cleared "$kinds"
-    echo "$(date +%H:%M) cleared Jarvis (agy, idle ${idle} min) and woke it:$events"
+  if ! lead_is_claude; then
+    # a non-Claude Jarvis: its own clear command (a host's clear restarts the host's
+    # agent), and a failed send keeps the batch
+    watch_lead_wake "$idle" "$events" "$kinds" || return 0
   elif [ -n "$idle" ] && [ "$idle" -ge "$JARVIS_IDLE_MIN" ]; then
     if type "${HOST}_clear" >/dev/null 2>&1; then host clear "$term" && sleep 5
     else send_jarvis "/clear"; sleep 3

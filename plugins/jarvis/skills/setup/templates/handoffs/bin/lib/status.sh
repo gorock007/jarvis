@@ -7,12 +7,14 @@ cmd_start() {
   [ -f "$OPEN" ] || [ -z "$TEAM_CONF" ] || open_new || die "can't write $OPEN"
   [ -f "$OPEN" ] || die "no $OPEN — run jarvis:setup first"
   need_host
-  # an agy Jarvis: OPEN.md names its agent and model after the terminal id; Claude Code
-  # here would be a second Jarvis the config doesn't run
+  # a non-Claude Jarvis: OPEN.md names its agent and model after the terminal id; Claude
+  # Code here would be a second Jarvis the config doesn't run
   if ! lead_is_claude; then
     [ -z "${CLAUDECODE:-}" ] || [ "${1:-}" = --force ] \
-      || die "$H/jarvis.conf runs Jarvis on agy (JARVIS_LEAD_AGENT=agy) and this is Claude Code: the user starts Jarvis with handoffs/bin/jarvis lead. jarvis start --force claims this terminal anyway"
-    who=" · agy/$(lead_model)"
+      || die "$H/jarvis.conf runs Jarvis on $(lead_agent) (JARVIS_LEAD_AGENT=$(lead_agent)) and this is Claude Code: the user starts Jarvis with handoffs/bin/jarvis lead. jarvis start --force claims this terminal anyway"
+    who=" · $(lead_agent)/$(lead_model)"
+    [ -z "${JARVIS_LEAD_LAUNCHED_AGENT:-}" ] || [ "$JARVIS_LEAD_LAUNCHED_AGENT" = "$(lead_agent)" ] \
+      || echo "jarvis: this Jarvis was started as $JARVIS_LEAD_LAUNCHED_AGENT, and $H/jarvis.conf now says $(lead_agent): the user restarts it with handoffs/bin/jarvis lead" >&2
   fi
   me=$(host self)
   [ -n "$me" ] || die "host $HOST gives no id for this terminal — run Jarvis in a Superset terminal, an Ultron session or a tmux pane"
@@ -99,68 +101,100 @@ EOF
   cmd_doctor --quiet
 }
 
-# An agy Jarvis: its model and idle time, and loudly, a 429 its screen or its Stop hook
-# showed (lead-limit, written by the watcher or jarvis hook lead). A Claude Jarvis: nothing.
+# A non-Claude Jarvis: its model and idle time, whether the watcher can clear it, and
+# loudly, a quota error its screen or its hooks showed (lead-limit, written by the
+# watcher or jarvis hook lead). A Claude Jarvis: nothing.
 lead_status() {
-  local t idle
+  local a m e t idle why launched
   case "${JARVIS_LEAD_AGENT:-claude}" in
     claude) return 0 ;;
-    agy) ;;
-    *) echo "JARVIS_LEAD_AGENT=$JARVIS_LEAD_AGENT is neither claude nor agy: Jarvis is treated as Claude"; return 0 ;;
+    agy|codex|opencode) ;;
+    *) echo "JARVIS_LEAD_AGENT=$JARVIS_LEAD_AGENT is not claude, agy, codex or opencode: Jarvis is treated as Claude, and jarvis lead won't start it"; return 0 ;;
   esac
+  a=$(lead_agent); m=$(lead_model); e=$(lead_effort)
   idle=$(jarvis_idle_min)
-  printf 'jarvis: agy/%s · not counted toward the Claude caps%s\n' "$(lead_model)" "${idle:+ · idle $idle min}"
+  printf 'jarvis: %s/%s%s · not counted toward the Claude caps%s\n' "$a" "${m:-(no model)}" "${e:+ $e}" "${idle:+ · idle $idle min}"
+  why=$(lead_validate) || echo "jarvis: $why"
+  launched=$(rec_get "$STATE/lead.launch" agent)
+  [ -z "$launched" ] || [ "$launched" = "$a" ] \
+    || echo "jarvis: the running Jarvis was started on $launched; $H/jarvis.conf now says $a — the user restarts it with handoffs/bin/jarvis lead"
+  case "$(lead_get reset)" in
+    requested) echo "jarvis: the watcher sent it $(lead_attr CLEAR) and waits for a new session to confirm it: no clear until then" ;;
+    unconfirmed) echo "jarvis: reset unconfirmed: after $(lead_attr CLEAR) its turns still came from the old session, so the watcher won't clear it again until jarvis lead restarts it" ;;
+    *) [ -n "$idle" ] || echo "jarvis: idle unknown; automatic clear disabled until turn signals arrive" ;;
+  esac
+  [ "$(lead_get prompt)" != pending ] || echo "jarvis: the prompt after the watcher's clear hasn't reached it yet; the watcher sends it again"
   [ -f "$STATE/lead-limit" ] || return 0
   t=$(rec_get "$STATE/lead-limit" t)
-  # shellcheck disable=SC2016 # the backticks are literal
-  printf 'JARVIS IS LIMITED: its %s showed "%s" at %s. An agy Jarvis that gets a 429 sits silent until it is sent a message: `agy -p /quota` shows what is left; send it "resume" later, or run Jarvis on Claude (JARVIS_LEAD_AGENT=claude)\n' \
+  printf 'JARVIS IS LIMITED: its %s showed "%s" at %s (%s/%s). %s\n' \
     "$(rec_get "$STATE/lead-limit" source)" "$(rec_get "$STATE/lead-limit" text)" \
-    "$(date -r "${t:-0}" +%H:%M 2>/dev/null || date -d "@${t:-0}" +%H:%M 2>/dev/null)"
+    "$(date -r "${t:-0}" +%H:%M 2>/dev/null || date -d "@${t:-0}" +%H:%M 2>/dev/null)" "$a" "${m:-?}" "$(lead_attr ADVICE)"
 }
 
-# jarvis lead [--print] [--force]: Jarvis on agy, in this terminal, as JARVIS_AGENT_agy
-# launches a worker, with Jarvis's own hooks (lead_hooks: its idle time and a 429 on
-# Stop) and this checkout trusted for the session; the start prompt tells it it is
-# Jarvis. --print writes the launch script and shows it instead; --force skips the
-# check that agy has the jarvis plugin.
+# jarvis lead [--print] [--force]: Jarvis on JARVIS_LEAD_AGENT (agy, codex or opencode), in
+# this terminal, launched as JARVIS_AGENT_<cli> launches a worker, through its row's
+# PREPARE (lib/lead.sh): Jarvis's own hooks, which name this launch's generation, and
+# the start prompt that tells it it is Jarvis. --print writes a preview of the launch
+# (handoffs/.jarvis/launch/lead/preview, never the running one's files) and shows it;
+# --force skips only the check that agy has the jarvis plugin.
 cmd_lead() {
-  local a print=0 force=0 m cmd d c v out launch prompt
-  for a; do case "$a" in --print) print=1 ;; --force) force=1 ;; *) die "usage: jarvis lead [--print] [--force]" ;; esac; done
-  lead_is_claude && die "$H/jarvis.conf runs Jarvis on Claude Code (JARVIS_LEAD_AGENT=${JARVIS_LEAD_AGENT:-claude}): jarvis lead starts an agy Jarvis. Set JARVIS_LEAD_AGENT=agy there first"
-  m=$(lead_model)
-  case "$(printf '%s' "$m" | tr '[:upper:]' '[:lower:]')" in *fable*) die "JARVIS_LEAD_MODEL=$m: Fable never runs Jarvis" ;; esac
-  cmd=$(agent_cmd agy) || die "no launch line for agy: JARVIS_AGENT_agy is empty"
+  local x print=0 force=0 a cli m e cmd why out d gen launch prompt me old
+  for x; do case "$x" in --print) print=1 ;; --force) force=1 ;; *) die "usage: jarvis lead [--print] [--force]" ;; esac; done
+  case "${JARVIS_LEAD_AGENT:-claude}" in
+    claude) die "$H/jarvis.conf runs Jarvis on Claude Code (JARVIS_LEAD_AGENT=claude): the user opens Claude Code as usual. jarvis lead starts a Jarvis on agy, codex or opencode: set JARVIS_LEAD_AGENT there first" ;;
+    agy|codex|opencode) ;;
+    *) die "JARVIS_LEAD_AGENT=$JARVIS_LEAD_AGENT in $H/jarvis.conf: give claude, agy, codex or opencode" ;;
+  esac
+  a=$(lead_agent); cli=$(lead_attr CLI); m=$(lead_model); e=$(lead_effort)
+  why=$(lead_validate) || die "$why"
+  cmd=$(agent_cmd "$cli") || die "no launch line for $cli: JARVIS_AGENT_$cli is empty"
+  why=$(lead_instructions) || die "$why: a $a Jarvis reads its instructions from there. Re-run jarvis:setup (or its upgrade) to copy them"
   if [ $print = 0 ]; then
-    [ -z "${CLAUDECODE:-}${ANTIGRAVITY_AGENT:-}" ] || die "this runs inside an agent: the user runs jarvis lead in a terminal of their own (--print shows the launch)"
-    have agy || die "no agy on PATH: install the Antigravity CLI first"
-    if [ $force = 0 ] && have jq && out=$(agy plugin list --json 2>/dev/null) \
+    [ -z "${CLAUDECODE:-}${ANTIGRAVITY_AGENT:-}${OPENCODE:-}${CODEX_THREAD_ID:-}${CODEX_SHELL:-}" ] && [ "${JARVIS_ROLE:-}" != worker ] \
+      || die "this runs inside an agent: the user runs jarvis lead in a terminal of their own (--print shows the launch)"
+    have "$cli" || die "no $cli on PATH: install it first"
+    if [ "$a" = agy ] && [ $force = 0 ] && have jq && out=$(agy plugin list --json 2>/dev/null) \
        && ! printf '%s' "$out" | jq -e 'any(.[]?; .name == "jarvis" and .enabled != false)' >/dev/null 2>&1; then
       die "agy has no jarvis plugin, so it has no jarvis:run skill: run agy plugin import claude (it copies your Claude Code plugins) or agy plugin install <the jarvis plugin's folder> once. --force starts it anyway"
     fi
+    need_host
+    me=$(host self)
+    [ -n "$me" ] || die "host $HOST gives no id for this terminal — run jarvis lead in a Superset terminal, an Ultron session or a tmux pane"
+    old=$(jarvis_terminal)
+    if [ -n "$old" ] && [ "$old" != "$me" ] && host list | grep -qxF "$old"; then
+      die "another Jarvis ($old) is still open — close it first, or ask it to; jarvis lead doesn't take it over"
+    fi
+    gen="$(now)-$$-${RANDOM:-0}"
+    launch="$STATE/launch/lead.sh"
+    # agy keeps its hooks where they always were; the others' files go in a folder per launch
+    if [ "$a" = agy ]; then d="$STATE/launch/lead"; else d="$STATE/launch/lead/g-$gen"; fi
+  else
+    gen=preview; d="$STATE/launch/lead/preview"; launch="$d/lead.sh"
   fi
-  d="$ROOT/$STATE/launch/lead"
-  mkdir -p "$d/.agents" || die "can't make $d"
-  { lead_hooks "$(tmux_sq "$ROOT/$BIN/jarvis")" > "$d/.agents/.hooks.$$" && mv "$d/.agents/.hooks.$$" "$d/.agents/hooks.json"; } \
-    || { rm -f "$d/.agents/.hooks.$$"; die "can't write $d/.agents/hooks.json"; }
-  c=$(printf '%s' "$ROOT" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g')   # a JSON string
-  v=$(printf '%s' "$ROOTP" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g')
-  [ "$v" = "$c" ] || c="$c\",\"$v"
-  launch="$STATE/launch/lead.sh"
-  {
-    echo "# written by jarvis lead: Jarvis on agy, in the terminal that ran it"
+  mkdir -p "$d" || die "can't make $d"
+  # a subshell: a PREPARE that fails (it says why) leaves no launch script behind
+  (
+    echo "# written by jarvis lead: Jarvis on $a, in the terminal that ran it"
     echo "unset CLAUDECODE CLAUDE_CODE_SESSION_ID CLAUDE_CODE_ENTRYPOINT JARVIS_ROLE JARVIS_BRIEF JARVIS_RUN"
-    # shellcheck disable=SC2016
-    echo "agy() { command agy --add-dir $(tmux_sq "$d") --settings $(tmux_sq "{\"trustedWorkspaces\":[\"$c\"]}") \"\$@\"; }"
+    echo "export JARVIS_ROLE=lead JARVIS_LEAD_LAUNCHED_AGENT=$a"
+    "$(lead_attr PREPARE)" "$ROOT/$d" "$gen" "$(tmux_sq "$ROOT/$BIN/jarvis")" || exit 1
     echo "$cmd"
-  } > "$launch" || die "can't write $launch"
+  ) > "$launch.$$" && mv "$launch.$$" "$launch" || { rm -f "$launch.$$"; die "can't write the launch for $a ($launch)"; }
   prompt="$(lead_role) run handoffs/bin/jarvis start, then tell the user what is open."
   if [ $print = 1 ]; then
-    printf 'JARVIS_MODEL=%s JARVIS_EFFORT= sh %s\n' "$m" "$launch"
+    printf 'JARVIS_MODEL=%s JARVIS_EFFORT=%s sh %s\n' "$m" "$e" "$launch"
     sed 's/^/  /' "$launch"
     printf 'prompt: %s\n' "$prompt"
     return 0
   fi
-  exec env JARVIS_AGENT=agy JARVIS_MODEL="$m" JARVIS_EFFORT="" JARVIS_PROMPT="$prompt" sh "$launch"
+  # this launch is now the one: older launches' hooks are stale, its state starts afresh
+  lead_lock || die "can't lock $STATE/lead.lock (a hook holding it?): try again"
+  printf 'agent: %s\nterminal: %s\ngeneration: %s\n' "$a" "$me" "$gen" > "$STATE/lead.launch.$$" && mv "$STATE/lead.launch.$$" "$STATE/lead.launch" \
+    || { lead_unlock; die "can't write $STATE/lead.launch"; }
+  rm -f "$STATE/lead.state"; lead_limit_clear; lead_stamp unknown
+  lead_unlock
+  for x in "$STATE"/launch/lead/g-*; do [ "$x" = "$d" ] || rm -rf "$x"; done
+  exec env JARVIS_AGENT="$cli" JARVIS_MODEL="$m" JARVIS_EFFORT="$e" JARVIS_PROMPT="$prompt" sh "$launch"
 }
 
 open_checks() { # $1 = OPEN.md's size in bytes; one line per check that fires, nothing when clean

@@ -39,8 +39,10 @@ JARVIS_HOST=""           # superset | ultron | tmux | <name> with handoffs/bin/h
 JARVIS_FABLE_TTL_MIN=120 # minutes a `jarvis fable allow` stays usable
 JARVIS_FABLE_SUPERSET_AGENT=""  # a Superset agent config id that lifts the backstop; empty = no Fable on Superset
 JARVIS_AGY_SUPERSET_AGENT=""    # a Superset agent config id (or preset) that runs agy with --dangerously-skip-permissions; empty = no agy on Superset
-JARVIS_LEAD_AGENT=claude # the agent Jarvis itself runs on: claude, or agy (started with `handoffs/bin/jarvis lead`)
-JARVIS_LEAD_MODEL=""     # an agy Jarvis's model; empty = gemini-4-neon-high
+JARVIS_LEAD_AGENT=claude # the agent Jarvis itself runs on: claude, or agy, codex or opencode (started with `handoffs/bin/jarvis lead`)
+JARVIS_LEAD_MODEL=""     # a non-Claude Jarvis's model; empty = agy gemini-4-neon-high, codex gpt-6-astra; opencode needs provider/model
+JARVIS_LEAD_EFFORT=""    # a codex Jarvis's effort; empty = high. agy and opencode take none
+JARVIS_LEAD_PERMISSIONS=full  # full: the lead skips its CLI's permission prompts, as workers do; ask: it asks
 # Models: the tier map (`jarvis models`), one id per tier per CLI. New ids are suggested by
 # `jarvis models check` and mapped only by the user's `jarvis models accept` (jarvis.conf).
 # Pinned ids, not aliases: an alias would switch to a new release unseen.

@@ -22,26 +22,7 @@ claude_sessions() { # Jarvis (on Claude) plus every running Claude worker
   echo $(( $(running_lines | grep -c '· claude/') + $(lead_n) ))
 }
 
-# ---------------------------------------------------------------- the agent Jarvis runs on
-
-# JARVIS_LEAD_AGENT=agy runs Jarvis itself on agy (jarvis lead starts it); anything else
-# is the default, Claude Code. An agy Jarvis is no Claude session: lead_n is what it adds
-# to this checkout's Claude count.
-lead_is_claude() { [ "${JARVIS_LEAD_AGENT:-claude}" != agy ]; }
-lead_n() { if lead_is_claude; then echo 1; else echo 0; fi; }
-lead_model() { printf '%s' "${JARVIS_LEAD_MODEL:-gemini-4-neon-high}"; }
-lead_who() { # OPEN.md's count of this checkout's Claude sessions, in words
-  if lead_is_claude; then printf 'Jarvis + %s running Claude worker(s)' "$(( $(claude_sessions) - 1 ))"
-  else printf '%s running Claude worker(s) (Jarvis runs on agy)' "$(claude_sessions)"; fi
-}
-lead_stamp() { # $1 = working | stop | cleared: an agy Jarvis's last turn event, "<epoch> <kind>"
-  mkdir -p "$STATE" && printf '%s %s\n' "$(now)" "$1" > "$STATE/lead.stamp.$$" && mv "$STATE/lead.stamp.$$" "$STATE/lead.stamp"
-}
-# What an agy Jarvis is told when it starts and after the watcher clears it: agy reads
-# AGENTS.md, whose rule makes every other agent a worker unless its prompt says this.
-lead_role() {
-  printf 'You are Jarvis, on agy (JARVIS_LEAD_AGENT=agy in handoffs/jarvis.conf), not a worker: AGENTS.md'"'"'s worker rules are not yours. Use the jarvis:run skill, read handoffs/JARVIS.md and %s,' "$OPEN"
-}
+# lead_n, lead_who and the rest of the agent Jarvis runs on: lib/lead.sh
 
 open_add_running() { # $1 = line
   local tmp; tmp=$(mktemp) || return 1
