@@ -5,7 +5,7 @@
 # No model, no network, no cost. Run it on both bashes:
 #
 #   eval/installtest.sh && /bin/bash eval/installtest.sh
-# shellcheck disable=SC2016,SC2086,SC2319 # literal backticks; $ALL splits on purpose; the check "…" $? idiom
+# shellcheck disable=SC2012,SC2013,SC2016,SC2086,SC2319 # ls -l for a mode, keys are words; literal backticks; $ALL splits on purpose; the check "…" $? idiom
 set -u
 # One brace group ending in exit, so bash reads the whole file before running any of it
 # (another worker's mid-run edit can't replay part of it).
@@ -46,8 +46,8 @@ p=$(command -v jq) && ln -s "$p" "$sys/jq"
 # what install.sh and jarvis lead --print may ask; anything else just exits 0.
 n=0
 fakes() {
-  n=$((n + 1)); local d="$tmp/fakes-$n" f
-  mkdir -p "$d"
+  local d f
+  d=$(mktemp -d "$tmp/fakes.XXXXXX")
   for f in "$@"; do
     cat > "$d/$f" <<'EOF'
 #!/bin/sh
@@ -96,7 +96,7 @@ F=$(fakes claude codex); newrepo; before=$(snap); inst "$F" --yes
 F=$(fakes claude tmux); newrepo; before=$(snap); FAKE_TMUX_V=2.9 inst "$F" --yes
 [ $RC = 1 ] && said "tmux 2.9 is too old" && [ "$(snap)" = "$before" ]; check "tmux older than 3.0 isn't a host" $?
 F=$(fakes $ALL); newrepo "handoffs/JARVIS.md=# old"; before=$(snap); inst "$F" --yes
-[ $RC = 1 ] && said "already set up; upgrade with jarvis:setup" && [ "$(snap)" = "$before" ]; check "handoffs/JARVIS.md exists: already set up" $?
+[ $RC = 1 ] && said "already set up; upgrade with install.sh --upgrade" && [ "$(snap)" = "$before" ]; check "handoffs/JARVIS.md exists: already set up" $?
 newrepo "handoffs/OPEN.md=# old"; before=$(snap); inst "$F" --yes
 [ $RC = 1 ] && said "already set up" && [ "$(snap)" = "$before" ]; check "an older Jarvis (handoffs/OPEN.md): already set up" $?
 newrepo "CLAUDE.md=Run handoffs/bin/jarvis start"; before=$(snap); inst "$F" --yes
@@ -248,6 +248,192 @@ said "appended Jarvis's part to your CLAUDE.md"; check "…and it says so" $?
 [ "$(cat "$R/.claude/agents/scout.md")" = "my scout" ] && said "kept your .claude/agents/scout.md" && [ -f "$R/.claude/agents/diff-reviewer.md" ]; check "an existing agent of the same name is left alone, and named" $?
 [ "$(head -n 1 "$R/.gitignore")" = node_modules ] && [ "$(grep -c . "$R/.gitignore")" = 4 ]; check ".gitignore: its line kept, three added on lines of their own" $?
 
+echo "--upgrade"
+VER=$(sed -n 's/^[[:space:]]*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$root/plugins/jarvis/.claude-plugin/plugin.json" | head -n 1)
+# every file but jarvis's ignored local state, with its checksum and mode: a refusal or a
+# second run must leave this as it was; and nothing staged is left in .git
+sums() { (cd "$R" && find . \( -path ./.git -o -path ./handoffs/.jarvis \) -prune -o -type f -print | LC_ALL=C sort | while IFS= read -r f; do printf '%s %s\n' "$(cksum < "$f")" "$(ls -l "$f" | cut -c1-10)"; done) }
+commit() { git -C "$R" add -A && git -C "$R" commit -qm "$1"; }
+changed_list() { printf '%s\n' "$OUT" | sed -n '/^changed (/,/^do by hand:/p' | sed -n 's/^- \(.*\) — [a-z]*$/\1/p' | LC_ALL=C sort; }
+git_list() { git -C "$R" status --porcelain -uall | cut -c4- | LC_ALL=C sort; }
+hand_list() { printf '%s\n' "$OUT" | sed -n '/^do by hand:/,$p'; }
+lead_line() { hand_list | grep -m 1 '^jarvis: '; }   # the first of status's jarvis: lines, at the end
+no_stage() { ! ls -d "$R"/.git/jarvis-upgrade.* >/dev/null 2>&1; }
+# swap_para <file> <start> <new text>: the paragraph starting with <start> becomes <new text>
+swap_para() {
+  printf '%s\n' "$3" > "$tmp/para"
+  START=$2 awk -v newf="$tmp/para" 'BEGIN { s = ENVIRON["START"]; pb = 1 }
+    /^[[:space:]]*$/ { skip = 0; pb = 1; print; next }
+    pb && index($0, s) == 1 { skip = 1; while ((getline l < newf) > 0) print l }
+    { pb = 0 } !skip' "$1" > "$1.x" && mv "$1.x" "$1"
+}
+drop_para() { # <file> <start>: the paragraph and the blank line after it removed
+  START=$2 awk 'BEGIN { s = ENVIRON["START"]; pb = 1 }
+    skip && /^[[:space:]]*$/ { skip = 0; next } skip { next }
+    /^[[:space:]]*$/ { pb = 1; print; next }
+    pb && index($0, s) == 1 { skip = 1; next } { pb = 0; print }' "$1" > "$1.x" && mv "$1.x" "$1"
+}
+OLD_ROLE='This repo runs the Jarvis workflow. **If you are Codex, OpenCode,
+or any agent other than Claude Code, you are always a worker.** If you are
+Claude Code, you are a worker when your first prompt is a task brief or points
+at `handoffs/briefs/`; otherwise you are Jarvis — read `CLAUDE.md` instead.'
+# 5522d90's wording, which Google answered with 429s
+BAD_ROLE='This repo runs the Jarvis workflow. **If you are Codex, OpenCode, agy,
+or any agent other than Claude Code, you are a worker**, with one exception:
+a session started by `handoffs/bin/jarvis lead` whose first or fresh prompt
+begins "You are Jarvis, on <agent>" (agy, codex or opencode) is Jarvis, and
+follows that prompt instead of this file. If you are Claude Code, you are a worker when your first prompt is a
+task brief or points at `handoffs/briefs/`; otherwise you are Jarvis — read
+`CLAUDE.md` instead.'
+AGY_PARA='**Jarvis on agy** (`JARVIS_LEAD_AGENT=agy` in `jarvis.conf`): the user starts
+you with `handoffs/bin/jarvis lead`, and `OPEN.md`'"'"'s `Jarvis session:` line
+names `agy/<model>`. You don'"'"'t count toward the Claude caps, and you may be the
+only merge reviewer. A 429 from Google leaves you silent; the watcher says so
+in its terminal and `jarvis status` shows it. What you lose: the jarvis:run
+skill'"'"'s `references/hosts.md`, "Jarvis on agy".'
+# oldrepo <fakes>: a fresh install made to look like one set up with jarvis 1.0 and since
+# customised: no lead support in bin/, an older jarvis.conf with values of its own, the old
+# role paragraph and a project rule in AGENTS.md, CLAUDE.md and JARVIS.md without section
+# 11's lines, an older brief template, a lib file the plugin dropped, a host of its own
+oldrepo() {
+  newrepo "Makefile=test:"; inst "$1" --yes --host tmux || return 1
+  rm -f "$R/handoffs/bin/lib/lead.sh" "$R/handoffs/bin/lib/models.sh" "$R/handoffs/bin/lead-opencode.mjs"
+  echo '# a module 1.0 had' > "$R/handoffs/bin/lib/retired.sh"
+  printf '#!/usr/bin/env bash\necho jarvis 1.0\n' > "$R/handoffs/bin/jarvis"
+  mkdir -p "$R/handoffs/bin/hosts" && echo '# my host' > "$R/handoffs/bin/hosts/mine.sh"
+  cat > "$R/handoffs/jarvis.conf" <<'EOF'
+# Settings for handoffs/bin/jarvis. Plain shell assignments; jarvis sources this file.
+
+# Claude sessions running at once in this checkout, Jarvis included.
+JARVIS_MAX_CLAUDE=5
+
+# Spawn also counts every active Claude session on this machine, in any repo.
+# JARVIS_MAX_CLAUDE_GLOBAL=4   # machine-wide, Jarvis sessions not counted
+JARVIS_MAX_OPUS=1
+# JARVIS_ACTIVE_MIN=10
+# JARVIS_PENDING_SEC=180       # a spawn holds its slot this long
+
+JARVIS_AMBER=40
+JARVIS_RED=70
+
+JARVIS_IDLE_MIN=30
+JARVIS_HOST=tmux
+JARVIS_LOCK_e2e="host 2"   # our own suite
+EOF
+  swap_para "$R/AGENTS.md" "This repo runs the Jarvis workflow." "$OLD_ROLE"
+  printf '\n## Project rules\n\n- Never edit vendor/: it is generated.\n' >> "$R/AGENTS.md"
+  awk '/^  `handoffs\/jarvis.conf` sets `JARVIS_LEAD_AGENT`/ { skip = 2; next } skip { skip--; next }
+       { sub(/handoffs\/bin\/jarvis start`\. If$/, "handoffs/bin/jarvis start`."); print }' "$R/CLAUDE.md" > "$R/CLAUDE.md.x" && mv "$R/CLAUDE.md.x" "$R/CLAUDE.md"
+  drop_para "$R/handoffs/JARVIS.md" "**Jarvis on another agent**"
+  echo '# an older brief template' > "$R/handoffs/briefs/TEMPLATE.md"
+  commit "set up with jarvis 1.0"
+}
+F=$(fakes claude agy codex opencode tmux)
+
+oldrepo "$F"; grep -q 'you are always a worker' "$R/AGENTS.md" && ! grep -q 'JARVIS_LEAD_AGENT' "$R/CLAUDE.md" \
+  && ! grep -q 'Jarvis on another agent' "$R/handoffs/JARVIS.md" && [ -z "$(git_list)" ]; check "the old-layout fixture looks like 1.0, committed" $?
+cp "$R/AGENTS.md" "$tmp/agents.before"
+inst "$F" --upgrade --lead agy
+[ $RC = 0 ]; check "old layout, --upgrade --lead agy: exit 0" $?
+diff -r "$TPL/handoffs/bin/lib" "$R/handoffs/bin/lib" >/dev/null; check "handoffs/bin/lib/ replaced whole (lead.sh, models.sh back; the retired module gone)" $?
+cmp -s "$TPL/handoffs/bin/jarvis" "$R/handoffs/bin/jarvis" && [ -x "$R/handoffs/bin/jarvis" ] && cmp -s "$TPL/handoffs/bin/lead-opencode.mjs" "$R/handoffs/bin/lead-opencode.mjs" \
+  && [ -x "$R/handoffs/bin/jarvis-lock.pl" ] && [ -x "$R/handoffs/bin/jev.sh" ]; check "bin/jarvis and lead-opencode.mjs copied, modes kept" $?
+[ "$(cat "$R/handoffs/bin/hosts/mine.sh")" = '# my host' ]; check "handoffs/bin/hosts/ left alone" $?
+conf JARVIS_MAX_CLAUDE=5 && conf JARVIS_MAX_OPUS=1 && conf JARVIS_AMBER=40 && conf JARVIS_RED=70 && conf JARVIS_IDLE_MIN=30 && conf JARVIS_HOST=tmux \
+  && conf 'JARVIS_LOCK_e2e="host 2"   # our own suite' && conf '# JARVIS_PENDING_SEC=180       # a spawn holds its slot this long'; check "jarvis.conf: every value of its own kept, as it was" $?
+for k in $(sed -n 's/^\(# \)\{0,1\}\(JARVIS_[A-Za-z0-9_]*\)=.*/\2/p' "$TPL/handoffs/jarvis.conf" | sort -u); do
+  grep -qE "^(# )?$k=" "$R/handoffs/jarvis.conf" || { echo "    missing $k"; false; } || break
+done; check "…and every key of the template's is there now" $?
+[ "$(grep -c '^JARVIS_MAX_CLAUDE=' "$R/handoffs/jarvis.conf")" = 1 ] && [ "$(grep -cE '^(# )?JARVIS_ACTIVE_MIN=' "$R/handoffs/jarvis.conf")" = 1 ] \
+  && grep -q '^# JARVIS_SPAWN_WAIT=120' "$R/handoffs/jarvis.conf" && grep -q '^# JARVIS_TIER_top_claude=' "$R/handoffs/jarvis.conf"; check "…none twice: a block it had in part gets only its missing keys" $?
+conf JARVIS_LEAD_AGENT=agy && grep -q '^JARVIS_LEAD_MODEL=gemini-4-neon-high ' "$R/handoffs/jarvis.conf" && conf "JARVIS_PLUGIN_VERSION=$VER"; check "--lead agy: lead agy/gemini-4-neon-high, and the version marker $VER" $?
+v=$(cd "$R" && sh -c '. handoffs/jarvis.conf; printf "%s %s %s" "$JARVIS_MAX_CLAUDE" "$JARVIS_LEAD_AGENT" "$JARVIS_LOCK_e2e"'); [ "$v" = "5 agy host 2" ]; check "…and it still sources as shell" $?
+grep -qF -- "$(sed -n 3p "$TPL/AGENTS.md")" "$R/AGENTS.md" && ! grep -q 'you are always a worker' "$R/AGENTS.md" \
+  && grep -q '^- Never edit vendor/: it is generated\.$' "$R/AGENTS.md" && [ "$(grep -c '^This repo runs the Jarvis workflow' "$R/AGENTS.md")" = 1 ]; check "AGENTS.md: the role paragraph is the template's now; the project rule kept" $?
+swap_para "$tmp/agents.before" "This repo runs the Jarvis workflow." "$(sed -n '/^This repo runs the Jarvis workflow\./,/^$/p' "$TPL/AGENTS.md" | sed '$d')"
+cmp -s "$tmp/agents.before" "$R/AGENTS.md"; check "…and nothing else in it changed" $?
+tr '\n' ' ' < "$R/CLAUDE.md" | tr -s ' ' | grep -qF 'then run `handoffs/bin/jarvis start`. If `handoffs/jarvis.conf` sets `JARVIS_LEAD_AGENT` to another agent, Jarvis runs there'; check "CLAUDE.md: the non-Claude-lead sentence after jarvis start" $?
+awk '/\*\*Jarvis on another agent\*\*/ { p = NR } /^## Budget rules/ { b = NR } END { exit !(p && b && p < b) }' "$R/handoffs/JARVIS.md"; check "JARVIS.md: the Jarvis-on-another-agent paragraph, before ## Budget rules" $?
+[ -z "$(cd "$R" && git diff --stat -- handoffs/briefs/TEMPLATE.md)" ] && hand_list | grep -q 'handoffs/briefs/TEMPLATE.md differs'; check "an older brief template: kept, and listed to do by hand" $?
+[ "$(changed_list)" = "$(git_list)" ] && [ -n "$(git_list)" ]; check "the file list it prints is exactly what git status shows" $?
+changed_list | grep -qx 'handoffs/bin/lib/retired.sh' && said 'handoffs/bin/lib/retired.sh — deleted' && said 'handoffs/bin/lib/lead.sh — created'; check "…each marked created, modified or deleted" $?
+said "agy plugin install $root/plugins/jarvis" && ! grep -q 'plugin install' "$FAKE_LOG"; check "prints agy plugin install, doesn't run it" $?
+lead_line | grep -q '^jarvis: agy/gemini-4-neon-high'; check "ends with jarvis status's line: agy/gemini-4-neon-high" $?
+! printf '%s\n' "$OUT" | grep '^jarvis: ' | grep -qv '^jarvis: agy/\|idle unknown'; check "…and no config error on it" $?
+[ ! -e "$R/handoffs/skills" ]; check "no run-skill copy for an agy lead" $?
+! grep -qE '^(claude|codex|agy|opencode) ' "$FAKE_LOG"; check "no agent CLI was run" $?
+home_clean && no_paths; check "home untouched, no local paths written" $?
+J lead --print > "$tmp/lp" 2>&1 && grep -q 'You are Jarvis, on agy' "$tmp/lp"; check "jarvis lead --print accepts the upgraded repo" $?
+[ "$(git -C "$R" log --oneline | wc -l | tr -d ' ')" = 1 ]; check "nothing committed" $?
+commit "upgraded"; before=$(sums); inst "$F" --upgrade --lead agy
+[ $RC = 0 ] && said "changed: nothing" && [ "$(sums)" = "$before" ] && [ -z "$(git_list)" ]; check "a second run changes nothing" $?
+
+newrepo "Makefile=test:"; inst "$F" --yes --host tmux; commit "fresh"
+grep -q "^JARVIS_PLUGIN_VERSION=$VER\$" "$R/handoffs/jarvis.conf"; check "a fresh install writes the version marker too" $?
+before=$(sums); inst "$F" --upgrade
+[ $RC = 0 ] && said "changed: nothing" && [ "$(sums)" = "$before" ] && [ -z "$(git_list)" ]; check "current layout (a fresh install), --upgrade: a no-op" $?
+hand_list | grep -qx -- '- nothing' && lead_line | grep -q '^jarvis: claude'; check "…nothing to do by hand; the last line says Claude is Jarvis" $?
+inst "$F" --upgrade --lead codex
+[ $RC = 0 ] && conf JARVIS_LEAD_AGENT=codex && grep -q '^JARVIS_LEAD_MODEL=gpt-6-astra ' "$R/handoffs/jarvis.conf" \
+  && diff -r "$root/plugins/jarvis/skills/run" "$R/handoffs/skills/jarvis-run" >/dev/null; check "--lead codex: lead codex/gpt-6-astra, the run skill copied" $?
+[ "$(changed_list)" = "$(git_list)" ] && lead_line | grep -q '^jarvis: codex/gpt-6-astra'; check "…the list exact, the jarvis: line codex's" $?
+commit "codex"; echo '# stale' > "$R/handoffs/skills/jarvis-run/references/gone.md"; commit "a stale skill file"
+inst "$F" --upgrade; [ $RC = 0 ] && [ ! -e "$R/handoffs/skills/jarvis-run/references/gone.md" ] && said 'gone.md — deleted'; check "a later upgrade keeps the skill copy matching the plugin" $?
+commit "x"; inst "$F" --upgrade --lead opencode --lead-model opencode/big-pickle
+[ $RC = 0 ] && conf JARVIS_LEAD_AGENT=opencode && grep -q '^JARVIS_LEAD_MODEL=opencode/big-pickle ' "$R/handoffs/jarvis.conf"; check "--lead opencode --lead-model provider/model" $?
+
+oldrepo "$F"; rm "$R/handoffs/bin/jev.sh"; commit "no Jev"; inst "$F" --upgrade
+[ $RC = 0 ] && [ ! -e "$R/handoffs/bin/jev.sh" ] && said "jev.sh isn't there"; check "a repo set up without Jev doesn't get jev.sh" $?
+
+echo "--upgrade refusals (nothing written)"
+newrepo "x=1"; before=$(sums); inst "$F" --upgrade
+[ $RC = 1 ] && said "not set up: run without --upgrade" && [ "$(sums)" = "$before" ] && no_stage; check "no handoffs/JARVIS.md: not set up" $?
+newrepo "handoffs/OPEN.md=# Open items"; before=$(sums); inst "$F" --upgrade
+[ $RC = 1 ] && said "0.2 or earlier" && said "jarvis:setup" && [ "$(sums)" = "$before" ] && no_stage; check "OPEN.md but no JARVIS.md (0.2): sent to jarvis:setup" $?
+oldrepo "$F"; before=$(sums)
+inst "$F" --upgrade --host tmux; [ $RC = 2 ] && [ "$(sums)" = "$before" ] && no_stage; check "--upgrade --host: bad argument (exit 2)" $?
+inst "$F" --upgrade --lead-model claude-Fable-5; [ $RC = 1 ] && said "Fable never runs Jarvis" && [ "$(sums)" = "$before" ] && no_stage; check "--upgrade --lead-model Fable: refused" $?
+inst "$F" --upgrade --lead opencode --lead-model anthropic/fable-x; [ $RC = 1 ] && said "Fable never runs Jarvis" && [ "$(sums)" = "$before" ] && no_stage; check "…behind a provider too" $?
+inst "$F" --upgrade --lead opencode; [ $RC = 1 ] && said "--lead-model provider/model" && [ "$(sums)" = "$before" ] && no_stage; check "--upgrade --lead opencode with no model: refused" $?
+inst "$F" --upgrade --lead opencode --lead-model big-pickle; [ $RC = 1 ] && said "provider/model" && [ "$(sums)" = "$before" ] && no_stage; check "…and a model without its provider" $?
+inst "$(fakes claude tmux)" --upgrade --lead agy; [ $RC = 1 ] && said "agy isn't on PATH" && [ "$(sums)" = "$before" ] && no_stage; check "--upgrade --lead an agent that isn't installed: refused" $?
+echo "- a line of mine" >> "$R/AGENTS.md"; echo dirty > "$R/handoffs/bin/lib/core.sh"; echo "unrelated" > "$R/notes.txt"; before=$(sums)
+inst "$F" --upgrade; [ $RC = 1 ] && said "uncommitted changes" && said "  AGENTS.md" && said "  handoffs/bin/lib/core.sh" && ! said "notes.txt" && [ "$(sums)" = "$before" ] && no_stage; check "a file it would write has uncommitted changes: refused, naming each (not other files)" $?
+git -C "$R" checkout -q -- . && rm -f "$R/notes.txt"
+printf '\n## Running workers\n- 2026-11-27 08:00 · claude/claude-opus-5-5 high · term abc123 · handoffs/briefs/x.md\n' >> "$R/handoffs/OPEN.md"; commit "a worker"; before=$(sums)
+inst "$F" --upgrade; [ $RC = 1 ] && said "workers are running" && said "term abc123" && [ "$(sums)" = "$before" ] && no_stage; check "OPEN.md lists a running worker: refused" $?
+oldrepo "$F"; echo 'JARVIS_PLUGIN_VERSION=99.0.0' >> "$R/handoffs/jarvis.conf"; commit "from the future"; before=$(sums)
+inst "$F" --upgrade; [ $RC = 1 ] && said "jarvis 99.0.0 upgraded this repo last" && [ "$(sums)" = "$before" ] && no_stage; check "a repo upgraded by a newer plugin: refused" $?
+home_clean; check "no refusal wrote to the home folder" $?
+
+echo "--upgrade: what it can't place"
+oldrepo "$F"
+swap_para "$R/AGENTS.md" "This repo runs the Jarvis workflow." 'Workers here: everyone but Jarvis. Our own wording.'
+commit "own wording"; cp "$R/AGENTS.md" "$tmp/agents.before"
+inst "$F" --upgrade
+[ $RC = 0 ] && cmp -s "$tmp/agents.before" "$R/AGENTS.md" && ! changed_list | grep -qx AGENTS.md; check "AGENTS.md without the role paragraph's anchor: nothing written to it" $?
+hand_list | grep -q '^- AGENTS.md: no one role paragraph' && hand_list | grep -qF "      $(sed -n 3p "$TPL/AGENTS.md")"; check "…listed under do by hand, with the exact paragraph" $?
+grep -q 'JARVIS_LEAD_AGENT' "$R/CLAUDE.md" && [ "$(changed_list)" = "$(git_list)" ]; check "…the rest of the upgrade still done, the list exact" $?
+oldrepo "$F"
+swap_para "$R/AGENTS.md" "This repo runs the Jarvis workflow." "$BAD_ROLE"
+P=$AGY_PARA awk '/^## Budget rules/ { print ENVIRON["P"]; print "" } { print }' "$R/handoffs/JARVIS.md" > "$tmp/j" && cp "$tmp/j" "$R/handoffs/JARVIS.md"
+grep -q 'Jarvis on agy' "$R/handoffs/JARVIS.md" && grep -q 'follows that prompt instead' "$R/AGENTS.md"; check "the 5522d90 fixture has both old paragraphs" $?
+commit "set up from 5522d90"; inst "$F" --upgrade
+[ $RC = 0 ] && ! grep -q 'follows that prompt instead of this file' "$R/AGENTS.md" && grep -qF -- "$(sed -n 3p "$TPL/AGENTS.md")" "$R/AGENTS.md"; check "5522d90's role paragraph (the 429 one) replaced by the template's" $?
+! grep -q 'Jarvis on agy' "$R/handoffs/JARVIS.md" && [ "$(grep -c 'Jarvis on another agent' "$R/handoffs/JARVIS.md")" = 1 ]; check "…and e382a4d's Jarvis-on-agy paragraph by the new one, once" $?
+oldrepo "$F"; awk '!/^## Budget rules/' "$R/handoffs/JARVIS.md" > "$tmp/j" && cp "$tmp/j" "$R/handoffs/JARVIS.md"
+sed 's/then run `handoffs\/bin\/jarvis start`\.$/then start it./' "$R/CLAUDE.md" > "$tmp/c" && cp "$tmp/c" "$R/CLAUDE.md"; commit "no anchors"
+cp "$R/handoffs/JARVIS.md" "$tmp/j.before"; cp "$R/CLAUDE.md" "$tmp/c.before"; inst "$F" --upgrade
+[ $RC = 0 ] && cmp -s "$tmp/j.before" "$R/handoffs/JARVIS.md" && cmp -s "$tmp/c.before" "$R/CLAUDE.md" \
+  && hand_list | grep -q '^- handoffs/JARVIS.md: no "## Budget rules"' && hand_list | grep -q '^- CLAUDE.md: no one line' \
+  && hand_list | grep -qF '      If `handoffs/jarvis.conf` sets'; check "JARVIS.md and CLAUDE.md without anchors: untouched, listed with their text" $?
+oldrepo "$F"; before=$(cd "$R" && cksum < .claude/settings.json; ls .claude/agents)
+inst "$(fakes agy tmux)" --upgrade
+[ $RC = 0 ] && [ "$(cd "$R" && cksum < .claude/settings.json; ls .claude/agents)" = "$before" ] && said ".claude/ left as it is: claude isn't on PATH"; check "no claude on PATH: .claude/ untouched, and it says so" $?
+oldrepo "$F"; jq '.permissions.allow += ["Bash(handoffs/bin/jarvis *)"] | del(.hooks.SessionEnd)' "$R/.claude/settings.json" > "$tmp/s" && cp "$tmp/s" "$R/.claude/settings.json"; commit "old settings"
+inst "$F" --upgrade
+[ $RC = 0 ] && jq -e '.hooks.SessionEnd and (.permissions.allow | index("Bash(handoffs/bin/jarvis *)")) == null' "$R/.claude/settings.json" >/dev/null && changed_list | grep -qx .claude/settings.json; check "claude on PATH: .claude/settings.json merged as a fresh install does" $?
+
 echo "on a terminal"
 # A pseudo-terminal from python3's pty module. Each answer is typed only once install.sh
 # has printed a prompt (output ending in ": "), so nothing races its reads.
@@ -309,6 +495,12 @@ make check && echo a/b"
   [ $RC = 0 ] && conf JARVIS_LEAD_AGENT=opencode && ! said "]: "; check "--yes on a terminal never prompts" $?
   newrepo; tty "$F" "" --lead opencode --lead-model opencode/big-pickle --workers opencode --host tmux --checks true
   [ $RC = 0 ] && ! said "]: "; check "every choice given by a flag: no prompt" $?
+  F=$(fakes claude agy tmux); oldrepo "$F"; before=$(sums)
+  tty "$F" "n" --upgrade
+  [ $RC = 1 ] && said "handoffs/bin/lib/lead.sh — created" && said "Write these" && said "nothing written" && [ "$(sums)" = "$before" ] && no_stage; check "--upgrade on a terminal lists the changes and asks; n writes nothing" $?
+  tty "$F" "y" --upgrade
+  [ $RC = 0 ] && cmp -s "$TPL/handoffs/bin/lib/lead.sh" "$R/handoffs/bin/lib/lead.sh"; check "…and y writes them" $?
+  commit "upgraded" && tty "$F" "" --upgrade; [ $RC = 0 ] && ! said "]: " && said "changed: nothing"; check "…with nothing to change it doesn't ask" $?
 else
   echo "  skip  no python3: the prompts weren't tested"
 fi
